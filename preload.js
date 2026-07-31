@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   onVaultFiles: (cb) => ipcRenderer.on('vault:files', (_e, files) => cb(files)),
   onVaultTouch: (cb) => ipcRenderer.on('vault:touch', (_e, paths) => cb(paths)),
   reveal: (p) => ipcRenderer.send('reveal', p),
+  fileDetail: (p) => ipcRenderer.invoke('file:detail', p),
   onComposerFocus: (cb) => ipcRenderer.on('composer:focus', () => cb()),
   micPermission: () => ipcRenderer.invoke('mic-permission'),
   saveRecording: (buf) => ipcRenderer.invoke('save-recording', buf),
@@ -43,4 +44,5 @@ contextBridge.exposeInMainWorld('bigkiji', {
   retryTask: (id) => ipcRenderer.invoke('task:retry', id),
   abortTask: (id) => ipcRenderer.invoke('task:abort', id),
   knowledgeState: () => ipcRenderer.invoke('knowledge:state'),
+  fastRouterStatus: () => ipcRenderer.invoke('fast-router:status'),
 });

@@ -6,6 +6,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildOrbGroup } from './orb-core.js';
 import { CoreInflowSynapse } from './core-inflow-synapse.js';
 import { Roadmap3D } from './roadmap-3d.js';
+import { ViralMembrane } from './viral-membrane.js';
+import { FileDetailPopup } from './file-detail-popup.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -117,6 +119,7 @@ function buildFileGalaxy(files) {
   for (const k in fileClouds) {
     scene.remove(fileClouds[k].grp);
     if (fileClouds[k].rootLink) scene.remove(fileClouds[k].rootLink.obj);
+    fileClouds[k].membrane?.dispose();
     delete fileClouds[k];
   }
   galaxyState.map = {};
@@ -286,7 +289,24 @@ function buildCloud(key, files) {
   flow.frustumCulled = false; // 毎フレーム座標更新のため
   grp.add(flow);
 
-  fileClouds[key] = { grp, points, ptsMat, hubMat, edgeMat, files, leafHub, center, flow, flowMat, fpos, fedges, boost: 0 };
+  // Organic membrane: curved strands replace the old white tree as the primary visual.
+  const membrane = new ViralMembrane(scene, {
+    color: (COMPANY_META[files[0].c] || [0, '#34d399'])[1], maxStrands: Math.min(72, 12 + N),
+  });
+  grp.add(membrane.group); // membrane shares the cluster's world transform
+  for (const hk of hubKeys) {
+    const h = hub[hk];
+    const parentKey = h.userData.depth === 2 ? hk.split('/').slice(0, -1).join('/') : null;
+    membrane.addStrand([center.clone(), (parentKey && hub[parentKey] ? hub[parentKey].clone() : center.clone()), h.clone()], hubFiles[hk] || 1);
+  }
+  for (let i = 0; i < N && membrane.strands.length < membrane.maxStrands; i++) {
+    const h = leafHub[i] || center;
+    const leaf = new THREE.Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    const mid = h.clone().lerp(leaf, 0.5); mid.x += (hash01(files[i].p + 'm') - 0.5) * 0.08;
+    membrane.addStrand([h.clone(), mid, leaf], 1);
+  }
+
+  fileClouds[key] = { grp, points, ptsMat, hubMat, edgeMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
 
   // 常設シナプス束（v11全結合）: 雲の根→担当BHを繋ぐミニ筋繊維束。LODで消えないため、
   // 全ファイル網が「オーケストレーションのシナプスに常時結合している」ことが遠景でも読める。
@@ -1379,10 +1399,13 @@ function setFocus(key, i) {
 
 // ---------- ノードhoverツールチップ + クリックフィルタ ----------
 const tip = document.getElementById('tip');
+const filePopup = new FileDetailPopup(document.getElementById('fileDetailPopup'));
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const balls = ids.map((id) => nodes[id].orb.mesh);
 let hoverId = null;
+let hoverFile = null;
+let hoverPoint = { x: 0, y: 0 };
 renderer.domElement.addEventListener('pointermove', (e) => {
   const r = wrap.getBoundingClientRect();
   mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -1403,6 +1426,8 @@ renderer.domElement.addEventListener('pointermove', (e) => {
       tip.style.left = (e.clientX - r.left) + 'px';
       tip.style.top = (e.clientY - r.top) + 'px';
       hoverId = null;
+      hoverFile = { ...f, color };
+      hoverPoint = { x: e.clientX, y: e.clientY };
       hoverCloudKey = fh.object.userData.key; // 局所拡大（レンズ）
       setFocus(fh.object.userData.key, fh.index); // 接続チェーンを明示
       return;
@@ -1410,6 +1435,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     tip.classList.remove('on');
   }
   hoverCloudKey = id || null; // 惑星hover=その雲をレンズ拡大
+  hoverFile = null;
   if (!id) clearFocus();
   if (id !== hoverId) {
     hoverId = id;
@@ -1425,11 +1451,19 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   if (id) { tip.style.left = (e.clientX - r.left) + 'px'; tip.style.top = (e.clientY - r.top) + 'px'; }
 });
 renderer.domElement.addEventListener('pointerleave', () => {
-  hoverId = null; hoverCloudKey = null; clearFocus();
+  hoverId = null; hoverFile = null; hoverCloudKey = null; clearFocus();
   tip.classList.remove('on'); renderer.domElement.style.cursor = '';
 });
 renderer.domElement.addEventListener('click', () => {
-  if (hoverId) { filter = filter === hoverId ? null : hoverId; applyFilter(); }
+  if (hoverFile) {
+    const ref = galaxyState.map[hoverFile.p];
+    if (ref) focusCloud(ref.key, ref.i, false);
+    filePopup.open(hoverFile, hoverPoint);
+  } else if (hoverId) { filter = filter === hoverId ? null : hoverId; applyFilter(); focusAgent(hoverId); }
+});
+renderer.domElement.addEventListener('dblclick', () => {
+  if (hoverFile) { const ref = galaxyState.map[hoverFile.p]; if (ref) focusCloud(ref.key, ref.i, true); }
+  else if (hoverId) focusAgent(hoverId, true);
 });
 
 // ---------- 博物館プレート（近景LOD・実データ展示） ----------
@@ -1659,6 +1693,19 @@ resize();
 // ---------- オートカメラ演出: 伝達が始まったオーブへズームし、次の伝達へ乗り移る ----------
 let autoCam = !location.hash; // 検証用プリセット(#mid/#near/#side)起動時はドローンを止めて固定画角
 let camFocusId = null, camFocusUntil = 0, camLastSwitch = 0;
+let manualFocusPoint = null, manualFocusDistance = null;
+function focusCloud(key, index, deep = false) {
+  const cl = fileClouds[key]; if (!cl) return;
+  const p = cl.points.geometry.attributes.position.array;
+  manualFocusPoint = new THREE.Vector3(p[index * 3], p[index * 3 + 1], p[index * 3 + 2]).add(cl.grp.position);
+  manualFocusDistance = deep ? 3.9 : 5.8;
+  disableAutoCam(); filePopup.close();
+}
+function focusAgent(id, deep = false) {
+  const nd = nodes[id]; if (!nd) return;
+  manualFocusPoint = nd.grp.position.clone(); manualFocusDistance = deep ? 4.2 : 6.0;
+  disableAutoCam(); filePopup.close();
+}
 const autoCamBtn = document.getElementById('autoCamBtn');
 autoCamBtn.classList.toggle('on', autoCam);
 function autoFocusOn(id) {
@@ -1700,7 +1747,7 @@ viewsEl.addEventListener('click', (e) => {
   for (const c of viewsEl.children) { if (c.id !== 'autoCamBtn') c.classList.toggle('on', c === b); }
 });
 renderer.domElement.addEventListener('wheel', () => { targetDist = null; disableAutoCam(); }, { passive: true });
-renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); });
+renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); manualFocusPoint = null; manualFocusDistance = null; });
 
 let galaxyO = 0, museumO = 0;
 const UP_Y = new THREE.Vector3(0, 1, 0);
@@ -1720,6 +1767,12 @@ const clock = new THREE.Clock();
     const next = THREE.MathUtils.damp(len, targetDist, 4, delta);
     camera.position.multiplyScalar(next / len);
     if (Math.abs(next - targetDist) < 0.15) targetDist = null;
+  }
+  if (manualFocusPoint && manualFocusDistance) {
+    controls.target.lerp(manualFocusPoint, 1 - Math.exp(-5.5 * delta));
+    const direction = camera.position.clone().sub(controls.target).normalize();
+    const distance = THREE.MathUtils.damp(camera.position.distanceTo(controls.target), manualFocusDistance, 4.5, delta);
+    camera.position.copy(controls.target).add(direction.multiplyScalar(distance));
   }
   // オートカメラ＝ドローン飛行: 常時ゆっくり旋回し、乗り移り時は旋回を強め
   // 高度をふわっと上げてから弧を描いて新しいオーブへ降りる。全景復帰は螺旋で引き上がる。
@@ -1754,9 +1807,10 @@ const clock = new THREE.Clock();
     cl.boost = THREE.MathUtils.damp(cl.boost, hoverCloudKey === k ? 1 : 0, 7, delta);
     cl.grp.scale.setScalar(1 + cl.boost * 0.24);
     cl.ptsMat.opacity = gO * 0.92 * (1 + cl.boost * 0.4);
+    cl.membrane?.update(t, Math.max(galaxyO, 0.06), cl.boost);
     // v11全結合: ハブ/幹線は全LODで微発光を維持（葉粒だけLODゲート＝負荷対策）
     cl.hubMat.opacity = Math.max(galaxyO * 0.8, 0.22) * (1 + cl.boost * 0.4);
-    cl.edgeMat.opacity = Math.max(galaxyO * 0.22, 0.10) * (1 + cl.boost * 2.4); // Obsidian風の糸
+    cl.edgeMat.opacity = 0; // legacy straight tree is replaced by ViralMembrane strands
     const nd = nodes[k];
     if (nd) { // 雲は自惑星の足元に追従
       cl.grp.position.set(nd.grp.position.x, nd.grp.position.y - 0.62, nd.grp.position.z);

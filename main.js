@@ -16,6 +16,7 @@ const taskCache = require('./task-cache'); // v12: Swarm合意形成＋JSONナ�
 const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Checker検収
 const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
+const fastRouter = require('./fast-api-router');
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -112,25 +113,25 @@ function findSeikaDirs() {
 const VAULT_EXCLUDE = /node_modules|\.git|_archive|graphify-out|\.next|ComfyUI|recordings|\.obsidian|package-lock/;
 let vaultFiles = [];
 
-function scanVaultFiles() {
+async function scanVaultFiles() {
   const out = [];
-  const walk = (dir, depth) => {
+  const walk = async (dir, depth) => {
     if (out.length > 4200) return;
     let ents;
-    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of ents) {
       if (e.name.startsWith('.')) continue;
       const p = path.join(dir, e.name);
       if (VAULT_EXCLUDE.test(p)) continue;
-      if (e.isDirectory()) { if (depth < 4) walk(p, depth + 1); continue; }
+      if (e.isDirectory()) { if (depth < 4) await walk(p, depth + 1); continue; }
       try {
-        const st = fs.statSync(p);
+        const st = await fs.promises.stat(p);
         const rel = p.slice(VAULT.length + 1);
-        out.push({ p: rel, c: rel.split('/')[0], t: st.mtimeMs });
+        out.push({ p: rel, c: rel.split('/')[0], t: st.mtimeMs, size: st.size });
       } catch (_) {}
     }
   };
-  walk(VAULT, 0);
+  await walk(VAULT, 0);
   vaultFiles = out;
   broadcast('vault:files', vaultFiles);
 }
@@ -732,7 +733,35 @@ function piDispatch(text, opts = {}) { // 実送信（分類済みプロンプ�
 // v12: 送信前にタスク分類（direct/cache/swarm）。raw=true は分類スキップ（内部指示・音声会話）
 function piSendPrompt(text, opts = {}) {
   if (opts.raw) { piDispatch(String(text), opts); return; }
-  try { taskCache.route(String(text), piDispatch); } catch (_) { piDispatch(String(text)); }
+  const prompt = String(text);
+  fastDispatch(prompt);
+  // Qwen remains available for raw internal planning/cache work and never delays this answer.
+}
+// 通常のGUI対話は高速経路、内部計画・検収・修復はraw=trueでPi/Qwenを継続利用する。
+let fastBusy = false;
+async function fastDispatch(text) {
+  const ownerText = String(text || '').trim();
+  if (!ownerText) return;
+  if (fastBusy) { bus.push({ source: 'system', type: 'warn', text: 'Fast route busy — request queued to local Pi.' }); piDispatch(ownerText); return; }
+  fastBusy = true;
+  const t0 = Date.now(); let answer = '';
+  broadcast('pi:event', { kind: 'turn_start', text: ownerText.slice(0, 30), model: 'fast-router', sandbox: 'global sandbox · Vault AGENTS.md' });
+  try {
+    const result = await fastRouter.route(ownerText, {
+      onStart: (provider) => broadcast('pi:event', { kind: 'route', provider, priority: fastRouter.PRIORITY.indexOf(provider) + 1 }),
+      onDelta: (delta) => { answer += String(delta); broadcast('pi:event', { kind: 'delta', text: String(delta) }); },
+    });
+    answer = result.text || answer;
+    bus.push({ source: 'pi', type: 'say', text: `${result.provider} reply: ${answer.slice(0, 700)}` });
+    broadcast('pi:stats', { turn: { input: 0, output: 0 }, total: null, touched: [], ms: result.latencyMs, provider: result.provider });
+    broadcast('pi:event', { kind: 'agent_end', provider: result.provider, latencyMs: result.latencyMs, fallback: result.fallback });
+    if (answer) speak(answer);
+  } catch (err) {
+    bus.push({ source: 'pi', type: 'warn', text: `Fast route unavailable: ${String(err.message).slice(0, 180)} — local Pi fallback` });
+    broadcast('pi:event', { kind: 'degrade', model: 'fast-router', reason: String(err.message).slice(0, 140) });
+    piDispatch(ownerText);
+  } finally { fastBusy = false; }
+  bus.push({ source: 'system', type: 'info', text: `Fast route completed in ${Date.now() - t0}ms` });
 }
 taskCache.init({
   kbPath: path.join(__dirname, '..', 'Knowledge', 'task_knowledge_base.json'),
@@ -752,6 +781,7 @@ ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
 ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
+ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
 
 // PITEST="<プロンプト>" — パイプラインE2E検証: 起動→送信→実写撮影→agent_endで終了。
 // フローカード/COMMS/委任発光が実イベントで動くことをスクショ証跡として残す
@@ -793,6 +823,24 @@ ipcMain.on('pi:abort', () => pi.abort());
 ipcMain.on('reveal', (_e, p) => {
   if (typeof p === 'string' && p.startsWith(VAULT)) shell.showItemInFolder(p); // Vault内のみ許可
 });
+ipcMain.handle('file:detail', async (_e, relPath) => {
+  const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const absolute = path.resolve(VAULT, rel);
+  const root = path.resolve(VAULT) + path.sep;
+  if (!absolute.startsWith(root) || VAULT_EXCLUDE.test(absolute)) throw new Error('File is outside the BigKiji Vault');
+  const st = await fs.promises.stat(absolute);
+  let promptSummary = 'No prompt context recorded';
+  if (/\.(md|json)$/i.test(rel)) {
+    try {
+      const head = (await fs.promises.readFile(absolute, { encoding: 'utf8' })).replace(/\s+/g, ' ').trim();
+      if (head) promptSummary = head.slice(0, 180);
+    } catch (_) {}
+  }
+  const company = rel.split('/')[0];
+  return { name: path.basename(rel), path: rel, size: st.size, mtimeMs: st.mtimeMs,
+    updated: new Date(st.mtimeMs).toISOString(), company,
+    agent: COMPANY_AGENT[company] || 'core', promptSummary };
+});
 
 ipcMain.on('pty:input', (_e, data) => { if (pty) pty.write(data); });
 ipcMain.on('pty:resize', (_e, { cols, rows }) => { if (pty && ptyMode === 'pty') pty.resize(cols, rows); });
@@ -805,7 +853,7 @@ ipcMain.handle('get-info', () => {
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
-    costPolicy: { planning: 'ollama-only', paid: ['claude-code', 'glm'], localOperators: ['codex'], blocked: ['gemini', 'kimi', 'openrouter'] },
+    costPolicy: { planning: 'ollama-only', fastPriority: ['claude-code', 'codex', 'glm', 'kimi'], paid: ['claude-code', 'glm', 'kimi'], localOperators: ['codex'], blocked: ['gemini', 'openrouter'] },
     ...bus.snapshot() };
 });
 
@@ -816,18 +864,21 @@ app.whenReady().then(() => {
   createTrayWindow();
   if (SMOKE || SNAP) createMainWindow(); // 通常起動ではウィンドウを開かない（バー内ダッシュボードが常設・キャンバスは明示操作時のみ）
   spawnShell();
-  // v13: Ollamaウォームアップ（keep_alive=30m）— Pi起動前にコールドスタート防止
+  // Fast route is ready independently; local Qwen warmup is intentionally background-only.
   router.ollamaWarmup('qwen3.5:35b-a3b');
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
-  seikaDirs = findSeikaDirs();
-  scanDeliverables();
-  scanVaultFiles();
-  const vfTimer = setInterval(scanVaultFiles, 300000); // 実ファイル地図は5分毎に更新
-  vfTimer.unref();
-  startVaultWatch();
-  const seikaTimer = setInterval(scanDeliverables, 60000); // 成果物の実ファイル監視（60秒毎）
-  seikaTimer.unref();
+  // Defer filesystem discovery until after the UI/PTY are responsive.
+  setImmediate(async () => {
+    seikaDirs = findSeikaDirs();
+    scanDeliverables();
+    await scanVaultFiles();
+    const vfTimer = setInterval(scanVaultFiles, 300000); // 実ファイル地図は5分毎に更新
+    vfTimer.unref();
+    startVaultWatch();
+    const seikaTimer = setInterval(scanDeliverables, 60000); // 成果物の実ファイル監視（60秒毎）
+    seikaTimer.unref();
+  });
   // 配布ガード: Vault不在の環境でも落ちず、空表示の理由を正直に案内する
   if (!fs.existsSync(VAULT)) {
     bus.push({ source: 'system', type: 'info', text: `Vault not found (${VAULT}) — file galaxy & deliverables will be empty on this machine` });

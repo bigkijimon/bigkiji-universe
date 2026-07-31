@@ -17,6 +17,9 @@
     'codex': { label: 'Codex', short: 'Codex', role: 'Codex operator', color: '#00a67d',
       path: 'M8 5l-5 7 5 7M16 5l5 7-5 7',
       icon: svg('<path d="M8 5l-5 7 5 7"/><path d="M16 5l5 7-5 7"/>') },
+    'kimi': { label: 'Kimi', short: 'Kimi', role: 'Kimi fast API', color: '#38bdf8',
+      path: 'M5 5h14v14H5zM8 9h8M8 13h5',
+      icon: svg('<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M8 9h8M8 13h5"/>') },
     'biglama': { label: 'Local Qwen', short: 'Qwen', role: 'Local Qwen planner', color: '#a78bfa',
       path: 'M6 6h12v12H6zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3',
       icon: svg('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>') },
@@ -47,7 +50,7 @@
   window.I18N = {
     en: {
       hint: 'TAP THE ORB → TYPE COMMAND ｜ ⌥SPACE TO SUMMON',
-      ph_ai: 'Ask BigKiji (Local Qwen · planning)…  ⏎ to send',
+      ph_ai: 'Ask BigKiji (Fast route · Claude/Codex/GLM/Kimi)…  ⏎ to send',
       ph_shell: 'Shell command…  ⏎ runs in terminal',
       stream: 'LIVE PROCESS STREAM',
       eventlog: 'SYNAPSE EVENT LOG',
@@ -66,7 +69,7 @@
     },
     ja: {
       hint: 'TAP THE ORB → 指示入力 ｜ ⌥SPACE で呼び出し',
-      ph_ai: 'BigKiji（ローカルQwen・計画）へ指示… ⏎で送信',
+      ph_ai: 'BigKiji（高速ルート・Claude/Codex/GLM/Kimi）へ指示… ⏎で送信',
       ph_shell: 'シェルコマンド… ⏎でターミナル実行',
       stream: 'LIVE PROCESS STREAM',
       eventlog: 'SYNAPSE EVENT LOG',

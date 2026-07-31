@@ -88,7 +88,7 @@ async function swarmDiscuss(text, kw, dispatch) {
   cfg.emit.broadcast('bk:swarm', { mode: 'consensus', phase: 'start' });
   const ask = ([lens, persona]) => llmJson(
     `${persona}\nTask from the owner: """${String(text).slice(0, 1200)}"""\n` +
-    'Available agents: claude-code (approved deep coding), glm (approved paid fast execution), biglama (local free planning/bulk work).\n' +
+    'Available agents: claude-code, codex (host operator), glm, kimi (fast execution), biglama (local free planning/bulk work).\n' +
     'Reply ONLY as JSON: {"roles":{"<agent>":{"role":"<short role>","note":"<1 line>"}},"steps":["step 1","step 2",...]} with 3-6 imperative steps in DAG order.',
   ).then((r) => {
     cfg.emit.broadcast('bk:swarm', { mode: 'consensus', phase: 'proposal', lens });
