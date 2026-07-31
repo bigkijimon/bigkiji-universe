@@ -9,7 +9,6 @@ const AGENTS = [
   { id: 'claude-code', label: 'Claude Code', color: '#d97757', match: /claude/i },
   { id: 'glm',          label: 'GLM',        color: '#8b5cf6', match: /glm|zai/i },
   { id: 'codex',        label: 'Codex',      color: '#00a67d', match: /codex/i },
-  { id: 'kimi',         label: 'Kimi',       color: '#38bdf8', match: /kimi|moonshot/i },
   { id: 'biglama',     label: 'Local Qwen',   color: '#a78bfa', match: /ollama|qwen|llama|biglama|localai/i },
   { id: 'marble',      label: 'CEO Marble',  color: '#34d399', match: /marble|upclass|hsacademy|english_school/i },
   { id: 'justin',      label: 'CEO Justin',  color: '#f472b6', match: /justin|creative_media|ace-step|ltx|wan2/i },

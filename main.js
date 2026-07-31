@@ -17,6 +17,7 @@ const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Che
 const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
 const fastRouter = require('./fast-api-router');
+const facilitator = new fastRouter.FastFacilitatorRouter();
 const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'particle-net-v2';
 
 const SMOKE = !!process.env.SMOKE;
@@ -748,14 +749,15 @@ async function fastDispatch(text) {
   const t0 = Date.now(); let answer = '';
   broadcast('pi:event', { kind: 'turn_start', text: ownerText.slice(0, 30), model: 'fast-router', sandbox: 'global sandbox · Vault AGENTS.md' });
   try {
-    const result = await fastRouter.route(ownerText, {
+    const result = await facilitator.facilitate(ownerText, {
       onStart: (provider) => broadcast('pi:event', { kind: 'route', provider, priority: fastRouter.PRIORITY.indexOf(provider) + 1 }),
       onDelta: (delta) => { answer += String(delta); broadcast('pi:event', { kind: 'delta', text: String(delta) }); },
     });
-    answer = result.text || answer;
-    bus.push({ source: 'pi', type: 'say', text: `${result.provider} reply: ${answer.slice(0, 700)}` });
+    answer = result.promptSpecText || (result.questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n') || answer;
+    bus.push({ source: 'pi', type: result.status === 'ready' ? 'result' : 'say', text: `${result.provider} facilitator: ${answer.slice(0, 700)}` });
     broadcast('pi:stats', { turn: { input: 0, output: 0 }, total: null, touched: [], ms: result.latencyMs, provider: result.provider });
-    broadcast('pi:event', { kind: 'agent_end', provider: result.provider, latencyMs: result.latencyMs, fallback: result.fallback });
+    broadcast('pi:event', { kind: 'agent_end', provider: result.provider, latencyMs: result.latencyMs,
+      status: result.status, planHash: result.planHash, cached: !!result.cached });
     if (answer) speak(answer);
   } catch (err) {
     bus.push({ source: 'pi', type: 'warn', text: `Fast route unavailable: ${String(err.message).slice(0, 180)} — local Pi fallback` });
@@ -855,7 +857,7 @@ ipcMain.handle('get-info', () => {
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
     buildId: APP_BUILD_ID,
-    costPolicy: { planning: 'ollama-only', fastPriority: ['claude-code', 'codex', 'glm', 'kimi'], paid: ['claude-code', 'glm', 'kimi'], localOperators: ['codex'], blocked: ['gemini', 'openrouter'] },
+    costPolicy: { planning: ['ollama', 'glm'], paid: ['claude-code', 'glm'], localOperators: ['codex'], blocked: ['gemini', 'kimi', 'openrouter', 'codex-api'] },
     ...bus.snapshot() };
 });
 

@@ -1,7 +1,11 @@
 'use strict';
 const assert = require('assert');
 const router = require('../fast-api-router');
-assert.deepStrictEqual(router.PRIORITY, ['claude-code', 'codex', 'glm', 'kimi']);
-assert.deepStrictEqual(router.availableOrder({ 'claude-code': true, codex: true, glm: false, kimi: true }), ['claude-code', 'codex', 'kimi']);
+assert.deepStrictEqual(router.PRIORITY, ['ollama', 'glm']);
+assert.deepStrictEqual(router.PAID_EXECUTORS, ['claude-code', 'glm']);
+assert.deepStrictEqual(router.availableOrder({ ollama: true, glm: false, codex: true, kimi: true }), ['ollama']);
+for (const blocked of ['codex', 'kimi', 'gemini', 'openrouter']) assert(router.BLOCKED_PAID.includes(blocked));
 assert.deepStrictEqual(router.availableOrder({}), []);
+const fallback = router.fallbackSpec('Implement a safe test');
+assert.equal(fallback.status, 'ready');
 console.log('fast router selftest: PASS');
