@@ -1623,7 +1623,7 @@ setInterval(() => {
     setM('mGraph', 'bGraph', String(galaxyState.count), Math.min(galaxyState.count / 400, 1) * 100);
     document.getElementById('mGraphSub').textContent = `nodes · ${liveLinks} live`;
     const tier = !curModel ? 0 : curModel.includes('preview') ? 1 : curModel.includes('qwen') ? 3 : 2;
-    setM('mTier', 'bTier', curModel ? curModel.split('/').pop().replace('gemini-', '').slice(0, 11) : '—',
+    setM('mTier', 'bTier', curModel ? curModel.split('/').pop().replace('qwen3.5:', 'Qwen ').slice(0, 11) : '—',
       tier ? (4 - tier) / 3 * 100 : 0);
     document.getElementById('mTierSub').textContent = tier === 3 ? 'LOCAL ¥0' : tier ? `T${tier} free` : '';
     setM('mFps', 'bFps', String(fps), Math.min(fps / 120, 1) * 100);

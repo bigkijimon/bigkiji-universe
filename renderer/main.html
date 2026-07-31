@@ -603,7 +603,7 @@
     window.bigkiji.onPtyData((d) => term.write(d));
     setTimeout(doFit, 250); // 起動アニメ完了後に再フィット
     // 下部は既定=NEURALダッシュボード。TERMINALタブで実シェル(xterm)へ切替
-    //（ptyはSHELL入力とclaude/gemini/codex CLI惑星発光の源泉なので廃止しない）
+    // PTYはSHELL入力と許可済みClaude Code/GLM CLIの惑星発光の源泉。
     const dashBody = document.getElementById('dashBody');
     const termPane = document.getElementById('terminal');
     const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm');

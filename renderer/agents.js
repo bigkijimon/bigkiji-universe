@@ -14,13 +14,7 @@
     'glm': { label: 'GLM', short: 'GLM', role: 'GLM approved executor', color: '#8b5cf6',
       path: 'M4 12h16M12 4v16M6 6l12 12M18 6L6 18',
       icon: svg('<path d="M4 12h16M12 4v16M6 6l12 12M18 6L6 18"/>') },
-    'gemini': { label: 'Gemini', short: 'Gemini', role: 'Gemini', color: '#4e8cff',
-      path: 'M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z',
-      icon: svg('<path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/>') },
-    'codex': { label: 'Codex', short: 'Codex', role: 'Codex', color: '#00a67d',
-      path: 'M8 5l-5 7 5 7M16 5l5 7-5 7',
-      icon: svg('<path d="M8 5l-5 7 5 7"/><path d="M16 5l5 7-5 7"/>') },
-    'biglama': { label: 'LocalAI BigLama', short: 'BigLama', role: 'LocalAI', color: '#a78bfa',
+    'biglama': { label: 'Local Qwen', short: 'Qwen', role: 'Local Qwen planner', color: '#a78bfa',
       path: 'M6 6h12v12H6zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3',
       icon: svg('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>') },
     'marble': { label: 'CEO Marble', short: 'Marble', role: 'School', color: '#34d399',
@@ -50,7 +44,7 @@
   window.I18N = {
     en: {
       hint: 'TAP THE ORB → TYPE COMMAND ｜ ⌥SPACE TO SUMMON',
-      ph_ai: 'Ask BigKiji (Gemini · fast cloud)…  ⏎ to send',
+      ph_ai: 'Ask BigKiji (Local Qwen · planning)…  ⏎ to send',
       ph_shell: 'Shell command…  ⏎ runs in terminal',
       stream: 'LIVE PROCESS STREAM',
       eventlog: 'SYNAPSE EVENT LOG',
@@ -69,7 +63,7 @@
     },
     ja: {
       hint: 'TAP THE ORB → 指示入力 ｜ ⌥SPACE で呼び出し',
-      ph_ai: 'BigKiji（Gemini・高速クラウド）へ指示… ⏎で送信',
+      ph_ai: 'BigKiji（ローカルQwen・計画）へ指示… ⏎で送信',
       ph_shell: 'シェルコマンド… ⏎でターミナル実行',
       stream: 'LIVE PROCESS STREAM',
       eventlog: 'SYNAPSE EVENT LOG',

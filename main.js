@@ -474,7 +474,7 @@ ipcMain.handle('save-recording', (_e, buf) => {
   return f;
 });
 
-// ---------- Pi RPC（Core=Pi・高速クラウドGemini。機械作業はgruntサブエージェント=ローカル¥0） ----------
+// ---------- Pi RPC（Core=Pi・計画はローカルQwen。確定実行のみClaude Code/GLM） ----------
 const pi = new PiBridge();
 let piTurnOpen = false;
 let piTouched = new Set();
