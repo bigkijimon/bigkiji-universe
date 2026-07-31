@@ -18,7 +18,7 @@ const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
 const fastRouter = require('./fast-api-router');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'particle-net-v2';
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'focus-stream-v3';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -157,6 +157,26 @@ function sandboxTopology() {
 
 // fs.watch（FSEvents・再帰）: 実際に触られたファイルをリアルタイムで可視化へ
 const touchQueue = new Set();
+async function refreshVaultPaths(paths) {
+  let changed = false;
+  for (const raw of paths) {
+    const rel = String(raw || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!rel || VAULT_EXCLUDE.test(rel) || rel.split('/').some((part) => part.startsWith('.'))) continue;
+    const absolute = path.resolve(VAULT, rel);
+    if (!absolute.startsWith(path.resolve(VAULT) + path.sep)) continue;
+    const index = vaultFiles.findIndex((file) => file.p === rel);
+    try {
+      const stat = await fs.promises.stat(absolute);
+      if (!stat.isFile()) continue;
+      const next = { p: rel, c: rel.split('/')[0], t: stat.mtimeMs, size: stat.size };
+      if (index >= 0) vaultFiles[index] = next; else vaultFiles.push(next);
+      changed = true;
+    } catch (_) {
+      if (index >= 0) { vaultFiles.splice(index, 1); changed = true; }
+    }
+  }
+  if (changed) broadcast('vault:files', vaultFiles);
+}
 function startVaultWatch() {
   try {
     fs.watch(VAULT, { recursive: true }, (_ev, fname) => {
@@ -171,6 +191,8 @@ function startVaultWatch() {
     const paths = [...touchQueue].slice(0, 6);
     touchQueue.clear();
     broadcast('vault:touch', paths);
+    // Incremental metadata refresh avoids a 4,200-file rescan on every edit.
+    refreshVaultPaths(paths).catch((error) => bus.push({ source: 'system', type: 'degrade', text: `Vault refresh failed: ${error.message}` }));
     for (const rel of paths.slice(0, 3)) {
       const agent = COMPANY_AGENT[rel.split('/')[0]] ?? null;
       bus.push({ source: 'vault', agent, type: 'fs', text: `✎ ${rel.slice(0, 110)}` });
@@ -835,7 +857,10 @@ ipcMain.handle('file:detail', async (_e, relPath) => {
   let promptSummary = 'No prompt context recorded';
   if (/\.(md|json)$/i.test(rel)) {
     try {
-      const head = (await fs.promises.readFile(absolute, { encoding: 'utf8' })).replace(/\s+/g, ' ').trim();
+      const handle = await fs.promises.open(absolute, 'r');
+      const buffer = Buffer.alloc(Math.min(st.size, 8192));
+      try { await handle.read(buffer, 0, buffer.length, 0); } finally { await handle.close(); }
+      const head = buffer.toString('utf8').replace(/\s+/g, ' ').trim();
       if (head) promptSummary = head.slice(0, 180);
     } catch (_) {}
   }

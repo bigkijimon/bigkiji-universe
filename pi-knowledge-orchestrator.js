@@ -50,7 +50,7 @@ function rememberPlan(task, plan, decisions = []) {
   const state = loadState();
   const item = { taskId: task.id, promptHash: task.promptHash, planHash: hash(plan),
     plan: cleanText(plan, 5000), decisions: decisions.map((x) => cleanText(x, 300)),
-    executorPolicy: ['claude-code', 'glm'], planningPolicy: 'ollama-only', status: 'planned',
+    executorPolicy: ['claude-code', 'glm'], planningPolicy: 'local-qwen-with-glm-fallback', status: 'planned',
     savedAt: new Date().toISOString() };
   state.plans = [...state.plans.filter((p) => p.promptHash !== item.promptHash), item].slice(-100);
   state.tasks = [...state.tasks.filter((t) => t.id !== task.id), { ...task, planHash: item.planHash }].slice(-100);
