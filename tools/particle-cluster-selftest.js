@@ -1,4 +1,11 @@
 'use strict';
 const assert = require('assert');
-assert.equal(/buildAgentHole|全AI＝ブラックホール/.test(require('fs').readFileSync(require('path').join(__dirname, '..', 'renderer', 'synapse.js'), 'utf8')), false);
+const fs = require('fs');
+const path = require('path');
+const synapse = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'synapse.js'), 'utf8');
+const cluster = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'particle-cluster.js'), 'utf8');
+assert.equal(/buildAgentHole|全AI＝ブラックホール/.test(synapse), false);
+assert.match(cluster, /index < this\.count/);
+assert.match(cluster, /new THREE\.LineSegments/);
+assert.doesNotMatch(cluster, /new THREE\.Line\(/);
 console.log('particle cluster policy selftest: PASS');

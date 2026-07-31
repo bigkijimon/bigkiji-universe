@@ -38,8 +38,10 @@ export class CoreInflowSynapse {
       this.spawn(from, core, event.color || '#34d399', 'inflow');
     }
     if (kind === 'degrade' || kind === 'tool_end' && event.isError) {
-      const from = getTarget?.(event) || core.clone().multiplyScalar(0.7);
-      this.spawn(core, from, '#fb7185', 'error');
+      // Errors are red inflow as well; nothing radiates outward from Core.
+      const target = getTarget?.(event) || core;
+      const from = target.clone().multiplyScalar(1.8 + Math.random());
+      this.spawn(from, core, '#fb7185', 'error');
     }
   }
   update(now = performance.now(), reduced = false) {

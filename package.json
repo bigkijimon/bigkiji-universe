@@ -11,6 +11,8 @@
     "test:cost-policy": "node tools/cost-policy-selftest.js",
     "test:fast-router": "node tools/fast-router-selftest.js",
     "test:particle-cluster": "node tools/particle-cluster-selftest.js",
+    "test:ui-3d": "node tools/ui-3d-selftest.js",
+    "test:interaction": "node tools/interaction-selftest.mjs",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },

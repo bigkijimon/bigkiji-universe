@@ -45,16 +45,23 @@ export class ParticleCluster {
     this.group.add(this.mesh);
     this.mesh.userData.cluster = this;
 
-    this.links = [];
-    for (let i = 0; i < Math.min(18, this.count - 1); i++) {
-      const j = (i * 7 + 11) % this.count;
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-      const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
-        color: this.color, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false,
-      }));
-      this.group.add(line); this.links.push({ line, a: i, b: j, phase: this.phase[i] });
+    // One connected spanning membrane. Every cell participates, while a single
+    // LineSegments draw call keeps the network cheaper than dozens of objects.
+    this.networkSegments = 4;
+    this.networkEdges = [];
+    for (let index = 1; index < this.count; index++) {
+      const parent = Math.floor(this.hash(index + 71) * index);
+      this.networkEdges.push({ a: index, b: parent, phase: this.phase[index], bend: (this.hash(index + 91) - 0.5) * 0.24 });
     }
+    const networkPositions = new Float32Array(this.networkEdges.length * this.networkSegments * 2 * 3);
+    const networkGeometry = new THREE.BufferGeometry();
+    networkGeometry.setAttribute('position', new THREE.BufferAttribute(networkPositions, 3));
+    this.networkMaterial = new THREE.LineBasicMaterial({
+      color: this.color, transparent: true, opacity: 0.27, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.network = new THREE.LineSegments(networkGeometry, this.networkMaterial);
+    this.network.frustumCulled = false;
+    this.group.add(this.network);
   }
 
   hash(n) {
@@ -75,21 +82,29 @@ export class ParticleCluster {
     this.points.geometry.attributes.position.needsUpdate = true;
     this.material.opacity = 0.58 + energy * 0.22;
     this.material.size = 0.07 + energy * 0.018;
-    for (const link of this.links) {
-      const a = link.a * 3, b = link.b * 3;
-      link.line.geometry.attributes.position.array.set([
-        positions[a], positions[a + 1], positions[a + 2], positions[b], positions[b + 1], positions[b + 2],
-      ]);
-      link.line.geometry.attributes.position.needsUpdate = true;
-      link.line.material.opacity = (0.16 + energy * 0.24) * (0.65 + 0.35 * Math.sin(t * 1.6 + link.phase));
+    const networkPositions = this.network.geometry.attributes.position.array;
+    let cursor = 0;
+    for (const edge of this.networkEdges) {
+      const a = edge.a * 3, b = edge.b * 3;
+      for (let segment = 0; segment < this.networkSegments; segment++) {
+        for (let endpoint = 0; endpoint < 2; endpoint++) {
+          const ratio = (segment + endpoint) / this.networkSegments;
+          const arc = Math.sin(ratio * Math.PI) * edge.bend;
+          networkPositions[cursor++] = THREE.MathUtils.lerp(positions[a], positions[b], ratio) + arc * Math.sin(edge.phase);
+          networkPositions[cursor++] = THREE.MathUtils.lerp(positions[a + 1], positions[b + 1], ratio) + arc;
+          networkPositions[cursor++] = THREE.MathUtils.lerp(positions[a + 2], positions[b + 2], ratio) + arc * Math.cos(edge.phase);
+        }
+      }
     }
+    this.network.geometry.attributes.position.needsUpdate = true;
+    this.networkMaterial.opacity = (0.14 + energy * 0.2) * (0.78 + 0.22 * Math.sin(t * 1.6 + this.seed));
     this.group.rotation.y += reduced ? 0 : delta * (0.018 + energy * 0.018);
   }
 
   dispose() {
     this.points.geometry.dispose(); this.material.dispose();
     this.mesh.geometry.dispose(); this.mesh.material.dispose();
-    for (const link of this.links) { link.line.geometry.dispose(); link.line.material.dispose(); }
+    this.network.geometry.dispose(); this.networkMaterial.dispose();
     this.group.parent?.remove(this.group);
   }
 }

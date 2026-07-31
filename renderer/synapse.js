@@ -9,6 +9,7 @@ import { Roadmap3D } from './roadmap-3d.js';
 import { ViralMembrane } from './viral-membrane.js';
 import { FileDetailPopup } from './file-detail-popup.js';
 import { ParticleCluster } from './particle-cluster.js';
+import { SmoothFocusController } from './camera-controls.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -115,16 +116,41 @@ const roundTex = (() => {
   g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(c);
 })();
-function buildFileGalaxy(files) {
-  if (!files || !files.length) return;
-  for (const k in fileClouds) {
-    scene.remove(fileClouds[k].grp);
-    if (fileClouds[k].rootLink) scene.remove(fileClouds[k].rootLink.obj);
-    fileClouds[k].membrane?.dispose();
-    delete fileClouds[k];
+function disposeObject(root) {
+  root?.traverse((object) => {
+    object.geometry?.dispose?.();
+    if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose?.());
+    else object.material?.dispose?.();
+  });
+  root?.parent?.remove(root);
+}
+function clearFileGalaxy() {
+  for (const key in fileClouds) {
+    const cloud = fileClouds[key];
+    cloud.membrane?.dispose();
+    disposeObject(cloud.rootLink?.obj);
+    disposeObject(cloud.grp);
+    delete fileClouds[key];
   }
   galaxyState.map = {};
   galaxyState.pointsList = [];
+  galaxyState.count = 0;
+}
+function buildFileGalaxy(files) {
+  if (!files) return;
+  if (!files.length) { clearFileGalaxy(); return; }
+  // mtime/size-only updates are common during coding. Keep existing GPU
+  // geometry when the path set is unchanged; rebuilding thousands of tubes on
+  // every save was the main renderer-side interaction stall.
+  if (galaxyState.count === files.length && files.every((file) => galaxyState.map[file.p])) {
+    const updates = new Map(files.map((file) => [file.p, file]));
+    for (const cloud of Object.values(fileClouds)) {
+      cloud.files.forEach((file, index) => { cloud.files[index] = updates.get(file.p) || file; });
+      cloud.points.userData.files = cloud.files;
+    }
+    return;
+  }
+  clearFileGalaxy();
   galaxyState.count = files.length;
   const groups = {};
   for (const f of files) {
@@ -205,44 +231,10 @@ function buildCloud(key, files) {
   grp.add(points);
   galaxyState.pointsList.push(points);
 
-  // Obsidian風の糸: 中心→L1→L2→ファイル（親→子の階層エッジ）
-  // 幹線は配下ファイル数（=関係の濃さ）に応じて1〜3本の並走線で太く見せる
+  // Straight LineSegments are deliberately absent. The hierarchy is rendered
+  // only by the curved ViralMembrane tubes built below.
   const hubKeys = Object.keys(hub);
-  const eN = N + hubKeys.length * 3;
-  const ep = new Float32Array(eN * 6), ec = new Float32Array(eN * 6);
-  let k = 0;
-  const pushEdge = (ax, ay, az, b, color) => {
-    ep.set([ax, ay, az, b.x, b.y, b.z], k * 6);
-    ec.set([color.r, color.g, color.b, color.r, color.g, color.b], k * 6);
-    k++;
-  };
   const center = new THREE.Vector3(0, 0, 0);
-  for (const hk of hubKeys) {
-    const h = hub[hk];
-    const parentKey = h.userData.depth === 2 ? hk.split('/').slice(0, -1).join('/') : null;
-    const parent = parentKey && hub[parentKey] ? hub[parentKey] : center;
-    const w = hubFiles[hk] || 1;
-    const col = new THREE.Color((COMPANY_META[h.userData.c] || [0, '#8fa89c'])[1])
-      .lerp(new THREE.Color('#ffffff'), Math.min(0.45, w / 80)); // 配下ファイルが多い幹ほど強く光って目立つ
-    const lines = 1 + (w > 8 ? 1 : 0) + (w > 30 ? 1 : 0); // 実ファイル数で本数が増える
-    for (let li = 0; li < lines; li++) {
-      const off = li === 0 ? 0 : (li === 1 ? 0.022 : -0.022);
-      pushEdge(h.x + off, h.y + off, h.z - off, parent, col);
-    }
-  }
-  files.forEach((f, i) => {
-    const h = leafHub[i] || center;
-    pushEdge(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], h,
-      new THREE.Color((COMPANY_META[f.c] || [0, '#8fa89c'])[1]).multiplyScalar(0.65));
-  });
-  const egeo = new THREE.BufferGeometry();
-  egeo.setAttribute('position', new THREE.BufferAttribute(ep, 3));
-  egeo.setAttribute('color', new THREE.BufferAttribute(ec, 3));
-  const edgeMat = new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  grp.add(new THREE.LineSegments(egeo, edgeMat));
 
   // フォルダハブ（結節点・少し大きい粒）
   const hp = new Float32Array(hubKeys.length * 3), hc = new Float32Array(hubKeys.length * 3);
@@ -307,7 +299,7 @@ function buildCloud(key, files) {
     membrane.addStrand([h.clone(), mid, leaf], 1);
   }
 
-  fileClouds[key] = { grp, points, ptsMat, hubMat, edgeMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
+  fileClouds[key] = { grp, points, ptsMat, hubMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
 
   // 常設シナプス束（v11全結合）: 雲の根→担当BHを繋ぐミニ筋繊維束。LODで消えないため、
   // 全ファイル網が「オーケストレーションのシナプスに常時結合している」ことが遠景でも読める。
@@ -520,7 +512,15 @@ const eventTarget = (evt) => {
   return id && nodes[id] ? nodes[id].grp.position.clone() : corePosition().multiplyScalar(1.4);
 };
 const fxFiles = new Set();
+let fxInventoryReady = false;
 window.bigkiji.onVaultFiles((files) => {
+  // Initial inventory is not a creation event. Seed the local set silently so
+  // Genesis flashes remain evidence of files that appeared after startup.
+  if (!fxInventoryReady) {
+    for (const f of files || []) fxFiles.add(f.p);
+    fxInventoryReady = true;
+    return;
+  }
   for (const f of files || []) {
     if (fxFiles.has(f.p)) continue;
     fxFiles.add(f.p);
@@ -1404,18 +1404,27 @@ const balls = ids.map((id) => nodes[id].orb.mesh);
 let hoverId = null;
 let hoverFile = null;
 let hoverPoint = { x: 0, y: 0 };
-renderer.domElement.addEventListener('pointermove', (e) => {
+function pickAt(e) {
   const r = wrap.getBoundingClientRect();
   mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(mouse, camera);
-  const hit = raycaster.intersectObjects(balls, false)[0];
-  const id = hit ? hit.object.userData.agentId : null;
-  // 惑星ヒットなし＆ファイル銀河展開時: 実ファイル粒子のhover（粒＝実ファイルの証明）
-  if (!id && galaxyO > 0.3 && galaxyState.pointsList.length) {
-    raycaster.params.Points = { threshold: 0.16 };
-    const fh = raycaster.intersectObjects(galaxyState.pointsList, false)[0];
-    if (fh && fh.object.userData.files[fh.index]) {
-      const f = fh.object.userData.files[fh.index];
+  // Check real file particles before the larger department hit volumes. This
+  // makes the same operation reliable for mouse click, touch and trackpad tap.
+  raycaster.params.Points = { threshold: 0.19 };
+  const fileHit = galaxyState.pointsList.length ? raycaster.intersectObjects(galaxyState.pointsList, false)[0] : null;
+  if (fileHit && fileHit.object.userData.files[fileHit.index]) {
+    return { kind: 'file', file: fileHit.object.userData.files[fileHit.index], key: fileHit.object.userData.key, index: fileHit.index, rect: r };
+  }
+  const clusterHit = raycaster.intersectObjects(balls, false)[0];
+  return { kind: clusterHit ? 'cluster' : 'background', id: clusterHit?.object.userData.agentId || null, rect: r };
+}
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const picked = pickAt(e);
+  const r = picked.rect;
+  const id = picked.id;
+  if (picked.kind === 'file') {
+      const f = picked.file;
       const [label, color] = COMPANY_META[f.c] || [f.c, '#9fb8ac'];
       tip.innerHTML = '<div class="t" style="color:' + color + '"><span style="color:var(--ink)">📄 ' +
         f.p.split('/').pop() + '</span></div>' +
@@ -1426,11 +1435,9 @@ renderer.domElement.addEventListener('pointermove', (e) => {
       hoverId = null;
       hoverFile = { ...f, color };
       hoverPoint = { x: e.clientX, y: e.clientY };
-      hoverCloudKey = fh.object.userData.key; // 局所拡大（レンズ）
-      setFocus(fh.object.userData.key, fh.index); // 接続チェーンを明示
+      hoverCloudKey = picked.key; // 局所拡大（レンズ）
+      setFocus(picked.key, picked.index); // 接続チェーンを明示
       return;
-    }
-    tip.classList.remove('on');
   }
   hoverCloudKey = id || null; // 惑星hover=その雲をレンズ拡大
   hoverFile = null;
@@ -1452,16 +1459,28 @@ renderer.domElement.addEventListener('pointerleave', () => {
   hoverId = null; hoverFile = null; hoverCloudKey = null; clearFocus();
   tip.classList.remove('on'); renderer.domElement.style.cursor = '';
 });
-renderer.domElement.addEventListener('click', () => {
-  if (hoverFile) {
-    const ref = galaxyState.map[hoverFile.p];
+renderer.domElement.addEventListener('click', (event) => {
+  const picked = pickAt(event);
+  hoverPoint = { x: event.clientX, y: event.clientY };
+  if (picked.kind === 'file') {
+    const file = picked.file;
+    const ref = galaxyState.map[file.p];
     if (ref) focusCloud(ref.key, ref.i, false);
-    filePopup.open(hoverFile, hoverPoint);
-  } else if (hoverId) { filter = filter === hoverId ? null : hoverId; applyFilter(); focusAgent(hoverId); }
+    filePopup.open({ ...file, color: (COMPANY_META[file.c] || [0, '#34d399'])[1] }, hoverPoint);
+  } else if (picked.kind === 'cluster') {
+    filter = filter === picked.id ? null : picked.id;
+    applyFilter(); focusAgent(picked.id);
+  } else {
+    filePopup.close(); cameraFocus.reset(); clearFocus();
+  }
 });
-renderer.domElement.addEventListener('dblclick', () => {
-  if (hoverFile) { const ref = galaxyState.map[hoverFile.p]; if (ref) focusCloud(ref.key, ref.i, true); }
-  else if (hoverId) focusAgent(hoverId, true);
+renderer.domElement.addEventListener('dblclick', (event) => {
+  const picked = pickAt(event);
+  if (picked.kind === 'file') {
+    const ref = galaxyState.map[picked.file.p];
+    if (ref) focusCloud(ref.key, ref.i, true);
+    filePopup.open({ ...picked.file, color: (COMPANY_META[picked.file.c] || [0, '#34d399'])[1] }, { x: event.clientX, y: event.clientY });
+  } else if (picked.kind === 'cluster') focusAgent(picked.id, true);
 });
 
 // ---------- 博物館プレート（近景LOD・実データ展示） ----------
@@ -1691,17 +1710,23 @@ resize();
 // ---------- オートカメラ演出: 伝達が始まったオーブへズームし、次の伝達へ乗り移る ----------
 let autoCam = !location.hash; // 検証用プリセット(#mid/#near/#side)起動時はドローンを止めて固定画角
 let camFocusId = null, camFocusUntil = 0, camLastSwitch = 0;
-let manualFocusPoint = null, manualFocusDistance = null;
+const cameraFocus = new SmoothFocusController(camera, controls, { home: new THREE.Vector3(0, 0, 0), homeDistance: 11.5 });
 function focusCloud(key, index, deep = false) {
   const cl = fileClouds[key]; if (!cl) return;
-  const p = cl.points.geometry.attributes.position.array;
-  manualFocusPoint = new THREE.Vector3(p[index * 3], p[index * 3 + 1], p[index * 3 + 2]).add(cl.grp.position);
-  manualFocusDistance = deep ? 3.9 : 5.8;
-  disableAutoCam(); filePopup.close();
+  const selectedPath = cl.files[index]?.p;
+  cameraFocus.focus(() => {
+    const current = fileClouds[key];
+    const currentIndex = selectedPath ? galaxyState.map[selectedPath]?.i : index;
+    if (!current || currentIndex == null) return null;
+    const p = current.points.geometry.attributes.position.array;
+    const worldPoint = new THREE.Vector3(p[currentIndex * 3], p[currentIndex * 3 + 1], p[currentIndex * 3 + 2]);
+    return current.grp.localToWorld(worldPoint);
+  }, deep ? 2.8 : 4.4);
+  disableAutoCam();
 }
 function focusAgent(id, deep = false) {
   const nd = nodes[id]; if (!nd) return;
-  manualFocusPoint = nd.grp.position.clone(); manualFocusDistance = deep ? 4.2 : 6.0;
+  cameraFocus.focus(() => nodes[id]?.grp.position.clone() || null, deep ? 3.2 : 5.2);
   disableAutoCam(); filePopup.close();
 }
 const autoCamBtn = document.getElementById('autoCamBtn');
@@ -1745,7 +1770,11 @@ viewsEl.addEventListener('click', (e) => {
   for (const c of viewsEl.children) { if (c.id !== 'autoCamBtn') c.classList.toggle('on', c === b); }
 });
 renderer.domElement.addEventListener('wheel', () => { targetDist = null; disableAutoCam(); }, { passive: true });
-renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); manualFocusPoint = null; manualFocusDistance = null; });
+renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); });
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  filePopup.close(); clearFocus(); cameraFocus.reset();
+});
 
 let galaxyO = 0, museumO = 0;
 const UP_Y = new THREE.Vector3(0, 1, 0);
@@ -1766,12 +1795,7 @@ const clock = new THREE.Clock();
     camera.position.multiplyScalar(next / len);
     if (Math.abs(next - targetDist) < 0.15) targetDist = null;
   }
-  if (manualFocusPoint && manualFocusDistance) {
-    controls.target.lerp(manualFocusPoint, 1 - Math.exp(-5.5 * delta));
-    const direction = camera.position.clone().sub(controls.target).normalize();
-    const distance = THREE.MathUtils.damp(camera.position.distanceTo(controls.target), manualFocusDistance, 4.5, delta);
-    camera.position.copy(controls.target).add(direction.multiplyScalar(distance));
-  }
+  cameraFocus.update(delta);
   // オートカメラ＝ドローン飛行: 常時ゆっくり旋回し、乗り移り時は旋回を強め
   // 高度をふわっと上げてから弧を描いて新しいオーブへ降りる。全景復帰は螺旋で引き上がる。
   if (autoCam) {
@@ -1791,7 +1815,7 @@ const clock = new THREE.Clock();
       controls.target.y + drone.rad * Math.cos(pol),
       controls.target.z + drone.rad * Math.sin(pol) * Math.sin(drone.azi));
   }
-  controls.autoRotate = !reduced && !autoCam; // OrbitControlsの自動回転は手動時のみ（ドローンと競合させない）
+  controls.autoRotate = !reduced && !autoCam && !cameraFocus.active;
   const dist = camera.position.distanceTo(controls.target); // LODは注視点との距離で判定（追尾中も正しく展開）
 
   // LOD（v9反転）: 既定=惑星系。拡大(dist<8.5)でファイル銀河が展開・(<7)で博物館
@@ -1808,7 +1832,6 @@ const clock = new THREE.Clock();
     cl.membrane?.update(t, Math.max(galaxyO, 0.06), cl.boost);
     // v11全結合: ハブ/幹線は全LODで微発光を維持（葉粒だけLODゲート＝負荷対策）
     cl.hubMat.opacity = Math.max(galaxyO * 0.8, 0.22) * (1 + cl.boost * 0.4);
-    cl.edgeMat.opacity = 0; // legacy straight tree is replaced by ViralMembrane strands
     const nd = nodes[k];
     if (nd) { // 雲は自惑星の足元に追従
       cl.grp.position.set(nd.grp.position.x, nd.grp.position.y - 0.62, nd.grp.position.z);
