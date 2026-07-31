@@ -9,7 +9,7 @@ import { Roadmap3D } from './roadmap-3d.js';
 import { ViralMembrane } from './viral-membrane.js';
 import { FileDetailPopup } from './file-detail-popup.js';
 import { ParticleCluster } from './particle-cluster.js';
-import { SmoothFocusController } from './camera-controls.js';
+import { SmoothFocusController, zoomAroundPoint } from './camera-controls.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -32,11 +32,11 @@ else camera.position.set(0, 4.5, 10.5);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-// Motion-safe camera: no ambient drift and no gesture inertia. Explicit
-// cluster/file focus and the three view buttons are the only camera movement.
+// Motion-safe camera: no ambient drift or rotation. Explicit cluster/file
+// focus, cursor-centred wheel zoom and the three view buttons may move it.
 controls.autoRotate = false;
 controls.enableRotate = false;
-controls.enablePan = false;
+controls.enablePan = true;
 controls.enableZoom = false;
 controls.minDistance = 2.6; controls.maxDistance = 34;
 
@@ -1417,10 +1417,12 @@ function pickAt(e) {
   raycaster.params.Points = { threshold: 0.19 };
   const fileHit = galaxyState.pointsList.length ? raycaster.intersectObjects(galaxyState.pointsList, false)[0] : null;
   if (fileHit && fileHit.object.userData.files[fileHit.index]) {
-    return { kind: 'file', file: fileHit.object.userData.files[fileHit.index], key: fileHit.object.userData.key, index: fileHit.index, rect: r };
+    return { kind: 'file', file: fileHit.object.userData.files[fileHit.index], key: fileHit.object.userData.key,
+      index: fileHit.index, point: fileHit.point.clone(), rect: r };
   }
   const clusterHit = raycaster.intersectObjects(balls, false)[0];
-  return { kind: clusterHit ? 'cluster' : 'background', id: clusterHit?.object.userData.agentId || null, rect: r };
+  return { kind: clusterHit ? 'cluster' : 'background', id: clusterHit?.object.userData.agentId || null,
+    point: clusterHit?.point?.clone() || null, rect: r };
 }
 
 renderer.domElement.addEventListener('pointermove', (e) => {
@@ -1475,7 +1477,8 @@ renderer.domElement.addEventListener('click', (event) => {
     filter = filter === picked.id ? null : picked.id;
     applyFilter(); focusAgent(picked.id);
   } else {
-    filePopup.close(); cameraFocus.reset(); clearFocus();
+    // Background selection dismisses detail without snapping back to Core.
+    filePopup.close(); cameraFocus.cancel(); clearFocus();
   }
 });
 renderer.domElement.addEventListener('dblclick', (event) => {
@@ -1726,8 +1729,8 @@ function focusAgent(id, deep = false) {
   filePopup.close();
 }
 const autoCamBtn = document.getElementById('autoCamBtn');
-autoCamBtn.textContent = '📷 LOCK';
-autoCamBtn.title = 'Motion-safe camera lock: click a particle for one intentional focus transition';
+autoCamBtn.textContent = '📷 MANUAL';
+autoCamBtn.title = 'No automatic camera motion · wheel zooms toward the pointer';
 autoCamBtn.classList.add('on');
 autoCamBtn.disabled = true;
 function autoFocusOn() { /* transmission events never move the locked camera */ }
@@ -1743,7 +1746,28 @@ viewsEl.addEventListener('click', (e) => {
   targetDist = +b.dataset.d;
   for (const c of viewsEl.children) { if (c.id !== 'autoCamBtn') c.classList.toggle('on', c === b); }
 });
-renderer.domElement.addEventListener('wheel', () => { targetDist = null; disableAutoCam(); }, { passive: true });
+const zoomPlane = new THREE.Plane();
+const zoomAnchor = new THREE.Vector3();
+const viewNormal = new THREE.Vector3();
+renderer.domElement.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  targetDist = null;
+  cameraFocus.cancel(); // stop a previous file focus from pulling the camera back
+  const picked = pickAt(event);
+  let anchor = picked.point;
+  if (!anchor) {
+    camera.getWorldDirection(viewNormal);
+    zoomPlane.setFromNormalAndCoplanarPoint(viewNormal, controls.target);
+    anchor = raycaster.ray.intersectPlane(zoomPlane, zoomAnchor);
+  }
+  if (!anchor) return;
+  const wheelDelta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaMode === 2 ? event.deltaY * innerHeight : event.deltaY;
+  const scale = Math.exp(THREE.MathUtils.clamp(wheelDelta, -240, 240) * 0.0015);
+  // Scale both camera and target around the world point under the pointer. The
+  // point therefore remains under the cursor while zooming in and out.
+  zoomAroundPoint(camera, controls.target, anchor, scale, 2.2, 34);
+  controls.update();
+}, { passive: false });
 renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); });
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;

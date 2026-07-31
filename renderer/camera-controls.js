@@ -1,5 +1,16 @@
 import * as THREE from 'three';
 
+export function zoomAroundPoint(camera, target, anchor, scale, minimum = 2.2, maximum = 34) {
+  if (!camera || !target || !anchor || !Number.isFinite(scale) || scale <= 0) return null;
+  const currentDistance = camera.position.distanceTo(target);
+  if (currentDistance < 0.0001) return null;
+  const desiredDistance = THREE.MathUtils.clamp(currentDistance * scale, minimum, maximum);
+  const ratio = desiredDistance / currentDistance;
+  camera.position.sub(anchor).multiplyScalar(ratio).add(anchor);
+  target.sub(anchor).multiplyScalar(ratio).add(anchor);
+  return { distance: desiredDistance, ratio };
+}
+
 // Smooth focus layer for OrbitControls. A selected world point becomes the
 // camera target; no frame ever snaps back to BigKiji Core while focus is active.
 export class SmoothFocusController {

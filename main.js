@@ -18,7 +18,7 @@ const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
 const fastRouter = require('./fast-api-router');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'resize-lock-v4';
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'resize-manual-v5';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了

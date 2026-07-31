@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { SmoothFocusController } from '../renderer/camera-controls.js';
+import { SmoothFocusController, zoomAroundPoint } from '../renderer/camera-controls.js';
 import { CoreInflowSynapse } from '../renderer/core-inflow-synapse.js';
 
 const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 300);
@@ -15,6 +15,15 @@ assert(Math.abs(camera.position.distanceTo(orbit.target) - 4.4) < 0.02, 'camera 
 tracked = new THREE.Vector3(-3, 2, 1);
 for (let index = 0; index < 180; index++) focus.update(1 / 60);
 assert(orbit.target.distanceTo(tracked) < 0.01, 'camera must continue following an orbiting cluster');
+
+camera.position.set(0, 0, 10);
+orbit.target.set(0, 0, 0);
+const anchor = new THREE.Vector3(5, 0, 0);
+const zoom = zoomAroundPoint(camera, orbit.target, anchor, 0.5);
+assert.equal(zoom.distance, 5);
+assert.equal(camera.position.distanceTo(orbit.target), 5, 'cursor zoom must change camera distance');
+assert(camera.position.equals(new THREE.Vector3(2.5, 0, 5)), 'camera must scale around the pointer anchor');
+assert(orbit.target.equals(new THREE.Vector3(2.5, 0, 0)), 'target must scale around the same anchor');
 
 const scene = new THREE.Scene();
 const inflow = new CoreInflowSynapse(scene, { maxParticles: 16 });
