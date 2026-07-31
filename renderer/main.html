@@ -66,7 +66,7 @@
   #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; }
 
   .main-content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  .term-container { flex: none; height: 40%; display: flex; flex-direction: column; }
+  .term-container { flex: none; height: 40vh; min-height: 240px; display: flex; flex-direction: column; }
   #canvasWrap canvas { display: block; }
 
   /* HUDコーナーブラケット（SpaceX管制風の枠） */
@@ -348,15 +348,17 @@
 
   /* NEURAL DASHBOARD（v11）: ログ垂れ流しの代替。ガラスネイビー＋グロー縁
      （backdrop-filterはvibrancy禁則のため不使用・家の様式=rgbaティント+hairline+inset光） */
-  .term { flex: none; height: 158px; margin: 0 14px 14px; display: flex; flex-direction: column;
-    background: linear-gradient(180deg, rgba(8,16,28,.88), rgba(4,9,18,.93));
+  .term { flex: 1; min-height: 0; height: 100%; margin: 0 14px 14px; display: flex; flex-direction: column;
+    background: rgba(8,12,20,.88);
     border: 1px solid color-mix(in srgb, var(--em) 24%, transparent); border-radius: 12px;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 34px -14px rgba(52,211,153,.5);
-    overflow: hidden; transition: height .24s cubic-bezier(.2,.8,.2,1); }
-  .term.tall { height: 272px; }
+    -webkit-backdrop-filter: blur(24px) saturate(1.2); backdrop-filter: blur(24px) saturate(1.2);
+    overflow: hidden; }
   .term .bar { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 12px;
     border-bottom: 1px solid var(--hairline); cursor: pointer; }
-  .term .tabs { display: flex; gap: 4px; }
+  .term .tabs { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .task-stream-tabs { display: flex; gap: 4px; max-width: min(38vw, 520px); overflow-x: auto; scrollbar-width: none; }
+  .task-stream-tabs::-webkit-scrollbar { display: none; }
   .term .tab { font: 700 9.5px "SF Mono", Menlo, monospace; letter-spacing: .1em; color: var(--label);
     background: rgba(255,255,255,.04); border: 1px solid transparent; border-radius: 7px;
     padding: 3px 9px; cursor: pointer;
@@ -365,6 +367,10 @@
   .term .tab:active { transform: scale(0.97); }
   .term .tab.on { color: var(--em); background: color-mix(in srgb, var(--em) 13%, transparent);
     border-color: color-mix(in srgb, var(--em) 32%, transparent); }
+  .task-tab { display: inline-flex; align-items: center; gap: 5px; text-transform: uppercase; }
+  .task-tab i { width: 5px; height: 5px; border-radius: 50%; background: var(--em); opacity: .45; }
+  .task-tab[data-state="running"] i { opacity: 1; box-shadow: 0 0 8px var(--em); animation: linkPulse 1s ease-in-out infinite; }
+  .task-tab[data-state="failed"] i, .task-tab[data-state="blocked"] i { background: #fb7185; }
   /* STAGE: ロードマップ現在地（実ターンライフサイクル駆動）＋進捗バー */
   #stageWrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   #stageLine { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -420,6 +426,15 @@
   #terminal { flex: 1; padding: 6px 10px; min-height: 0; }
   #terminal .xterm-viewport { background: transparent !important; }
   #terminal .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+  #taskStreams { flex: 1; min-height: 0; overflow: auto; padding: 10px 13px 14px;
+    color: #e7fff4; font: 12px/1.55 "JetBrains Mono", "SF Mono", Menlo, monospace;
+    background: linear-gradient(180deg, rgba(2,8,15,.22), rgba(2,8,15,.5)); }
+  #taskStreams::-webkit-scrollbar { width: 5px; } #taskStreams::-webkit-scrollbar-thumb { background: rgba(52,211,153,.26); border-radius: 8px; }
+  #taskStreams pre { margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; color: rgba(231,255,244,.91); }
+  .task-stream-head { position: sticky; top: -10px; display: flex; align-items: center; gap: 9px; padding: 7px 0;
+    color: var(--task-color); background: rgba(8,12,20,.96); border-bottom: 1px solid color-mix(in srgb, var(--task-color) 25%, transparent); }
+  .task-stream-head span { font-weight: 800; letter-spacing: .12em; } .task-stream-head b { font-size: 9px; text-transform: uppercase; }
+  .task-stream-head code { margin-left: auto; color: var(--label); font-size: 9px; }
 
   /* The dashboard keeps its information hierarchy on compact windows: metrics
      become a 3×2 grid and traversal/code stay side by side until the terminal
@@ -517,6 +532,7 @@
         <div class="tabs">
           <button id="tabNeural" class="tab on">⧉ NEURAL</button>
           <button id="tabTerm" class="tab">❯ TERMINAL</button>
+          <span id="taskStreamTabs" class="task-stream-tabs" aria-label="Task terminal tabs"></span>
         </div>
         <div id="stageWrap">
           <span id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</span>
@@ -545,6 +561,7 @@
         </div>
       </div>
       <div id="terminal" class="paneOff"></div>
+      <div id="taskStreams" class="paneOff" aria-live="polite"></div>
     </div>
   </div>
   <div class="grain"></div>
@@ -600,6 +617,7 @@
   <script src="./agents.js"></script>
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="./multi-terminal-manager.js"></script>
   <script>
     document.getElementById('mark').innerHTML = window.BIGKIJI_MARK;
     // ---- 統合ターミナル（xterm.js ⇄ node-pty） ----
@@ -623,62 +641,24 @@
     const dashBody = document.getElementById('dashBody');
     const termPane = document.getElementById('terminal');
     const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm');
-    function showPane(showTerm) {
-      dashBody.classList.toggle('paneOff', showTerm);
-      termPane.classList.toggle('paneOff', !showTerm);
-      tabN.classList.toggle('on', !showTerm);
-      tabT.classList.toggle('on', showTerm);
-      if (showTerm) setTimeout(doFit, 30); // 非表示中はxtermの寸法が0のため表示後に再フィット
-    }
-    tabN.addEventListener('click', (e) => { e.stopPropagation(); showPane(false); });
-    tabT.addEventListener('click', (e) => { e.stopPropagation(); showPane(true); });
-    window.bkShowTerm = () => showPane(true); // SHELL宛先で送信した瞬間に自動でターミナルへ
-    // バークリックで高さ切替（158px⇄272px）
-    document.querySelector('.term .bar').addEventListener('click', () => {
-      document.querySelector('.term').classList.toggle('tall');
-      setTimeout(doFit, 260);
+    const multiTerm = new window.MultiTerminalManager({
+      dashboard: dashBody, shell: termPane, streamPane: document.getElementById('taskStreams'),
+      streamTabs: document.getElementById('taskStreamTabs'), neuralTab: tabN, shellTab: tabT,
+      actionPanel: document.getElementById('taskPanel'), actionList: document.getElementById('taskList'), fitShell: doFit,
     });
-  </script>
-  <script>
-    // Multi-task approval cards: state comes from the main-process runner only.
-    (() => {
-      const panel = document.getElementById('taskPanel');
-      const list = document.getElementById('taskList');
-      const stream = document.getElementById('streamMode');
-      const action = document.getElementById('actionMode');
-      const tasks = new Map();
-      const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-      const color = (p) => p === 'claude-code' ? '#d97757' : p === 'glm' ? '#8b5cf6' : '#34d399';
-      function render() {
-        list.innerHTML = '';
-        for (const t of tasks.values()) {
-          const el = document.createElement('article'); el.className = 'task-card'; el.style.setProperty('--task-color', color(t.provider));
-          const canApprove = t.status === 'awaiting_approval';
-          const canRetry = ['failed', 'blocked'].includes(t.status);
-          el.innerHTML = `<div class="task-head"><span class="task-name">${esc(t.promptPreview || t.id)}</span><span class="task-state">${esc(t.status)}</span></div>` +
-            `<div class="task-meta">${esc(t.provider)} · ${esc(t.id)} · ${esc(t.exitCode ?? '—')}</div>` +
-            (t.error ? `<div class="task-log">${esc(t.error)}</div>` : '') +
-            `<div class="task-actions">${canApprove ? '<button data-act="approve">Approve</button>' : ''}` +
-            `${canRetry ? '<button data-act="retry">Retry</button>' : ''}` +
-            `${['running','queued'].includes(t.status) ? '<button data-act="abort">Abort</button>' : ''}</div>`;
-          el.querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => {
-            try { await window.bigkiji[`${b.dataset.act}Task`](t.id); } catch (err) { console.warn(err); }
-          }));
-          list.appendChild(el);
-        }
-      }
-      function setMode(showCards) {
-        panel.classList.toggle('on', showCards); action.classList.toggle('on', showCards); stream.classList.toggle('on', !showCards);
-      }
-      stream.addEventListener('click', () => setMode(false)); action.addEventListener('click', () => setMode(true));
-      window.bigkiji.onTaskEvent((t) => { tasks.set(t.id, t); render(); });
-    window.bigkiji.onTaskLog((log) => { const t = tasks.get(log.taskId); if (t) { t.output = `${t.output || ''}\n${log.text}`.slice(-3000); render(); } });
-      window.bigkiji.listTasks().then((xs) => { xs.forEach((t) => tasks.set(t.id, t)); render(); }).catch(() => {});
-      window.prepareParallelTasks = async (prompt) => {
-        await window.bigkiji.prepareTasks({ prompt, planHash: 'owner-confirmed-' + Date.now().toString(36) });
-        setMode(true);
-      };
-    })();
+    tabN.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('neural'); });
+    tabT.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('shell'); });
+    window.bkShowTerm = () => multiTerm.showBase('shell');
+    document.getElementById('streamMode').addEventListener('click', () => multiTerm.setMode('stream'));
+    document.getElementById('actionMode').addEventListener('click', () => multiTerm.setMode('card'));
+    window.bigkiji.onTaskEvent((task) => multiTerm.upsert(task));
+    window.bigkiji.onTaskLog((log) => multiTerm.append(log));
+    window.bigkiji.listTasks().then((tasks) => tasks.forEach((task) => multiTerm.upsert(task))).catch(() => {});
+    window.prepareParallelTasks = async (prompt) => {
+      await window.bigkiji.prepareTasks({ prompt, planHash: 'owner-confirmed-' + Date.now().toString(36) });
+      multiTerm.setMode('card');
+    };
+    window.bkMultiTerminal = multiTerm;
   </script>
   <script src="./voice-live.js"></script>
   <script>
