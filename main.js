@@ -17,6 +17,7 @@ const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Che
 const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
 const fastRouter = require('./fast-api-router');
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'particle-net-v2';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -853,6 +854,7 @@ ipcMain.handle('get-info', () => {
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
+    buildId: APP_BUILD_ID,
     costPolicy: { planning: 'ollama-only', fastPriority: ['claude-code', 'codex', 'glm', 'kimi'], paid: ['claude-code', 'glm', 'kimi'], localOperators: ['codex'], blocked: ['gemini', 'openrouter'] },
     ...bus.snapshot() };
 });

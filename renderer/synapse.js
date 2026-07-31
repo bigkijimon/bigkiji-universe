@@ -8,6 +8,7 @@ import { CoreInflowSynapse } from './core-inflow-synapse.js';
 import { Roadmap3D } from './roadmap-3d.js';
 import { ViralMembrane } from './viral-membrane.js';
 import { FileDetailPopup } from './file-detail-popup.js';
+import { ParticleCluster } from './particle-cluster.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -530,16 +531,12 @@ window.bigkiji.onVaultFiles((files) => {
   }
 });
 
-// ---------- 全AI＝ブラックホール（v11・オーナー指示）: エージェント＝ミニBH ----------
-// アイドル時は静かな自転＋微かな事象の地平線のみ。活動で降着円盤が増光する。
-// Coreと同じ写実円盤（accretion.png・ドップラー増光・レンズアーク）を各社色でtintして共用。
-// 返却形（group/update/mesh）は旧粒子オーブと互換。meshは可視の地平線球＝raycast対象。
-function buildAgentHole(colorHex, id) {
-  const tint = new THREE.Color(colorHex).lerp(new THREE.Color('#ffffff'), 0.45);
-  return buildOrbGroup({
-    segments: 48, ring: false, baseScale: 0.3, style: 'blackhole', seed: hash01(id) * 10,
-    colors: { deep: '#020308', surface: colorHex, ring: colorHex },
-    diskTexUrl: './assets/accretion.png', tint: '#' + tint.getHexString(),
+// ---------- 部門エージェント＝粒子クラスター ----------
+// BigKiji Coreだけが中心核。部門は小さな細胞粒子と内部シナプスで表現する。
+function buildAgentCluster(colorHex, id) {
+  return new ParticleCluster({
+    color: colorHex, seed: hash01(id) * 100, texture: roundTex,
+    count: 56 + Math.floor(hash01(id + 'n') * 28), radius: 0.62 + hash01(id + 'r') * 0.16,
   });
 }
 
@@ -583,7 +580,7 @@ ids.forEach((id, i) => {
   const tiltAmp = 0.55 + (i % 3) * 0.45;
   const tiltPhase = i * 1.9;
   const col = new THREE.Color(meta.color);
-  const orb = buildAgentHole(meta.color, id); // 全AI＝ブラックホール（v11・オーナー指示）
+  const orb = buildAgentCluster(meta.color, id);
   orb.mesh.userData.agentId = id;
   const sel = new THREE.Sprite(new THREE.SpriteMaterial({
     map: ringTex, color: col, transparent: true, opacity: 0, depthWrite: false,
@@ -897,6 +894,7 @@ window.bigkiji.getInfo().then((i) => {
   if (i.lastStats) lastStats = i.lastStats;
   snapSeq = i.seq || 0;
   document.getElementById('sMode').textContent = i.ptyMode === 'pty' ? 'LIVE·pty' : 'LIVE·pipe';
+  document.getElementById('sBuild').textContent = `BUILD·${i.buildId || 'unknown'}`;
   if (i.loops && i.loops.length) {
     const coreLoop = i.loops.find((name) => /^core[-_]/i.test(name) && /\.(mp4|webm|ogg)$/i.test(name));
     if (coreLoop) {
