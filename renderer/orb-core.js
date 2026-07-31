@@ -209,6 +209,23 @@ function accretionTexture(colorHex) {
   return tex;
 }
 
+// Optional ComfyUI/Wan loop input. The static accretion texture remains the
+// deterministic fallback; a video is only attached when an explicit asset is
+// present under renderer/assets/loops/.
+function makeVideoTexture(url) {
+  const video = document.createElement('video');
+  video.src = url; video.muted = true; video.loop = true; video.autoplay = true;
+  video.playsInline = true; video.preload = 'auto';
+  video.setAttribute('aria-hidden', 'true');
+  video.style.cssText = 'position:fixed;inset:-1px;width:1px;height:1px;opacity:0;pointer-events:none;';
+  document.body.appendChild(video);
+  const tex = new THREE.VideoTexture(video);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  video.play().catch(() => {});
+  return { video, tex };
+}
+
 export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, colors = EMERALD, seed = 0, baseScale = 1, style = 'orb', diskTexUrl = null, tint = null } = {}) {
   const group = new THREE.Group();
   const isHole = style === 'blackhole';
@@ -250,7 +267,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
   let ringMesh = null;
   if (ring) {
     ringMesh = new THREE.Mesh(
-      new THREE.TorusGeometry(ringRadius, 0.008, 16, 256),
+      new THREE.SphereGeometry(ringRadius, 64, 32),
       new THREE.MeshBasicMaterial({ color: colors.ring || colors.surface, transparent: true, opacity: 0.55 })
     );
     group.add(ringMesh);
@@ -258,7 +275,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
 
   // 降着円盤（ブラックホール様式のみ）: シェーダ円盤＋レンズ湾曲アーク。
   // メッシュは静止させ回転はuSpin（ドップラー増光を画面に固定するため）。
-  let disk = null, lens = null, diskU = null;
+  let disk = null, lens = null, diskU = null, videoInput = null;
   if (isHole) {
     const tintCol = new THREE.Color(tint || '#ffffff');
     diskU = {
@@ -289,6 +306,14 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
         transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
       }));
     group.add(lens);
+  }
+
+  function setDiskVideo(url) {
+    if (!diskU || !url || videoInput?.video?.src === url) return false;
+    if (videoInput) { videoInput.video.pause(); videoInput.video.remove(); videoInput.tex.dispose(); }
+    videoInput = makeVideoTexture(url);
+    diskU.uMap.value = videoInput.tex;
+    return true;
   }
 
   const sim = { scale: 0.95, hover: 0, press: 0, pressV: 0, flow: 1, flowT: seed };
@@ -347,7 +372,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
     group.scale.setScalar(sim.scale * baseScale); // baseScale=惑星サイズ等の基準倍率（呼吸はその上に乗る）
   }
 
-  return { group, update, uniforms, ring: ringMesh, mesh: orb, disk, lens };
+  return { group, update, uniforms, ring: ringMesh, mesh: orb, disk, lens, setDiskVideo };
 }
 
 // 単体マウント（tray用）: 専用renderer+camera+ループ+ポインタ操作つき

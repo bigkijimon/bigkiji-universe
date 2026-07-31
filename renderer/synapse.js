@@ -337,6 +337,76 @@ const stars = (() => {
   return p;
 })();
 
+// ---------- GPU星屑スウォーム（v11.1） ----------
+// 位置はCPUで毎フレーム書き換えず、楕円軌道を頂点シェーダで積分する。
+// これにより遠景の密度を30k粒まで上げても、メインスレッドの負荷はuniform更新だけ。
+const STARDUST_N = 30000;
+const STARDUST_VERT = /* glsl */ `
+uniform float uTime; uniform float uFade; uniform float uPixelRatio;
+attribute vec4 aOrbit; // major, minor, inclination, phase
+attribute vec3 aMotion; // angular speed, node rotation, size
+attribute float aColor;
+varying float vColor; varying float vTwinkle;
+void main(){
+  float angle = aOrbit.w + uTime * aMotion.x;
+  vec3 p = vec3(cos(angle) * aOrbit.x, sin(angle) * aOrbit.y, 0.0);
+  float ci = cos(aOrbit.z), si = sin(aOrbit.z);
+  p.yz = mat2(ci, -si, si, ci) * p.yz;
+  float cn = cos(aMotion.y), sn = sin(aMotion.y);
+  p.xz = mat2(cn, -sn, sn, cn) * p.xz;
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  float depth = clamp(1.0 - (-mv.z / 70.0), 0.12, 1.0);
+  gl_PointSize = clamp(aMotion.z * uPixelRatio * (220.0 / max(-mv.z, 1.0)), 0.55, 3.8) * depth;
+  gl_Position = projectionMatrix * mv;
+  vColor = aColor;
+  vTwinkle = 0.72 + 0.28 * sin(uTime * (1.2 + aMotion.x * 3.0) + aOrbit.w * 9.0);
+}`;
+const STARDUST_FRAG = /* glsl */ `
+uniform float uFade;
+varying float vColor; varying float vTwinkle;
+void main(){
+  vec2 p = gl_PointCoord * 2.0 - 1.0;
+  float r = dot(p, p);
+  if (r > 1.0) discard;
+  vec3 cyan = vec3(0.0, 0.95, 1.0);
+  vec3 emerald = vec3(0.0, 1.0, 0.62);
+  vec3 violet = vec3(0.65, 0.48, 1.0);
+  vec3 gold = vec3(1.0, 0.82, 0.48);
+  vec3 c = vColor < 1.0 ? mix(cyan, emerald, vColor) : (vColor < 2.0 ? mix(emerald, violet, vColor - 1.0) : mix(violet, gold, vColor - 2.0));
+  float soft = pow(1.0 - r, 2.1);
+  gl_FragColor = vec4(c * (0.55 + soft * 1.4) * vTwinkle, soft * uFade * vTwinkle * 0.72);
+}`;
+const stardust = (() => {
+  const geo = new THREE.BufferGeometry();
+  const orbit = new Float32Array(STARDUST_N * 4);
+  const motion = new Float32Array(STARDUST_N * 3);
+  const color = new Float32Array(STARDUST_N);
+  for (let i = 0; i < STARDUST_N; i++) {
+    const j = i * 4, k = i * 3;
+    const radius = 10 + Math.pow(Math.random(), 0.62) * 48;
+    orbit[j] = radius;
+    orbit[j + 1] = radius * (0.34 + Math.random() * 0.66);
+    orbit[j + 2] = (Math.random() - 0.5) * 2.2;
+    orbit[j + 3] = Math.random() * Math.PI * 2;
+    motion[k] = (0.012 + Math.random() * 0.035) * (Math.random() < 0.5 ? -1 : 1);
+    motion[k + 1] = Math.random() * Math.PI * 2;
+    motion[k + 2] = 0.8 + Math.random() * 2.5;
+    color[i] = Math.random() * 3.7;
+  }
+  geo.setAttribute('aOrbit', new THREE.BufferAttribute(orbit, 4));
+  geo.setAttribute('aMotion', new THREE.BufferAttribute(motion, 3));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(color, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uFade: { value: 0.5 }, uPixelRatio: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: STARDUST_VERT, fragmentShader: STARDUST_FRAG,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  return pts;
+})();
+
 // ---------- アンビエント神経叢（v11）: 線維に沿ってクラスタする微粒子網 ----------
 // 一様な砂ではなく「神経線維」曲線に沿って粒を並べる＝脳のシナプス網に見える。
 // 位置・明滅は頂点/フラグメントシェーダで計算（CPUコストゼロ）。パレットは環境色のみ
@@ -616,6 +686,36 @@ function buildFiberBundle({ colorHex, fibers = FIBER_N, seg = FIBER_SEG, spread 
 }
 const fiberBundles = ids.map((id) => ({ id, b: buildFiberBundle({ colorHex: window.AGENT_META[id].color }) }));
 
+// 常時維持される軽量データパルス。実イベント時のburstとは別に、Core⇄Agentの
+// 接続が生きていることを示す低輝度の流れを各Bezier束に置く。
+const fiberPulses = fiberBundles.map(({ id }) => {
+  const color = window.AGENT_META[id].color;
+  const parts = Array.from({ length: 8 }, (_, i) => {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: roundTex, color, transparent: true, opacity: 0.16,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    sp.scale.setScalar(0.055 + (i % 3) * 0.012);
+    scene.add(sp);
+    return { sp, phase: i / 8 + Math.random() * 0.08, speed: 0.045 + Math.random() * 0.035, dir: i % 2 ? -1 : 1 };
+  });
+  return { id, parts };
+});
+const fiberPulsePoint = (start, end, s, phase, out) => {
+  const bow = Math.sin(s * Math.PI);
+  const span = _fiberSpan.subVectors(end, start);
+  const len = Math.max(Math.hypot(span.x, span.z), 1e-3);
+  const px = -span.z / len, pz = span.x / len;
+  const sway = Math.sin(phase * 0.7 + s * 7.0) * 0.045;
+  out.copy(start).addScaledVector(span, s);
+  out.x += px * (sway * 0.6) * bow;
+  out.z += pz * (sway * 0.6) * bow;
+  out.y += bow * 0.19;
+  return out;
+};
+const _fiberSpan = new THREE.Vector3();
+const _fiberPulse = new THREE.Vector3();
+
 // ---------- デュプレックス光流（軌道沿い・実イベント/実トークン駆動） ----------
 const dotTex = radialTexture('rgba(255,255,255,0.95)', 'rgba(120,255,200,0)');
 const streams = {}; // agentId → {until, resultUntil, tokens, parts[]}
@@ -758,6 +858,12 @@ window.bigkiji.getInfo().then((i) => {
   snapSeq = i.seq || 0;
   document.getElementById('sMode').textContent = i.ptyMode === 'pty' ? 'LIVE·pty' : 'LIVE·pipe';
   if (i.loops && i.loops.length) {
+    const coreLoop = i.loops.find((name) => /^core[-_]/i.test(name) && /\.(mp4|webm|ogg)$/i.test(name));
+    if (coreLoop) {
+      const coreUrl = './assets/loops/' + coreLoop;
+      core.setDiskVideo && core.setDiskVideo(coreUrl);
+      for (const id of ids) nodes[id].orb.setDiskVideo && nodes[id].orb.setDiskVideo(coreUrl);
+    }
     const v = document.createElement('video');
     v.src = './assets/loops/' + i.loops[0];
     v.autoplay = v.loop = v.muted = true;
@@ -1655,6 +1761,10 @@ const clock = new THREE.Clock();
   }
   stars.material.opacity = perfStage === 0 ? 0.5 : perfStage === 1 ? 0.28 : 0;
   stars.visible = perfStage < 2;
+  stardust.material.uniforms.uTime.value = reduced ? 0 : t;
+  stardust.material.uniforms.uFade.value = reduced ? 0.16 : perfStage === 0 ? 0.58 : perfStage === 1 ? 0.3 : 0.04;
+  stardust.material.uniforms.uPixelRatio.value = Math.min(devicePixelRatio, 2);
+  stardust.visible = perfStage < 2;
   // 神経叢の明滅（シェーダ駆動・perf降格で減光）
   neural.mat.uniforms.uTime.value = t;
   neural.mat.uniforms.uFade.value = reduced ? 0.2 : perfStage === 0 ? 0.5 : perfStage === 1 ? 0.3 : 0.12;
@@ -1740,6 +1850,19 @@ const clock = new THREE.Clock();
     u.uActive.value = THREE.MathUtils.damp(u.uActive.value, active, 6, delta);
     u.uGlow.value = 0.035 + 0.012 * show8;  // 束が濃いほど1本1本も明るい
     u.uBright.value = 1 + Math.min(0.6, show8 * 0.07);
+  }
+  for (const fp of fiberPulses) {
+    const nd = nodes[fp.id];
+    const active = streams[fp.id] && streams[fp.id].until > now;
+    const pulseOpacity = active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0);
+    for (const part of fp.parts) {
+      let s = (t * part.speed + part.phase) % 1;
+      if (part.dir < 0) s = 1 - s;
+      fiberPulsePoint(core.group.position, nd.grp.position, s, t + part.phase * 12, _fiberPulse);
+      part.sp.position.copy(_fiberPulse);
+      part.sp.material.opacity = pulseOpacity * (0.72 + 0.28 * Math.sin(t * 4 + part.phase * 10));
+      part.sp.scale.setScalar((active ? 0.07 : 0.055) + (part.phase % 0.13));
+    }
   }
   // ブラックホール放出粒子（BH→ファイル雲/canonへ・弧を描いて飛ぶ）
   for (let i = bursts.length - 1; i >= 0; i--) {

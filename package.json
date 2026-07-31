@@ -7,23 +7,39 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --mac --dir",
+    "test:governance": "node tools/governance-selftest.js",
+    "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },
   "build": {
     "appId": "com.bigkiji.universe",
     "productName": "BigKiji Universe",
-    "directories": { "output": "../dist" },
+    "directories": {
+      "output": "../dist"
+    },
     "asar": false,
     "npmRebuild": false,
-    "files": ["**/*", "!recordings/**"],
-    "extraResources": [
-      { "from": "node_modules/three/examples/jsm", "to": "app/node_modules/three/examples/jsm" }
+    "files": [
+      "**/*",
+      "!recordings/**"
     ],
-    "mac": { "target": "dir", "icon": "build/icon.icns", "category": "public.app-category.productivity" }
+    "extraResources": [
+      {
+        "from": "node_modules/three/examples/jsm",
+        "to": "app/node_modules/three/examples/jsm"
+      }
+    ],
+    "mac": {
+      "target": "dir",
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity"
+    }
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "dotenv": "^16.6.1",
+    "dotenv-expand": "^11.0.7",
     "node-pty": "^1.0.0",
     "three": "^0.172.0"
   },

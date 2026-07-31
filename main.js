@@ -3,10 +3,17 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell, glo
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+// v13: dotenv-expandで.env APIキーをprocess.envへ（model-routerが検知する）
+const { expand } = require('dotenv-expand');
+const dotenv = require('dotenv');
+expand(dotenv.config({ path: path.join(__dirname, '.env') }));
 const { Orchestrator } = require('./orchestrator');
 const { PiBridge, MODEL: PI_MODEL } = require('./pi-bridge');
+// v13: model-routerを直接インポート（Ollamaウォームアップ等）
+const router = require('./model-router');
 const { C } = require('./commentary'); // v12: 英語実況の単一情報源（crawl/PWA/CLI共用）
 const taskCache = require('./task-cache'); // v12: Swarm合意形成＋JSONナレッジキャッシュ
+const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Checker検収
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -201,7 +208,10 @@ function createTrayWindow() {
     // glass-lab実測(2026-07-30): vibrancyはCSS backdrop-filterと併用すると効果層が壊れて
     // 「透けるだけ」になる（electron#39529/#44720）。ページ側のbackdrop-filterを全廃し
     // transparent+vibrancyで本物のすりガラスになることを7構成マトリクスで実証済み。
-    resizable: false, movable: false, fullscreenable: false, minimizable: false,
+    // Owner requirement: allow the tray dashboard to be resized with the cursor
+    // while keeping it a compact, usable control surface.
+    resizable: true, minWidth: 324, minHeight: 420,
+    movable: false, fullscreenable: false, minimizable: false,
     skipTaskbar: true, alwaysOnTop: true, hasShadow: true, roundedCorners: true,
     vibrancy: 'hud', visualEffectState: 'active',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
@@ -471,6 +481,7 @@ let piLastPrompt = ''; // フォールバック再送用
 let piAwaitingAnswer = false;
 let piFallbackN = 0;
 let piTurnT0 = 0;                // ターン所要時間の実測（TOKEN VELOCITY用）
+let piCurrentTask = null;        // D1/D2: 現在のMakerまたはCheckerの責務
 const toolT0 = new Map();        // toolName → 開始時刻（TRAVERSAL LATENCY実測）
 const lastToolArgs = new Map();  // toolName → 直近引数（エラー構造化記録用）
 
@@ -498,25 +509,25 @@ function recordToolError(toolName, ms, argsStr) {
     const day = new Date().toISOString().slice(0, 10);
     const qfile = path.join(HEAL_DIR, `${day}-${toolName.replace(/[^\w-]/g, '_')}.md`);
     fs.writeFileSync(qfile, [
-      `# 修復タスク: ツール \`${toolName}\` の反復失敗（自動生成 ${new Date().toLocaleString('ja-JP')}）`,
+      `# Repair task: repeated failure of \`${toolName}\` (generated ${new Date().toLocaleString('en-US')})`,
       '',
-      `- 失敗回数: ${toolFails[toolName]}（このセッション） / モデル: ${pi.model}`,
-      `- 直近の引数: \`${(lastToolArgs.get(toolName) || '—').slice(0, 300)}\``,
-      `- エラーログ: \`~/.bigkiji/logs/tool-errors.jsonl\`（tool=${toolName} の行）`,
+      `- Failures: ${toolFails[toolName]} in this session / model: ${pi.model}`,
+      `- Latest arguments: \`${(lastToolArgs.get(toolName) || '—').slice(0, 300)}\``,
+      `- Error log: \`~/.bigkiji/logs/tool-errors.jsonl\` (entries for tool=${toolName})`,
       '',
-      '## 調査指示（Auto-Heal）',
-      '1. このツールの現行仕様を一次情報（公式ドキュメント/Web検索）で確認する',
-      '2. 失敗パターンを分類する（429/quota=モデル降格で対処済みか・型エラー・API仕様変更・権限）',
-      '3. 修正案（コード差分の提案）をこのファイルに追記する。**アプリコードは直接書き換えない**',
-      '4. オーナー/Claude Code の検収後に適用する',
+      '## Investigation instructions (Auto-Heal)',
+      '1. Check the tool\'s current specification using primary sources (official docs/web search).',
+      '2. Classify the failure: 429/quota already handled by degradation, type error, API change, or permission.',
+      '3. Append a proposed code diff to this file. **Do not modify application code directly.**',
+      '4. Apply only after owner/Claude Code review.',
       '',
-      '## 委任ワンライナー',
+      '## Delegation command',
       '```bash',
       `pi -p --session-id bigkiji-heal "Research why the tool '${toolName}' keeps failing (see ~/.bigkiji/logs/tool-errors.jsonl), check current specs via web/docs, and append a proposed fix to ${qfile}. Do NOT modify app code."`,
       '```',
       '',
     ].join('\n'));
-    bus.push({ source: 'system', type: 'info', text: `⚕ Auto-Heal: ${toolName} が3回失敗 → 修復タスク生成: 修復キュー/${path.basename(qfile)}` });
+    bus.push({ source: 'system', type: 'info', text: `⚕ Auto-Heal: ${toolName} failed 3× → repair task queued: ${path.basename(qfile)}` });
     healPending.push(`[AUTO-HEAL] The tool "${toolName}" failed ${toolFails[toolName]} times (details: ~/.bigkiji/logs/tool-errors.jsonl). Investigate the current spec of this tool, classify the failure, and append a proposed fix to ${qfile} using your write tool. Do NOT modify app code.`);
   } catch (_) {}
 }
@@ -535,12 +546,13 @@ function piAgentFromArgs(args) {
 
 async function piFinalizeTurn() {
   if (!piTurnOpen) {
-    // 空ターン（quota切れ等でモデルが沈黙）→ チェーンの次モデルへ降格して同じ指示を再送
-    if (piAwaitingAnswer && piLastPrompt && piFallbackN < 2) {
-      piFallbackN++;
-      pi.fallback();
-      bus.push({ source: 'pi', type: 'info', text: `⚠ empty reply (quota suspected) → degraded, retrying on ${pi.model}` });
-      liveComment(C.fallback(pi.model), 'warn');
+    // v13: 空ターン検知→即時切り替え（再試行なし・ユーザー通知）
+    if (piAwaitingAnswer && piFallbackN < 2) {
+      const wasRunning = pi.running;
+      await pi.fallback(1500);
+      if (pi.running !== wasRunning) return; // 切り替え成功→return
+      bus.push({ source: 'pi', type: 'warn', text: `🔄 complete silence detected → switched to ${pi.model}` });
+      liveComment('Model switched due to complete silence', 'warn');
       broadcast('pi:event', {
         kind: 'turn_start', text: piLastPrompt.slice(0, 30), model: pi.model,
         sandbox: 'global sandbox · Vault AGENTS.md',
@@ -553,6 +565,7 @@ async function piFinalizeTurn() {
   piTurnOpen = false;
   const touched = [...piTouched];
   piTouched = new Set();
+  const completedAnswer = piAnswerText;
   if (piAnswerText.trim()) { // 最終回答をログに恒久記録＋読み上げ（ライブ中は文単位TTSの残りだけ流す＝二重読み上げ防止）
     bus.push({ source: 'pi', agent: null, type: 'say', text: `Pi reply: ${piAnswerText.replace(/\s+/g, ' ').trim().slice(0, 220)}` });
     if (liveVoice.active) ttsFlushRemainder(piAnswerText); else speak(piAnswerText);
@@ -571,6 +584,27 @@ async function piFinalizeTurn() {
   });
   // v12 Swarm: 議論を経たターンが成功(toolエラー0)なら成功パターンをKBへ自動保存
   try { taskCache.turnDone({ ok: turnToolErrors === 0, tokens: turn }); } catch (_) {}
+  // D1: モデルやプロセスが切り替わっても続きから再開できる短い状態を残す。
+  // D2: Makerの完了後だけ、別ターンのCheckerへ読み取り専用の検収を渡す。
+  const completedTask = piCurrentTask;
+  if (completedTask) {
+    const state = governance.makeState(completedTask, {
+      answer: completedAnswer, model: pi.model, touched, turn, toolErrors: turnToolErrors,
+    });
+    router.saveTaskState(state);
+    bus.push({ source: 'system', type: 'info', text: `🧠 D1 state saved: ${state.taskId} · next: ${state.nextAction}` });
+    if (completedTask.kind === 'maker' && pi.running) {
+      const checker = governance.startTask(completedTask.ownerText, 'checker');
+      piCurrentTask = checker;
+      const checkerState = { ...state, taskId: checker.id };
+      setTimeout(() => {
+        if (pi.running && !pi.isStreaming) piSendPrompt(governance.makeCheckerPrompt(checkerState), { raw: true, kind: 'checker', task: checker });
+      }, 1000);
+      bus.push({ source: 'system', type: 'info', text: `🔎 D2 Checker queued for ${state.taskId} (read-only verification)` });
+    } else {
+      piCurrentTask = null;
+    }
+  }
   // コンテキスト肥大の自動検知（Token Efficiency）: 入力25k tok/turn超で新セッションを提案
   if (turn && turn.input > 25000) {
     bus.push({ source: 'pi', type: 'info', text: `⚠ context bloat: input ${turn.input} tok/turn (>25k) — restart π for a fresh session` });
@@ -632,10 +666,25 @@ pi.on('stderr', (d) => { // 沈黙診断用: piの標準エラーを構造化ロ
     fs.mkdirSync(ERRLOG_DIR, { recursive: true });
     fs.appendFileSync(path.join(ERRLOG_DIR, 'pi-stderr.log'), `[${new Date().toISOString()}] ${String(d).slice(0, 500)}\n`);
   } catch (_) {}
+  // v13: stderr内の429/quota、または廃止・未提供モデルを検知→即デグレード
+  const fell = pi.detectErrorAndFallback(String(d));
+  if (fell) {
+    bus.push({ source: 'pi', type: 'warn', text: `⚠ provider failure detected → degradation in progress (${pi.model})` });
+    liveComment(C.fallback(pi.model), 'warn');
+    broadcast('pi:event', { kind: 'degrade', model: pi.model, reason: d.slice(0, 120), ts: Date.now() });
+    // 実際の降格は下の degrade イベントに一本化する。二重実行は2ティア飛ばしの原因になる。
+  }
 });
 pi.on('status', (s) => {
   broadcast('pi:event', { kind: 'status', ...s });
   if (!s.running) { clearTimeout(piIdleTimer); piFinalizeTurn(); } // プロセス消滅時は途中でも確定しUIを閉じる
+});
+
+// v13: degradeイベントを受信→バックグラウンドで降格再起動（ターンの妨げにならない）
+pi.on('degrade', async (s) => {
+  broadcast('pi:event', { kind: 'degrade_loop', model: s.model, reason: s.reason });
+  const ok = await pi.fallback(2500);
+  if (ok) bus.push({ source: 'pi', type: 'info', text: `🔄 degraded to ${pi.model} — chain position ${pi.modelIdx}/${pi.chainList.length - 1}` });
 });
 
 ipcMain.handle('pi:toggle', () => {
@@ -645,32 +694,39 @@ ipcMain.handle('pi:toggle', () => {
   return { running: ok };
 });
 let turnToolErrors = 0; // Swarm成功判定用（このターンのtoolエラー数）
-function piDispatch(text) { // 実送信（分類済みプロンプト）
+function piDispatch(text, opts = {}) { // 実送信（分類済みプロンプト）
   if (!pi.running) pi.start();
   piAnswerText = '';
   ttsReset();
-  piLastPrompt = String(text);
+  const ownerText = String(text);
+  const kind = opts.kind || 'maker';
+  const substantive = !opts.raw && governance.isSubstantiveTask(ownerText);
+  piCurrentTask = substantive || kind === 'checker' ? (opts.task || governance.startTask(ownerText, kind)) : null;
+  const isContinuation = !opts.raw && /(?:続き|継続|再開|resume|continue)/i.test(ownerText);
+  const continuity = isContinuation ? governance.makeResumeContext(router.loadTaskState()) : '';
+  const prompt = substantive ? governance.makeMakerPrompt(continuity + ownerText, piCurrentTask.id) : continuity + ownerText;
+  piLastPrompt = prompt;
   piAwaitingAnswer = true;
   piFallbackN = 0;
   piTurnT0 = Date.now();
   turnToolErrors = 0;
   // パイプライン起点の実情報（sandbox→モデル→プロンプト）をフローカードへ
   broadcast('pi:event', {
-    kind: 'turn_start', text: String(text).slice(0, 30), model: pi.model,
+    kind: 'turn_start', text: ownerText.slice(0, 30), model: pi.model,
     sandbox: 'global sandbox · Vault AGENTS.md',
   });
   liveComment(C.turnStart(pi.model));
-  bus.push({ source: 'pi', type: 'log', text: `Prompt → Pi: ${String(text).slice(0, 120)}` });
+  bus.push({ source: 'pi', type: 'log', text: `Prompt → Pi: ${ownerText.slice(0, 120)}` });
   // v12堅牢化: quota死は「イベントゼロの完全沈黙」でも起きる（実測）。
   // 既存の120sアイドルタイマーは初イベント後にしか装填されないため、送信時点で先に装填し
   // 完全沈黙でも piFinalizeTurn → fallback降格再送 が必ず作動するようにする
   clearTimeout(piIdleTimer);
   piIdleTimer = setTimeout(piFinalizeTurn, 90000);
-  pi.prompt(String(text));
+  pi.prompt(prompt);
 }
 // v12: 送信前にタスク分類（direct/cache/swarm）。raw=true は分類スキップ（内部指示・音声会話）
 function piSendPrompt(text, opts = {}) {
-  if (opts.raw) { piDispatch(String(text)); return; }
+  if (opts.raw) { piDispatch(String(text), opts); return; }
   try { taskCache.route(String(text), piDispatch); } catch (_) { piDispatch(String(text)); }
 }
 taskCache.init({
@@ -741,6 +797,8 @@ app.whenReady().then(() => {
   createTrayWindow();
   if (SMOKE || SNAP) createMainWindow(); // 通常起動ではウィンドウを開かない（バー内ダッシュボードが常設・キャンバスは明示操作時のみ）
   spawnShell();
+  // v13: Ollamaウォームアップ（keep_alive=30m）— Pi起動前にコールドスタート防止
+  router.ollamaWarmup('qwen3.5:35b-a3b');
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
   seikaDirs = findSeikaDirs();
@@ -783,7 +841,7 @@ app.whenReady().then(() => {
     trayWin.focus();
     trayWin.webContents.send('composer:focus');
   });
-  if (!ok) console.log('⌥Space の登録に失敗（他アプリが使用中）');
+  if (!ok) console.log('⌥Space registration failed (already used by another app)');
 
   if (process.env.VOICETEST) {
     setTimeout(() => speak('Voice test OK. Hello, owner. BigKiji Universe is live.'), 1500);

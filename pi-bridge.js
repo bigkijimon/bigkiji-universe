@@ -5,15 +5,11 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 
 const VAULT = '/Users/yuma/Documents/CEOBigKiji';
-// Core=速度優先のクラウド＋無料枠フォールバックチェーン（オーナー指示 2026-07-31）。
-// 無料枠はモデル別の日次別勘定（実測: 2.5-flash=20req/日・2.0-flash=枠0・3.1-flash-liteは大きい）。
-// 品質枠→大容量枠→ローカル¥0 の順に、quota沈黙（空ターン）を検知して自動降格する。
-const MODELS = [
-  'google/gemini-3-flash-preview', // 品質・速度（無料枠は小さい・日次リセット）
-  'google/gemini-3.1-flash-lite',  // 大きめ無料枠の主力
-  'ollama/qwen3.5:35b-a3b',        // ローカル¥0＝最終防波堤（遅いが死なない）
-];
-const MODEL = MODELS[0];
+// v13: 静的チェーン→動的チェーン（model-router.jsがキー実在を検知して可用ティアを構築。
+// Kimi K3/GLMはキー投入の瞬間に自動参戦）。quota沈黙・429検知で即降格する。
+const router = require('./model-router');
+let CHAIN = router.buildChain();
+const MODEL = CHAIN[0].id;
 // v12言語規則（オーナー指示 2026-07-31）: システム/ログは英語のまま、
 // オーナーへの返答は入力言語をミラーする（JA→JA / EN→EN / TH→TH・不明はEN）。
 // system promptレベルで注入（AGENTS.mdだけでは入力言語追従が不安定＝v8実測）
@@ -29,17 +25,69 @@ class PiBridge extends EventEmitter {
     this.pending = new Map(); // id → resolve
     this.lastStats = null;    // 前回get_session_statsの実測値（差分=ターン消費）
     this.modelIdx = 0;        // フォールバックチェーンの現在位置
+    this.fallbackPromise = null; // 同じstderrを複数経路で受けても1ティアだけ降格する
   }
 
   get running() { return !!this.proc; }
-  get model() { return MODELS[this.modelIdx]; }
+  get model() { return (CHAIN[this.modelIdx] || CHAIN[CHAIN.length - 1]).id; }
+  get tier() { return CHAIN[this.modelIdx] || CHAIN[CHAIN.length - 1]; }
+  get chainList() { return CHAIN; }
 
-  // quota沈黙などでモデルが死んだとき、次のモデルへ降格して再起動する（末尾=ローカルで打ち止め）
-  fallback() {
-    if (this.modelIdx >= MODELS.length - 1) return false;
+  // quota沈黙/429検知でモデルが死んだとき、次の可用ティアへ降格して再起動（末尾で打ち止め）
+  // v13: Ollama切替前に実疎通を確認(5sタイムアウト)。429直後はクールダウン挿入。
+  async fallback(cooldownMs = 2000) {
+    if (this.fallbackPromise) return this.fallbackPromise;
+    this.fallbackPromise = this._fallback(cooldownMs);
+    try { return await this.fallbackPromise; } finally { this.fallbackPromise = null; }
+  }
+
+  async _fallback(cooldownMs) {
+    if (this.modelIdx >= CHAIN.length - 1) return false;
     this.modelIdx++;
+    const next = CHAIN[this.modelIdx];
+    // Ollama以外: キー実在はbuildChainで担保済み→即再起動
+    // Ollamaのみ: freeze(凍結解除待ち3s)-cool-downの計~5s必要
+    if (next.need === 'ollama') {
+      const healthy = await router.ollamaHealth(5000);
+      if (!healthy) {
+        router.ollamaKickstart();
+        await new Promise((r) => setTimeout(r, cooldownMs + 3000));
+      } else {
+        await new Promise((r) => setTimeout(r, cooldownMs));
+      }
+    } else {
+      await new Promise((r) => setTimeout(r, cooldownMs));
+    }
     this.stop();
     return this.start();
+  }
+
+  // v13: stderr/ツールイベントから429/quota死を検知して fallback() を呼ぶゲート
+  detectErrorAndFallback(stderrLine) {
+    if (!stderrLine || !router.FALLBACK_ERROR_PATTERN.test(stderrLine)) return false;
+    const isToolFail = /tool[_\s]|write|exec|bash|read_file/i.test(stderrLine);
+    if (isToolFail && stderrLine.match(/\bError\b|\berror:\b/i)) return false; // Auto-Healへ委譲
+    this.emit('degrade', { model: this.model, reason: stderrLine.slice(0, 120) });
+    return true;
+  }
+
+  // タスク特性で開始ティアを切替（実行中は触らない＝ターンを壊さない）
+  ensureTier(idx) {
+    const target = Math.max(0, Math.min(idx, CHAIN.length - 1));
+    if (target === this.modelIdx) return;
+    if (this.isStreaming) return;
+    const wasRunning = this.running;
+    this.modelIdx = target;
+    if (wasRunning) { this.stop(); this.start(); }
+  }
+
+  // キー投入後の再検知（アプリ再起動なしでKimi/GLM参戦を反映）
+  refreshChain() {
+    const cur = this.model;
+    CHAIN = router.buildChain();
+    const keep = CHAIN.findIndex((t) => t.id === cur);
+    this.modelIdx = keep >= 0 ? keep : 0;
+    return CHAIN;
   }
 
   start() {
@@ -115,7 +163,7 @@ class PiBridge extends EventEmitter {
       const id = `req-${++this.reqSeq}`;
       this.pending.set(id, resolve);
       this._send({ id, type, ...extra });
-      setTimeout(() => { if (this.pending.delete(id)) resolve(null); }, 8000);
+      setTimeout(() => { if (this.pending.delete(id)) resolve(null); }, 300000);
     });
   }
 

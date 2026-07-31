@@ -32,7 +32,7 @@ class Orchestrator extends EventEmitter {
     this.lastStats = null;       // 直近のSystemPulse実測値
     this.refill = setInterval(() => {
       if (this.dropped > 0) {
-        this.push({ source: 'pty', agent: null, type: 'info', text: `…高速出力のため ${this.dropped} 行を省略` });
+        this.push({ source: 'pty', agent: null, type: 'info', text: `… ${this.dropped} high-volume output lines omitted` });
         this.dropped = 0;
       }
       this.tokens = 30;
