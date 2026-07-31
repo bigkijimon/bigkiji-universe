@@ -292,6 +292,28 @@
   #ccmd { flex: 1; min-width: 0; background: transparent; border: none; outline: none;
     color: var(--ink); font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; caret-color: var(--em); }
   #ccmd::placeholder { color: var(--faint); }
+  .cmdbar .mode { flex: none; display: inline-flex; gap: 3px; }
+  .cmdbar .mode button, .cmdbar .action { font: 700 9px "SF Mono", Menlo, monospace; letter-spacing: .08em;
+    color: var(--label); background: rgba(255,255,255,.04); border: 1px solid var(--hairline);
+    border-radius: 6px; padding: 4px 7px; cursor: pointer; }
+  .cmdbar .mode button.on, .cmdbar .action:hover { color: var(--em); border-color: rgba(52,211,153,.42); background: rgba(52,211,153,.10); }
+  #taskPanel { display: none; position: absolute; inset: 8px 10px 8px auto; width: min(340px, calc(100% - 20px));
+    z-index: 29; pointer-events: auto; padding: 10px; overflow: auto; border: 1px solid rgba(52,211,153,.28);
+    border-radius: 12px; background: linear-gradient(180deg, rgba(7,15,25,.96), rgba(3,8,15,.98));
+    box-shadow: 0 18px 50px rgba(0,0,0,.42), inset 0 1px rgba(255,255,255,.06); }
+  #taskPanel.on { display: block; animation: enter var(--dur-base) var(--ease-out) forwards; }
+  #taskPanel h2 { margin: 0 0 8px; font: 800 11px "SF Mono", Menlo, monospace; letter-spacing: .12em; color: var(--em); }
+  .task-card { border: 1px solid var(--hairline); border-left: 3px solid var(--task-color, var(--em)); border-radius: 9px;
+    padding: 8px; margin: 6px 0; background: rgba(255,255,255,.035); }
+  .task-card .task-head { display: flex; gap: 7px; align-items: center; justify-content: space-between; }
+  .task-card .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: var(--ink); }
+  .task-card .task-state { flex: none; color: var(--task-color, var(--em)); font: 700 8px "SF Mono", Menlo, monospace; }
+  .task-card .task-meta, .task-card .task-log { color: var(--label); font: 9px/1.45 "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  .task-card .task-log { max-height: 80px; overflow: auto; margin-top: 5px; }
+  .task-card .task-actions { display: flex; gap: 5px; margin-top: 7px; }
+  .task-card .task-actions button { font: 700 8px "SF Mono", Menlo, monospace; color: var(--ink); background: rgba(52,211,153,.10);
+    border: 1px solid rgba(52,211,153,.3); border-radius: 5px; padding: 4px 7px; cursor: pointer; }
+  .task-card .task-actions button:hover { background: rgba(52,211,153,.22); }
   /* v12 ライブ音声ボタン: 状態はtransform+opacityの脈動のみ（craft規則準拠） */
   @keyframes livePulse { 0%, 100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
   #liveBtn.listen, #liveBtn.capture, #liveBtn.think, #liveBtn.speak {
@@ -461,6 +483,17 @@
       </aside>
     </div>
     <div id="flow"></div>
+    <div class="cmdbar">
+      <span class="ci">❖</span>
+      <input id="ccmd" type="text" spellcheck="false" placeholder="Plan locally with Pi…" />
+      <div class="mode" role="group" aria-label="Task display mode">
+        <button id="streamMode" class="on" type="button">STREAM</button>
+        <button id="actionMode" type="button">ACTION CARD</button>
+      </div>
+      <button id="piBtn" class="fchip on" style="--c:#FFE81F" title="Toggle destination: AI or shell">π AI</button>
+      <button id="liveBtn" class="fchip" style="--c:#00f3ff" title="Live voice">🎙 LIVE</button>
+    </div>
+    <div id="taskPanel" aria-live="polite"><h2>APPROVAL QUEUE</h2><div id="taskList"></div></div>
     <div class="main-content">
       <div class="term-container">
         <div class="term">
@@ -589,6 +622,47 @@
       document.querySelector('.term').classList.toggle('tall');
       setTimeout(doFit, 260);
     });
+  </script>
+  <script>
+    // Multi-task approval cards: state comes from the main-process runner only.
+    (() => {
+      const panel = document.getElementById('taskPanel');
+      const list = document.getElementById('taskList');
+      const stream = document.getElementById('streamMode');
+      const action = document.getElementById('actionMode');
+      const tasks = new Map();
+      const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+      const color = (p) => p === 'claude-code' ? '#d97757' : p === 'glm' ? '#8b5cf6' : '#34d399';
+      function render() {
+        list.innerHTML = '';
+        for (const t of tasks.values()) {
+          const el = document.createElement('article'); el.className = 'task-card'; el.style.setProperty('--task-color', color(t.provider));
+          const canApprove = t.status === 'awaiting_approval';
+          const canRetry = ['failed', 'blocked'].includes(t.status);
+          el.innerHTML = `<div class="task-head"><span class="task-name">${esc(t.promptPreview || t.id)}</span><span class="task-state">${esc(t.status)}</span></div>` +
+            `<div class="task-meta">${esc(t.provider)} · ${esc(t.id)} · ${esc(t.exitCode ?? '—')}</div>` +
+            (t.error ? `<div class="task-log">${esc(t.error)}</div>` : '') +
+            `<div class="task-actions">${canApprove ? '<button data-act="approve">Approve</button>' : ''}` +
+            `${canRetry ? '<button data-act="retry">Retry</button>' : ''}` +
+            `${['running','queued'].includes(t.status) ? '<button data-act="abort">Abort</button>' : ''}</div>`;
+          el.querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => {
+            try { await window.bigkiji[`${b.dataset.act}Task`](t.id); } catch (err) { console.warn(err); }
+          }));
+          list.appendChild(el);
+        }
+      }
+      function setMode(showCards) {
+        panel.classList.toggle('on', showCards); action.classList.toggle('on', showCards); stream.classList.toggle('on', !showCards);
+      }
+      stream.addEventListener('click', () => setMode(false)); action.addEventListener('click', () => setMode(true));
+      window.bigkiji.onTaskEvent((t) => { tasks.set(t.id, t); render(); });
+    window.bigkiji.onTaskLog((log) => { const t = tasks.get(log.taskId); if (t) { t.output = `${t.output || ''}\n${log.text}`.slice(-3000); render(); } });
+      window.bigkiji.listTasks().then((xs) => { xs.forEach((t) => tasks.set(t.id, t)); render(); }).catch(() => {});
+      window.prepareParallelTasks = async (prompt) => {
+        await window.bigkiji.prepareTasks({ prompt, planHash: 'owner-confirmed-' + Date.now().toString(36) });
+        setMode(true);
+      };
+    })();
   </script>
   <script src="./voice-live.js"></script>
   <script>

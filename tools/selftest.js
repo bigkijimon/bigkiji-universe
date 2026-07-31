@@ -2,7 +2,7 @@
 'use strict';
 // BIGKIJI selftest（v11）— Piの主要ツール（read/list/write/bash）を小タスクで実走し pass/fail を実測する。
 // 使い方: node tools/selftest.js
-//   モデル上書き: SELFTEST_MODEL=ollama/qwen3.5:35b-a3b node tools/selftest.js （既定=3.1-flash-lite・無料枠）
+//   モデル上書き: SELFTEST_MODEL=ollama/qwen3.5:35b-a3b node tools/selftest.js （既定=ローカルQwen）
 // 各テストは `pi -p` のワンショット（cwd=Vault・グローバルsandbox適用）。証跡: tools/selftest-result-<日付>.json
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -10,7 +10,7 @@ const path = require('path');
 
 const VAULT = '/Users/yuma/Documents/CEOBigKiji';
 const PI = fs.existsSync('/Users/yuma/.npm-global/bin/pi') ? '/Users/yuma/.npm-global/bin/pi' : 'pi';
-const MODEL = process.env.SELFTEST_MODEL || 'google/gemini-3.1-flash-lite';
+const MODEL = process.env.SELFTEST_MODEL || 'ollama/qwen3.5:35b-a3b';
 const STAMP = Date.now();
 const TMP = path.join(VAULT, 'Executive_Office', 'CompanyApp', 'BIGKIJI', 'Knowledge', `selftest-${STAMP}.txt`);
 

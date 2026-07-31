@@ -14,10 +14,13 @@ const router = require('./model-router');
 const { C } = require('./commentary'); // v12: 英語実況の単一情報源（crawl/PWA/CLI共用）
 const taskCache = require('./task-cache'); // v12: Swarm合意形成＋JSONナレッジキャッシュ
 const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Checker検収
+const knowledge = require('./pi-knowledge-orchestrator');
+const { TaskRunner } = require('./task-runner');
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
 const bus = new Orchestrator();
+const taskRunner = new TaskRunner({ cwd: '/Users/yuma/Documents/CEOBigKiji', maxParallel: 2 });
 
 let tray = null;
 let trayWin = null;
@@ -69,6 +72,8 @@ function broadcast(channel, payload) {
   }
   if (remote) remote.publish(channel, payload);
 }
+taskRunner.on('task', (task) => broadcast('task:event', task));
+taskRunner.on('log', (log) => broadcast('task:log', log));
 // LIVE COMMENTARY（英語実況）: デスクトップの実況バー・モバイルPWA・CLIが同じ行を受ける
 function liveComment(text, sev = 'info') {
   if (!text) return;
@@ -731,10 +736,22 @@ function piSendPrompt(text, opts = {}) {
 }
 taskCache.init({
   kbPath: path.join(__dirname, '..', 'Knowledge', 'task_knowledge_base.json'),
+  model: 'qwen3.5:35b-a3b',
+  knowledge,
   C,
   emit: { liveComment: (t, s) => liveComment(t, s), broadcast: (ch, p) => broadcast(ch, p) },
 });
 ipcMain.on('pi:prompt', (_e, text) => piSendPrompt(text));
+
+// Approved parallel execution lanes. Planning is stored locally first; paid
+// lanes cannot be started until an explicit owner approval arrives from UI.
+ipcMain.handle('task:list', () => taskRunner.snapshot());
+ipcMain.handle('task:plan', (_e, spec) => taskRunner.plan(spec));
+ipcMain.handle('task:prepare', (_e, spec) => taskRunner.prepare(spec));
+ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
+ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
+ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
+ipcMain.handle('knowledge:state', () => knowledge.loadState());
 
 // PITEST="<プロンプト>" — パイプラインE2E検証: 起動→送信→実写撮影→agent_endで終了。
 // フローカード/COMMS/委任発光が実イベントで動くことをスクショ証跡として残す
@@ -787,7 +804,9 @@ ipcMain.handle('get-info', () => {
       .filter((f) => /\.(mp4|webm)$/i.test(f));
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
-    vaultFiles, sandboxTopo: sandboxTopology(), ...bus.snapshot() };
+    vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
+    costPolicy: { planning: 'ollama-only', paid: ['claude-code', 'glm'], blocked: ['gemini', 'kimi', 'openrouter', 'codex'] },
+    ...bus.snapshot() };
 });
 
 // ---------- ライフサイクル ----------
@@ -881,7 +900,7 @@ app.whenReady().then(() => {
       bus.push({ source: 'system', agent: 'risa', type: 'task', text: 'SNAP visual test — pulse check' });
     }, 2600);
     setTimeout(() => {
-      bus.push({ source: 'system', agent: 'gemini', type: 'task', text: 'SNAP visual test — in-flight pulse' });
+      bus.push({ source: 'system', agent: 'biglama', type: 'task', text: 'SNAP visual test — local planning pulse' });
     }, 4700);
     setTimeout(async () => {
       try {

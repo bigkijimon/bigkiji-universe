@@ -264,11 +264,18 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
   }
 
   // 外周ヘアラインリング（惑星ノードでは省略可）
-  let ringMesh = null;
+  let ringMesh = null, ringU = null;
   if (ring) {
+    ringU = { uTime: { value: 0 }, uActivity: { value: 0 }, uColor: { value: new THREE.Color(colors.ring || colors.surface) } };
     ringMesh = new THREE.Mesh(
       new THREE.SphereGeometry(ringRadius, 64, 32),
-      new THREE.MeshBasicMaterial({ color: colors.ring || colors.surface, transparent: true, opacity: 0.55 })
+      new THREE.ShaderMaterial({ uniforms: ringU, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        vertexShader: `uniform float uTime; uniform float uActivity; varying float vNoise;
+          void main(){ float n=sin(position.x*7.0+uTime*1.7)+sin(position.y*9.0-uTime*1.3)+sin(position.z*11.0+uTime*.9);
+          vNoise=n*.333; vec3 p=position+normalize(position)*(n*.008+uActivity*.018*n); gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0); }`,
+        fragmentShader: `uniform vec3 uColor; uniform float uActivity; varying float vNoise;
+          void main(){ float a=.18+uActivity*.42+abs(vNoise)*.22; gl_FragColor=vec4(uColor*(.7+uActivity*.45+abs(vNoise)*.25),a); }` })
     );
     group.add(ringMesh);
   }
@@ -322,6 +329,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
   // camera を渡すとドップラー増光の視線・レンズアークの正対が実カメラに追従する
   function update({ activity = 0, hover = false, pressed = false, reduced = false, t = 0, delta = 0.016, camera = null }) {
     const a = Math.min(activity, 1.5);
+    if (ringU) { ringU.uTime.value = sim.flowT; ringU.uActivity.value = a; }
 
     // ノイズ流速: 活動量で速く煮える（実データ駆動）
     sim.flow = THREE.MathUtils.damp(sim.flow, 1.0 + a * 0.7, 5, delta);

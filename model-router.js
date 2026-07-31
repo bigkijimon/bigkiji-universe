@@ -1,9 +1,8 @@
 'use strict';
 // v13 ハイブリッドモデル・オーケストレーター（Task Dispatcher / Auto-Fallback基盤）
 // キーの実在を検知して「可用ティアだけ」で動的フォールバックチェーンを構築する。
-// Kimi K3 / GLM(Z.ai) はキー投入（オーナーゲート・models.jsonのREPLACE_WITH_*かenv）の
-// 瞬間に自動参戦する＝コード変更不要。Claude Codeはサブスク（APIキー無し）のため
-// piのAPI対象にはならず、総司令としてこの階層の外に置く（正直設計）。
+// 課金許可モデルはGLMのみ。Claude Codeは確定計画後に外部CLIで起動し、
+// Qwenは事前計画・要約・知識再利用専用。Gemini/Kimi/OpenRouterは意図的に除外する。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -12,11 +11,8 @@ const MODELS_JSON = path.join(os.homedir(), '.pi', 'agent', 'models.json');
 
 // 役割定義（スペック§1①）。上から品質順に試し、429/沈黙で即降格
 const TIERS = [
-  { id: 'google/gemini-3-flash-preview', need: 'google', role: 'architect · quality', tag: 'T1' },
-  { id: 'google/gemini-3.1-flash-lite', need: 'google', role: 'workhorse · large free tier', tag: 'T2' },
-  { id: 'moonshot/kimi-k3', need: 'moonshot', role: 'long-context backbone', tag: 'K' },
-  { id: 'zai/glm-4.7-flash', need: 'zai', role: 'fast · tooling · formatting', tag: 'G' },
-  { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'local ¥0 · unlimited · private', tag: 'T3' },
+  { id: 'zai/glm-4.7-flash', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
+  { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'local ¥0 · planning · private', tag: 'LOCAL' },
 ];
 
 function realKey(v) {
@@ -26,12 +22,9 @@ function realKey(v) {
 // models.json＋envからプロバイダ可用性を判定（プレースホルダは不在扱い）
 function loadProviders() {
   const avail = {
-    google: !!(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY),
     ollama: true, // 実疎通はollamaHealth()で別途確認
   };
   if (realKey(process.env.ZAI_API_KEY)) avail.zai = true;
-  if (realKey(process.env.MOONSHOT_API_KEY)) avail.moonshot = true;
-  if (realKey(process.env.OPENROUTER_API_KEY)) avail.openrouter = true;
   try {
     const conf = JSON.parse(fs.readFileSync(MODELS_JSON, 'utf8'));
     for (const [name, p] of Object.entries(conf.providers || {})) {
@@ -42,8 +35,8 @@ function loadProviders() {
   return avail;
 }
 
-function buildChain(avail = loadProviders()) {
-  const chain = TIERS.filter((t) => avail[t.need]);
+function buildChain(avail = loadProviders(), { allowPaid = false } = {}) {
+  const chain = TIERS.filter((t) => avail[t.need] && (allowPaid || t.need === 'ollama'));
   return chain.length ? chain : [TIERS[TIERS.length - 1]];
 }
 function tierOf(modelId) {
@@ -59,17 +52,12 @@ function pickStart(chain, text) {
     const i = idx('ollama');
     if (i >= 0) return i;
   }
-  // 超長文コンテキスト → Kimi K3（可用時）
-  if (s.length > 20000) {
-    const i = idx('moonshot');
-    if (i >= 0) return i;
-  }
   // 軽量・定型・高速系 → GLM（可用時）
   if (s.length < 400 && /整形|変換|翻訳|要約|リネーム|一括|format|convert|translate|summariz|rename/i.test(s)) {
     const i = idx('zai');
     if (i >= 0) return i;
   }
-  return 0;
+  return idx('ollama') >= 0 ? idx('ollama') : 0;
 }
 
 // レートリミット/課金系エラーの検知パターン（pi stderr・RPC errorイベント用）

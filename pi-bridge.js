@@ -6,7 +6,7 @@ const { EventEmitter } = require('events');
 
 const VAULT = '/Users/yuma/Documents/CEOBigKiji';
 // v13: 静的チェーン→動的チェーン（model-router.jsがキー実在を検知して可用ティアを構築。
-// Kimi K3/GLMはキー投入の瞬間に自動参戦）。quota沈黙・429検知で即降格する。
+// GLMは確定実行時のみ参戦。quota沈黙・429検知でOllamaへ即降格する。
 const router = require('./model-router');
 let CHAIN = router.buildChain();
 const MODEL = CHAIN[0].id;
@@ -81,7 +81,7 @@ class PiBridge extends EventEmitter {
     if (wasRunning) { this.stop(); this.start(); }
   }
 
-  // キー投入後の再検知（アプリ再起動なしでKimi/GLM参戦を反映）
+  // キー投入後の再検知（アプリ再起動なしでGLM可用性を反映）
   refreshChain() {
     const cur = this.model;
     CHAIN = router.buildChain();
@@ -92,13 +92,8 @@ class PiBridge extends EventEmitter {
 
   start() {
     if (this.proc) return true;
-    // Finder起動の.appはシェル環境を継がない → APIキーはログインシェルから補完、piは絶対パスも試す
-    if (!process.env.GOOGLE_API_KEY && !process.env.GEMINI_API_KEY) {
-      try {
-        const key = require('child_process').execSync('/bin/zsh -lc "echo $GOOGLE_API_KEY"', { timeout: 8000 }).toString().trim();
-        if (key) process.env.GOOGLE_API_KEY = key;
-      } catch (_) {}
-    }
+    // No hidden shell lookup: only the approved GLM key in the process environment
+    // may be used. Google/Kimi/OpenRouter credentials are never imported.
     const PI_BIN = require('fs').existsSync('/Users/yuma/.npm-global/bin/pi') ? '/Users/yuma/.npm-global/bin/pi' : 'pi';
     try {
       this.proc = spawn(PI_BIN, ['--mode', 'rpc', '--approve', '--model', this.model, '--append-system-prompt', LANG_RULE], {

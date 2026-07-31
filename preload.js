@@ -34,4 +34,13 @@ contextBridge.exposeInMainWorld('bigkiji', {
   onLiveState: (cb) => ipcRenderer.on('voice:live-state', (_e, s) => cb(s)),
   onLiveOwn: (cb) => ipcRenderer.on('voice:live-own', (_e, s) => cb(s)),
   onTtsChunk: (cb) => ipcRenderer.on('voice:tts-chunk', (_e, c) => cb(c)),
+  onTaskEvent: (cb) => ipcRenderer.on('task:event', (_e, task) => cb(task)),
+  onTaskLog: (cb) => ipcRenderer.on('task:log', (_e, log) => cb(log)),
+  listTasks: () => ipcRenderer.invoke('task:list'),
+  planTask: (spec) => ipcRenderer.invoke('task:plan', spec),
+  prepareTasks: (spec) => ipcRenderer.invoke('task:prepare', spec),
+  approveTask: (id) => ipcRenderer.invoke('task:approve', id),
+  retryTask: (id) => ipcRenderer.invoke('task:retry', id),
+  abortTask: (id) => ipcRenderer.invoke('task:abort', id),
+  knowledgeState: () => ipcRenderer.invoke('knowledge:state'),
 });

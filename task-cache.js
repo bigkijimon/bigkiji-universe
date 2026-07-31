@@ -3,7 +3,7 @@
 // 分類: direct(短文・非タスク=即送信) / cache(既知パターン=プレイブック注入・議論トークン0)
 //       / swarm(未知タスク=2レンズ軽量議論→合意計画を注入)。
 // 成功パターンは task_knowledge_base.json へ自動保存＝使うほど議論コストが0に近づく。
-// 議論はGemini REST直叩き（text-only構造化＝ツール暴発なし・usageMetadataで実測トークン）。
+// 未知タスクの事前議論はローカル Ollama の JSON 応答だけで行う。
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -14,11 +14,11 @@ const STOP = new Set([
 ]);
 const TASK_WORDS = /作成|実装|構築|調査|分析|修正|設計|生成|レポート|まとめ|移行|検証|テスト|リファクタ|自動化|build|implement|creat|research|analy|fix|design|generat|report|refactor|migrat|test|audit|writ|develop|automat/i;
 
-let cfg = null; // { kbPath, C, emit:{liveComment,broadcast}, model }
+let cfg = null; // { kbPath, C, emit:{liveComment,broadcast}, model, knowledge }
 let pendingSwarm = null; // 実行中swarm→成功時にKBへ保存（同時1件）
 
 function init(options) {
-  cfg = { model: 'gemini-3.1-flash-lite', ...options };
+  cfg = { model: 'qwen3.5:35b-a3b', ...options };
   return api;
 }
 
@@ -55,24 +55,26 @@ function jaccard(a, b) {
 }
 
 async function llmJson(prompt) {
-  const key = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
-  if (!key) throw new Error('no API key');
+  const started = Date.now();
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:generateContent?key=${key}`,
+    'http://127.0.0.1:11434/api/generate',
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.4, maxOutputTokens: 600 },
+        model: cfg.model || 'qwen3.5:35b-a3b',
+        prompt: `${prompt}\nReturn JSON only.`,
+        stream: false,
+        format: 'json',
+        options: { temperature: 0.2, num_predict: 500 },
+        keep_alive: '30m',
       }),
     },
   );
   const j = await res.json();
-  if (j.error) throw new Error(j.error.message || 'llm error');
-  const text = (((j.candidates || [])[0] || {}).content || { parts: [] }).parts.map((p) => p.text || '').join('');
-  const u = j.usageMetadata || {};
-  return { data: JSON.parse(text), tok: (u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) };
+  if (!res.ok || j.error) throw new Error(j.error || `ollama ${res.status}`);
+  const text = String(j.response || '').trim();
+  return { data: JSON.parse(text), tok: 0, local: true, ms: Date.now() - started };
 }
 
 const LENSES = [
@@ -86,7 +88,7 @@ async function swarmDiscuss(text, kw, dispatch) {
   cfg.emit.broadcast('bk:swarm', { mode: 'consensus', phase: 'start' });
   const ask = ([lens, persona]) => llmJson(
     `${persona}\nTask from the owner: """${String(text).slice(0, 1200)}"""\n` +
-    'Available agents: claude (deep coding/architecture), gemini (fast research/summaries), codex (code generation/refactor), biglama (local free bulk work).\n' +
+    'Available agents: claude-code (approved deep coding), glm (approved paid fast execution), biglama (local free planning/bulk work).\n' +
     'Reply ONLY as JSON: {"roles":{"<agent>":{"role":"<short role>","note":"<1 line>"}},"steps":["step 1","step 2",...]} with 3-6 imperative steps in DAG order.',
   ).then((r) => {
     cfg.emit.broadcast('bk:swarm', { mode: 'consensus', phase: 'proposal', lens });
@@ -110,7 +112,7 @@ async function swarmDiscuss(text, kw, dispatch) {
   for (const s of (b.steps || [])) {
     if (!steps.some((x) => jaccard(keywords(x), keywords(s)) > 0.4)) steps.push(s);
   }
-  const discTok = proposals.reduce((n, p) => n + (p.tok || 0), 0);
+  const discTok = proposals.reduce((n, p) => n + (p.tok || 0), 0); // Ollama cost is 0
   const ms = Date.now() - pendingSwarm.t0;
   cfg.emit.broadcast('bk:swarm', { mode: 'consensus', phase: 'merge', steps: steps.length, tok: discTok });
   cfg.emit.liveComment(cfg.C.swarmPhase('Consensus reached', `${steps.length} steps · ${discTok} tok · ${(ms / 1000).toFixed(1)}s`), 'ok');
@@ -118,6 +120,9 @@ async function swarmDiscuss(text, kw, dispatch) {
   const roleLine = Object.entries(roles).map(([k, v]) => `${k}=${(v && v.role) || '?'}`).join(', ');
   const plan = `[SWARM PLAN] Two agent lenses reached consensus. Roles: ${roleLine || 'core'}. ` +
     `Steps: ${steps.join(' → ')}. Execute this plan.\n\n`;
+  if (cfg.knowledge) {
+    try { cfg.knowledge.rememberPlan(cfg.knowledge.createTask(text, 'preflight'), plan, steps); } catch (_) {}
+  }
   dispatch(plan + text);
 }
 
@@ -143,6 +148,9 @@ function route(text, dispatch) {
     const playbook = `[CACHED PLAYBOOK ${best.task_pattern_hash}] Proven plan for a similar task ` +
       `(similarity ${(bestScore * 100) | 0}%). Roles: ${roles || 'core'}. ` +
       `Steps: ${(best.execution_graph || []).join(' → ')}. Follow it directly; do not re-plan unless it clearly misfits.\n\n`;
+    if (cfg.knowledge) {
+      try { cfg.knowledge.rememberPlan(cfg.knowledge.createTask(text, 'cached'), playbook, best.execution_graph || []); } catch (_) {}
+    }
     dispatch(playbook + text);
     return;
   }

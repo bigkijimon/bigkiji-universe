@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildOrbGroup } from './orb-core.js';
+import { CoreInflowSynapse } from './core-inflow-synapse.js';
+import { Roadmap3D } from './roadmap-3d.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -489,6 +491,24 @@ const coreHalo = new THREE.Sprite(new THREE.SpriteMaterial({
 coreHalo.scale.setScalar(4.8); // v11: 写実円盤を主役にするためハローは控えめ（c2実写で緑霧が円盤を洗った）
 coreHalo.renderOrder = -1;
 scene.add(coreHalo);
+const coreFx = new CoreInflowSynapse(scene, { maxParticles: 512 });
+const roadmap3d = new Roadmap3D(scene);
+const corePosition = () => core.group.position.clone();
+const eventTarget = (evt) => {
+  const id = evt && (evt.agent || evt.agentId);
+  return id && nodes[id] ? nodes[id].grp.position.clone() : corePosition().multiplyScalar(1.4);
+};
+const fxFiles = new Set();
+window.bigkiji.onVaultFiles((files) => {
+  for (const f of files || []) {
+    if (fxFiles.has(f.p)) continue;
+    fxFiles.add(f.p);
+    const id = COMPANY_TO_AGENT[f.c];
+    const target = id && nodes[id] ? nodes[id].grp.position.clone() : corePosition();
+    const origin = target.clone().add(new THREE.Vector3((hash01(f.p) - 0.5) * 1.5, -0.5, (hash01(f.p + 'z') - 0.5) * 1.5));
+    coreFx.genesisAt(origin, target, (COMPANY_META[f.c] || [0, '#34d399'])[1]);
+  }
+});
 
 // ---------- 全AI＝ブラックホール（v11・オーナー指示）: エージェント＝ミニBH ----------
 // アイドル時は静かな自転＋微かな事象の地平線のみ。活動で降着円盤が増光する。
@@ -1003,8 +1023,10 @@ function handleEvt(evt, replay) {
     lastStats = evt.stats;
     updateVitals(evt.stats);
     if (!replay) coreActivity = Math.min(coreActivity + 0.12, 1.5);
+    if (!replay) coreFx.handle(evt, corePosition, eventTarget);
     return;
   }
+  if (!replay && evt.source === 'vault') roadmap3d.setState('VERIFY', 'in-progress');
 
   evTimes.push(evt.ts);
   if (!replay) lastEvtWall = Date.now();
@@ -1033,6 +1055,7 @@ function handleEvt(evt, replay) {
   if (autoFollow) eventlog.scrollTop = eventlog.scrollHeight;
 
   if (!replay && !evt.agent && evt.source === 'pi') addThought(evt.text);
+  if (!replay) coreFx.handle(evt, corePosition, eventTarget);
   if (!replay && evt.source === 'pi' && evt.type === 'task') { // ツール実行カード（実行中）
     const tn = (evt.text.match(/^pi:(\S+)/) || [])[1] || 'tool';
     const m2 = evt.agent ? window.AGENT_META[evt.agent] : null;
@@ -1078,14 +1101,14 @@ function showCrawl(text, pri) {
 }
 window.bigkiji.onCommentary((c) => showCrawl(('[LIVE] ' + c.text).slice(0, 110), true));
 
-// ---------- v12 Swarm可視化: 合意形成中は gemini⇄claude⇄codex の繊維束が同時発火 ----------
+// ---------- Local-first preflight: Qwen plans; approved Claude/GLM execute after approval ----------
 window.bigkiji.onSwarm((s) => {
   try {
     if (s.mode === 'consensus') {
       if (s.phase === 'start') setStage('SWARM CONSENSUS — DESIGNING WORKFLOW FOR UNKNOWN TASK', { busy: true, pct: 8 });
       if (s.phase === 'proposal') setStage(`SWARM CONSENSUS — PROPOSAL IN (${(s.lens || '').toUpperCase()})`, { busy: true, pct: 12 });
       if (s.phase === 'merge') setStage(`SWARM CONSENSUS — MERGED ${s.steps} STEPS · ${s.tok} tok`, { busy: true, pct: 18, hold: 2500 });
-      for (const id of ['gemini', 'claude-code', 'codex']) exciteStream(id, { tokens: 400 });
+      for (const id of ['biglama', 'claude-code', 'glm']) if (nodes[id]) exciteStream(id, { tokens: 0 });
     } else if (s.mode === 'cache') {
       setStage(`CACHE HIT — PLAYBOOK ${s.hash} · ${Math.round((s.score || 0) * 100)}% MATCH · 0 DISCUSSION tok`, { pct: 10, hold: 2600 });
       codeLine(`<span class="ck">// CACHE:</span> playbook ${esc(s.hash || '')} injected (zero-discussion)`);
@@ -1110,6 +1133,11 @@ function feedThink(text) {
 }
 
 window.bigkiji.onPiEvent((e) => {
+  coreFx.handle(e, corePosition, eventTarget);
+  if (e.kind === 'turn_start') roadmap3d.setState('ROUTE', 'in-progress');
+  else if (e.kind === 'delta') roadmap3d.setState('PLAN', 'in-progress');
+  else if (e.kind === 'degrade') roadmap3d.setState('EXECUTE', 'blocked');
+  else if (e.kind === 'tool_end') roadmap3d.setState('EXECUTE', e.isError ? 'blocked' : 'completed');
   if (e.kind === 'turn_start') {
     flowNewTurn(e);
     turnStartedAt = performance.now();
@@ -1147,6 +1175,7 @@ window.bigkiji.onPiEvent((e) => {
   }
 });
 window.bigkiji.onPiStats((s) => {
+  roadmap3d.setState('VERIFY', 'completed'); roadmap3d.pulse(3);
   flowFinish(s.turn ? `in ${s.turn.input} · out ${s.turn.output} tok` : 'done');
   { // TOKEN VELOCITY（実測）: ターン実消費 ÷ 実所要時間
     const tokSum = s.turn ? s.turn.input + s.turn.output : 0;
@@ -1231,7 +1260,9 @@ renderDest();
 ccmd.addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return; // IME変換確定のEnterでは送信しない
   if (e.key === 'Enter' && ccmd.value.trim()) {
-    if (dest === 'ai') window.bigkiji.piPrompt(ccmd.value); // turn_startイベントがパイプラインカードを起こす
+    if (dest === 'ai' && /^\/parallel\s+/i.test(ccmd.value)) {
+      window.prepareParallelTasks && window.prepareParallelTasks(ccmd.value.replace(/^\/parallel\s+/i, '').trim());
+    } else if (dest === 'ai') window.bigkiji.piPrompt(ccmd.value); // turn_startイベントがパイプラインカードを起こす
     else { window.bigkiji.ptyInput(ccmd.value + '\n'); window.bkShowTerm && window.bkShowTerm(); }
     ccmd.value = '';
   }
@@ -1765,6 +1796,8 @@ const clock = new THREE.Clock();
   stardust.material.uniforms.uFade.value = reduced ? 0.16 : perfStage === 0 ? 0.58 : perfStage === 1 ? 0.3 : 0.04;
   stardust.material.uniforms.uPixelRatio.value = Math.min(devicePixelRatio, 2);
   stardust.visible = perfStage < 2;
+  coreFx.update(now, reduced || perfStage >= 2);
+  roadmap3d.update(delta, reduced || perfStage >= 2);
   // 神経叢の明滅（シェーダ駆動・perf降格で減光）
   neural.mat.uniforms.uTime.value = t;
   neural.mat.uniforms.uFade.value = reduced ? 0.2 : perfStage === 0 ? 0.5 : perfStage === 1 ? 0.3 : 0.12;

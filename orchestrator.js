@@ -7,6 +7,7 @@ const os = require('os');
 
 const AGENTS = [
   { id: 'claude-code', label: 'Claude Code', color: '#d97757', match: /claude/i },
+  { id: 'glm',          label: 'GLM',        color: '#8b5cf6', match: /glm|zai/i },
   { id: 'gemini',      label: 'Gemini',      color: '#4e8cff', match: /gemini/i },
   { id: 'codex',       label: 'Codex',       color: '#00a67d', match: /codex/i },
   { id: 'biglama',     label: 'LocalAI BigLama', color: '#a78bfa', match: /ollama|qwen|llama|biglama|localai/i },
