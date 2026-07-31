@@ -32,8 +32,12 @@ else camera.position.set(0, 4.5, 10.5);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-controls.autoRotate = !reducedMq.matches;
-controls.autoRotateSpeed = 0.16; // ゆっくり（オーナー指示）
+// Motion-safe camera: no ambient drift and no gesture inertia. Explicit
+// cluster/file focus and the three view buttons are the only camera movement.
+controls.autoRotate = false;
+controls.enableRotate = false;
+controls.enablePan = false;
+controls.enableZoom = false;
 controls.minDistance = 2.6; controls.maxDistance = 34;
 
 // ---------- テクスチャ/ラベル ----------
@@ -1707,57 +1711,27 @@ function resize() {
 new ResizeObserver(resize).observe(wrap);
 resize();
 
-// ---------- オートカメラ演出: 伝達が始まったオーブへズームし、次の伝達へ乗り移る ----------
-let autoCam = !location.hash; // 検証用プリセット(#mid/#near/#side)起動時はドローンを止めて固定画角
-let camFocusId = null, camFocusUntil = 0, camLastSwitch = 0;
+// ---------- 固定カメラ: 選択時だけ一度移動し、到着後は追尾しない ----------
 const cameraFocus = new SmoothFocusController(camera, controls, { home: new THREE.Vector3(0, 0, 0), homeDistance: 11.5 });
 function focusCloud(key, index, deep = false) {
   const cl = fileClouds[key]; if (!cl) return;
-  const selectedPath = cl.files[index]?.p;
-  cameraFocus.focus(() => {
-    const current = fileClouds[key];
-    const currentIndex = selectedPath ? galaxyState.map[selectedPath]?.i : index;
-    if (!current || currentIndex == null) return null;
-    const p = current.points.geometry.attributes.position.array;
-    const worldPoint = new THREE.Vector3(p[currentIndex * 3], p[currentIndex * 3 + 1], p[currentIndex * 3 + 2]);
-    return current.grp.localToWorld(worldPoint);
-  }, deep ? 2.8 : 4.4);
-  disableAutoCam();
+  const p = cl.points.geometry.attributes.position.array;
+  const worldPoint = new THREE.Vector3(p[index * 3], p[index * 3 + 1], p[index * 3 + 2]);
+  cl.grp.localToWorld(worldPoint);
+  cameraFocus.focus(worldPoint, deep ? 2.8 : 4.4);
 }
 function focusAgent(id, deep = false) {
   const nd = nodes[id]; if (!nd) return;
-  cameraFocus.focus(() => nodes[id]?.grp.position.clone() || null, deep ? 3.2 : 5.2);
-  disableAutoCam(); filePopup.close();
+  cameraFocus.focus(nd.grp.position.clone(), deep ? 3.2 : 5.2);
+  filePopup.close();
 }
 const autoCamBtn = document.getElementById('autoCamBtn');
-autoCamBtn.classList.toggle('on', autoCam);
-function autoFocusOn(id) {
-  if (!autoCam) return;
-  const n2 = performance.now();
-  if (camFocusId !== id && n2 - camLastSwitch < 2600) return; // 乗り移りの暴れ防止
-  if (camFocusId !== id) camLastSwitch = n2;
-  camFocusId = id;
-  camFocusUntil = n2 + 7000; // 伝達が続く限り延長・7秒静かなら全景へ戻る
-}
-function disableAutoCam() {
-  if (!autoCam) return;
-  autoCam = false;
-  camFocusId = null;
-  autoCamBtn.classList.remove('on');
-}
-// ドローン飛行の状態（注視点まわりの球面座標）
-const drone = { azi: 1.13, rad: 11.5, lift: 0 };
-autoCamBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  autoCam = !autoCam;
-  camFocusId = null;
-  autoCamBtn.classList.toggle('on', autoCam);
-  if (autoCam) { // 再開時は現在のカメラ位置から滑らかに引き継ぐ
-    drone.azi = Math.atan2(camera.position.z - controls.target.z, camera.position.x - controls.target.x);
-    drone.rad = camera.position.distanceTo(controls.target) || 11.5;
-    drone.lift = 0;
-  }
-});
+autoCamBtn.textContent = '📷 LOCK';
+autoCamBtn.title = 'Motion-safe camera lock: click a particle for one intentional focus transition';
+autoCamBtn.classList.add('on');
+autoCamBtn.disabled = true;
+function autoFocusOn() { /* transmission events never move the locked camera */ }
+function disableAutoCam() { /* retained for view-button call sites */ }
 
 // ビュー切替（SYSTEM/FILES/CLOSE）— カメラ距離をなめらかに遷移
 let targetDist = null;
@@ -1779,7 +1753,6 @@ window.addEventListener('keydown', (event) => {
 let galaxyO = 0, museumO = 0;
 const UP_Y = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
-const _zero = new THREE.Vector3();
 const clock = new THREE.Clock();
 (function tick() {
   requestAnimationFrame(tick);
@@ -1796,26 +1769,7 @@ const clock = new THREE.Clock();
     if (Math.abs(next - targetDist) < 0.15) targetDist = null;
   }
   cameraFocus.update(delta);
-  // オートカメラ＝ドローン飛行: 常時ゆっくり旋回し、乗り移り時は旋回を強め
-  // 高度をふわっと上げてから弧を描いて新しいオーブへ降りる。全景復帰は螺旋で引き上がる。
-  if (autoCam) {
-    const nowc = performance.now();
-    if (camFocusId && nowc > camFocusUntil) camFocusId = null;
-    const focNd = camFocusId && camFocusId !== 'core' ? nodes[camFocusId] : null;
-    const tgt = focNd ? focNd.grp.position : _zero;
-    const transit = Math.min(controls.target.distanceTo(tgt) / 4, 1); // 乗り移り中ほど1へ
-    drone.lift = THREE.MathUtils.damp(drone.lift, transit, 3, delta);
-    controls.target.lerp(tgt, 1 - Math.exp(-2.0 * delta));
-    drone.azi += delta * (0.055 + drone.lift * 0.5); // 旋回＋スウープで回り込み
-    const pol = 1.12 - drone.lift * 0.38 + Math.sin(t * 0.13) * 0.05; // 高度リフト＋微呼吸
-    const wantD = (focNd ? 5.6 : (camFocusId === 'core' ? 8.4 : 11.5)) + drone.lift * 2.2;
-    drone.rad = THREE.MathUtils.damp(drone.rad, wantD, 1.6, delta);
-    camera.position.set(
-      controls.target.x + drone.rad * Math.sin(pol) * Math.cos(drone.azi),
-      controls.target.y + drone.rad * Math.cos(pol),
-      controls.target.z + drone.rad * Math.sin(pol) * Math.sin(drone.azi));
-  }
-  controls.autoRotate = !reduced && !autoCam && !cameraFocus.active;
+  controls.autoRotate = false;
   const dist = camera.position.distanceTo(controls.target); // LODは注視点との距離で判定（追尾中も正しく展開）
 
   // LOD（v9反転）: 既定=惑星系。拡大(dist<8.5)でファイル銀河が展開・(<7)で博物館

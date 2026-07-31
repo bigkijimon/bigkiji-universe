@@ -13,6 +13,7 @@
     "test:particle-cluster": "node tools/particle-cluster-selftest.js",
     "test:ui-3d": "node tools/ui-3d-selftest.js",
     "test:interaction": "node tools/interaction-selftest.mjs",
+    "test:terminal-resizer": "node tools/terminal-resizer-selftest.js",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },
