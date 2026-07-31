@@ -283,7 +283,11 @@ function createMainWindow() {
   });
   mainWin.loadFile(path.join(__dirname, 'renderer', 'main.html'),
     process.env.SNAP_DIST ? { hash: process.env.SNAP_DIST } : undefined); // SNAP用LOD距離プリセット
-  mainWin.once('ready-to-show', () => mainWin.show());
+  mainWin.once('ready-to-show', () => {
+    mainWin.show();
+    mainWin.focus();
+    if (SHOW_MAIN) app.focus({ steal: true });
+  });
   mainWin.on('close', (e) => { if (!quitting) { e.preventDefault(); mainWin.hide(); } });
 }
 
@@ -889,7 +893,7 @@ ipcMain.handle('get-info', () => {
 
 // ---------- ライフサイクル ----------
 app.whenReady().then(() => {
-  if (process.platform === 'darwin' && !SMOKE && !SNAP) app.dock.hide(); // メニューバー常駐アプリ
+  if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
   createTray();
   createTrayWindow();
   if (SMOKE || SNAP || SHOW_MAIN) createMainWindow(); // --show-main は再起動後のCanvas確認・直接起動用
