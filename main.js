@@ -22,6 +22,7 @@ const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'focus-stream-v3';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
+const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: '/Users/yuma/Documents/CEOBigKiji', maxParallel: 2 });
 
@@ -891,7 +892,7 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && !SMOKE && !SNAP) app.dock.hide(); // メニューバー常駐アプリ
   createTray();
   createTrayWindow();
-  if (SMOKE || SNAP) createMainWindow(); // 通常起動ではウィンドウを開かない（バー内ダッシュボードが常設・キャンバスは明示操作時のみ）
+  if (SMOKE || SNAP || SHOW_MAIN) createMainWindow(); // --show-main は再起動後のCanvas確認・直接起動用
   spawnShell();
   // Fast route is ready independently; local Qwen warmup is intentionally background-only.
   router.ollamaWarmup('qwen3.5:35b-a3b');
