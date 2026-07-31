@@ -805,7 +805,7 @@ ipcMain.handle('get-info', () => {
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
-    costPolicy: { planning: 'ollama-only', paid: ['claude-code', 'glm'], blocked: ['gemini', 'kimi', 'openrouter', 'codex'] },
+    costPolicy: { planning: 'ollama-only', paid: ['claude-code', 'glm'], localOperators: ['codex'], blocked: ['gemini', 'kimi', 'openrouter'] },
     ...bus.snapshot() };
 });
 
