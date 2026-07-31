@@ -1,0 +1,35 @@
+{
+  "name": "bigkiji-universe",
+  "version": "1.0.0",
+  "description": "BigKiji Universe OS — menu-bar orchestration synapse app",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac --dir",
+    "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
+  },
+  "build": {
+    "appId": "com.bigkiji.universe",
+    "productName": "BigKiji Universe",
+    "directories": { "output": "../dist" },
+    "asar": false,
+    "npmRebuild": false,
+    "files": ["**/*", "!recordings/**"],
+    "extraResources": [
+      { "from": "node_modules/three/examples/jsm", "to": "app/node_modules/three/examples/jsm" }
+    ],
+    "mac": { "target": "dir", "icon": "build/icon.icns", "category": "public.app-category.productivity" }
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0",
+    "three": "^0.172.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "electron": "^34.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}

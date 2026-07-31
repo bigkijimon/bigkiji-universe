@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>BigKiji</title>
+<script type="importmap">
+  { "imports": { "three": "../node_modules/three/build/three.module.js" } }
+</script>
+<style>
+  :root {
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --dur-fast: 120ms; --dur-base: 200ms; --dur-state: 280ms;
+    --em: #34d399; --ink: rgba(233,246,240,.94); --dim: rgba(226,240,234,.55);
+    --faint: rgba(226,240,234,.34); --hairline: rgba(255,255,255,.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: transparent; overflow: hidden;
+    font-family: -apple-system, "Hiragino Sans", sans-serif; user-select: none; }
+  .shell {
+    height: 100%; display: flex; flex-direction: column; position: relative;
+    /* すりガラスはウィンドウのvibrancyが担う。CSS backdrop-filterは絶対に使わない
+       （vibrancyと併用すると効果層が壊れて透けるだけになる — glass-lab実測/electron#39529） */
+    background: linear-gradient(165deg, rgba(18,28,38,.22), rgba(8,14,22,.34));
+    border: 1px solid rgba(255,255,255,.12); border-radius: 11px; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  }
+  .grain { position: absolute; inset: 0; pointer-events: none; opacity: .04; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  header { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; position: relative; }
+  .bkMark { width: 15px; height: 15px; filter: drop-shadow(0 0 6px rgba(52,211,153,.7)); }
+  .bkMark .bkP { stroke-dasharray: 16; stroke-dashoffset: 16;
+    animation: draw 900ms var(--ease-out) forwards; }
+  .bkMark .bkP:nth-child(2) { animation-delay: 120ms; }
+  .bkMark .bkP:nth-child(3) { animation-delay: 240ms; }
+  .bkMark .bkP:nth-child(4) { animation-delay: 360ms; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  header .title { color: var(--ink); font-size: 12.5px; font-weight: 600; letter-spacing: .04em; }
+  header .status { margin-left: auto; display: flex; align-items: center; gap: 5px;
+    color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+  header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--em);
+    box-shadow: 0 0 8px rgba(52,211,153,.9); animation: dotBreath 4s ease-in-out infinite; }
+  @keyframes dotBreath { 0%,100% { opacity: .75; } 50% { opacity: 1; } }
+  .hbtn { flex: none; display: inline-flex; align-items: center; gap: 4px;
+    border: 1px solid var(--hairline); background: rgba(255,255,255,.045); color: var(--dim);
+    font-size: 9.5px; font-weight: 700; letter-spacing: .08em; border-radius: 7px;
+    padding: 3px 8px; cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+  .hbtn:hover { background: rgba(52,211,153,.12); color: var(--em); }
+  .hbtn:active { transform: scale(0.97); }
+
+  #orbWrap { position: relative; height: 148px; flex: none; cursor: text; overflow: hidden; }
+  #orbWrap .bgHero { position: absolute; inset: -12px; background: url("./assets/nebula.png") center/cover;
+    mix-blend-mode: screen; opacity: .38; pointer-events: none;
+    -webkit-mask-image: radial-gradient(ellipse 66% 84% at 50% 46%, black 28%, transparent 78%);
+            mask-image: radial-gradient(ellipse 66% 84% at 50% 46%, black 28%, transparent 78%); }
+  #orbWrap .hint { position: absolute; left: 0; right: 0; bottom: 5px; text-align: center;
+    color: var(--faint); font-family: "SF Mono", Menlo, monospace; font-size: 9px;
+    letter-spacing: .1em; pointer-events: none;
+    animation: hintBreath 3.2s ease-in-out infinite; }
+  @keyframes hintBreath { 0%,100% { opacity: .4; } 50% { opacity: .66; } }
+
+  .composer { flex: none; display: flex; gap: 6px; align-items: center;
+    padding: 9px 12px; border-top: 1px solid var(--hairline); }
+  #cmd { flex: 1; min-width: 0; background: rgba(8,14,22,.38); border: 1px solid var(--hairline);
+    border-radius: 9px; padding: 7px 10px; color: var(--ink);
+    font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; outline: none; caret-color: var(--em);
+    transition: border-color var(--dur-fast) var(--ease-out); }
+  #cmd::placeholder { color: var(--faint); }
+  #cmd:focus { border-color: rgba(52,211,153,.4); }
+  .cbtn { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--hairline); background: rgba(255,255,255,.045); border-radius: 9px;
+    color: var(--dim); cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+  .cbtn svg { width: 13px; height: 13px; }
+  .cbtn:hover { background: rgba(52,211,153,.12); color: var(--em); }
+  .cbtn:active { transform: scale(0.97); }
+  /* v12 ライブ音声状態（transform+opacityのみ） */
+  @keyframes liveP { 0%, 100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
+  .cbtn.listen, .cbtn.capture, .cbtn.think, .cbtn.speak {
+    color: var(--lc); border-color: color-mix(in srgb, var(--lc) 45%, transparent);
+    background: color-mix(in srgb, var(--lc) 13%, transparent);
+    animation: liveP var(--lp, 1.8s) ease-in-out infinite; }
+  .cbtn.listen { --lc: #00f3ff; --lp: 1.8s; }
+  .cbtn.capture { --lc: #00ff9d; --lp: .8s; }
+  .cbtn.think { --lc: #FFE81F; --lp: 1.1s; }
+  .cbtn.speak { --lc: #f472b6; --lp: .7s; }
+  .cbtn.pion { color: #FFE81F; border-color: rgba(255,232,31,.45); background: rgba(255,232,31,.10); }
+
+  /* Piストリーミング応答（ローカル¥0） */
+  #piAnswer { display: none; margin: 0 12px 4px; padding: 7px 10px; max-height: 120px; overflow-y: auto;
+    background: rgba(8,14,22,.5); border: 1px solid rgba(255,232,31,.18); border-radius: 9px;
+    font-size: 11px; line-height: 1.65; color: var(--dim); white-space: pre-wrap; }
+  #piAnswer.on { display: block; }
+  #piAnswer::-webkit-scrollbar { width: 0; }
+  /* SYNAPSE FEED: キャンバスと連動する進行カード（ポップ→●進行→✓解決→退場・実イベント駆動） */
+  #feed { display: flex; flex-direction: column; gap: 4px; margin: 0 12px 4px; }
+  .fcd { display: flex; align-items: center; gap: 6px; padding: 4px 9px;
+    font: 10.5px "SF Mono", Menlo, monospace; color: rgba(226,240,234,.85);
+    background: rgba(255,255,255,.045);
+    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+    border-left: 2px solid var(--c); border-radius: 8px;
+    transform: translateY(-4px) scale(.98); opacity: 0;
+    animation: fcdIn .22s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes fcdIn { to { transform: none; opacity: 1; } }
+  .fcd .fi { flex: none; }
+  .fcd .ft { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fcd .st { flex: none; color: var(--c); }
+  .fcd.running .st { animation: fcdPulse 1.1s ease-out infinite; }
+  @keyframes fcdPulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .fcd.done { opacity: .75; }
+  .fcd.gone { opacity: 0; transform: translateY(-3px); transition: opacity .3s, transform .3s; }
+
+  /* エージェント別アクティビティ・ミニカード（それぞれの動きを小さく表示） */
+  #cards { flex: none; display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px;
+    padding: 8px 12px 9px; border-top: 1px solid var(--hairline); }
+  .acard { display: flex; align-items: center; gap: 5px; min-width: 0;
+    background: rgba(255,255,255,.05); border: 1px solid var(--hairline);
+    border-radius: 8px; padding: 4px 7px; }
+  .acard .ai { flex: none; display: inline-flex; }
+  .acard .ai svg { width: 10px; height: 10px; }
+  .acard .an { flex: 1; min-width: 0; font-size: 9.5px; font-weight: 600; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acard .ac { flex: none; font-family: "SF Mono", Menlo, monospace; font-size: 9.5px;
+    color: var(--faint); font-variant-numeric: tabular-nums; }
+  .acard .ad { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--c);
+    opacity: .22; transition: opacity var(--dur-base) var(--ease-out); }
+  .acard.hot .ad { opacity: 1; box-shadow: 0 0 6px var(--c); }
+  .acard.hot .ac { color: var(--c); }
+
+  .logHead { display: flex; align-items: baseline; padding: 5px 14px 5px;
+    border-top: 1px solid var(--hairline); }
+  .logHead span { color: var(--faint); font-family: "SF Mono", Menlo, monospace;
+    font-size: 9.5px; font-weight: 700; letter-spacing: .12em; }
+  .logHead em { margin-left: auto; font-style: normal; color: rgba(52,211,153,.7);
+    font-size: 10px; font-variant-numeric: tabular-nums; }
+  #log { flex: 1; overflow-y: auto; padding: 2px 12px 12px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; line-height: 1.75;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 14px); }
+  #log::-webkit-scrollbar { width: 0; }
+  .row { display: flex; gap: 6px; align-items: baseline; white-space: nowrap;
+    opacity: 0; transform: translateY(4px);
+    animation: enter var(--dur-base) var(--ease-out) forwards; }
+  #log.noanim .row { animation-duration: 1ms; }
+  @keyframes enter { to { opacity: 1; transform: translateY(0); } }
+  .row time { color: rgba(226,240,234,.3); font-size: 9.5px; flex: none;
+    font-variant-numeric: tabular-nums; }
+  .row .chip { flex: none; display: inline-flex; align-items: center; gap: 3px;
+    font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 4px; }
+  .row .chip svg { width: 9px; height: 9px; }
+  .row .txt { color: rgba(226,240,234,.66); overflow: hidden; text-overflow: ellipsis; }
+  .row.sys .txt { color: var(--faint); }
+
+  header, #orbWrap, .composer, .logHead, #log { opacity: 0; transform: translateY(5px);
+    animation: boot 420ms var(--ease-out) forwards; }
+  #orbWrap { animation-delay: 80ms; } .composer { animation-delay: 150ms; }
+  .logHead { animation-delay: 210ms; } #log { animation-delay: 260ms; }
+  @keyframes boot { to { opacity: 1; transform: translateY(0); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <span id="mark"></span><span class="title">BigKiji Universe</span>
+      <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
+      <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
+      <span class="status"><span class="dot"></span><span id="mode">…</span></span>
+    </header>
+    <div id="orbWrap">
+      <div class="bgHero"></div>
+      <div class="hint" data-i18n="hint">…</div>
+    </div>
+    <div class="composer">
+      <input id="cmd" type="text" spellcheck="false"
+        data-i18n-ph="ph_ai" placeholder="" />
+      <button id="piToggle" class="cbtn pion" title="Toggle destination: AI ⇄ terminal"
+        style="font-weight:800;font-size:13px">π</button>
+      <button id="nudge" class="cbtn" title="Ask the orb to suggest the next move" style="font-size:12px">💡</button>
+      <button id="mic" class="cbtn" data-live-icon="1" title="Live voice — one tap for hands-free conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+      </button>
+    </div>
+    <div id="piAnswer"></div>
+    <div id="feed"></div>
+    <div id="cards"></div>
+    <div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
+      <em id="tvitals" style="margin-left:8px;color:rgba(226,240,234,.4);letter-spacing:0">–</em>
+      <em id="count">0</em></div>
+    <div id="log"></div>
+    <div class="grain"></div>
+  </div>
+
+  <script src="./agents.js"></script>
+  <script src="./voice-live.js"></script>
+  <script>
+    document.getElementById('mark').innerHTML = window.BIGKIJI_MARK;
+    const log = document.getElementById('log');
+    const count = document.getElementById('count');
+    let n = 0;
+    const stamps = [];
+    // ---- エージェント別ミニカード（実カウント・活動で点灯） ----
+    const cards = document.getElementById('cards');
+    const cardMap = {};
+    for (const [id, m] of Object.entries(window.AGENT_META)) {
+      const c = document.createElement('div');
+      c.className = 'acard';
+      c.style.setProperty('--c', m.color);
+      c.innerHTML = '<span class="ai" style="color:' + m.color + '">' + m.icon + '</span>' +
+        '<span class="an">' + m.short + '</span><span class="ac">0</span><i class="ad"></i>';
+      cards.appendChild(c);
+      cardMap[id] = { el: c, count: c.querySelector('.ac'), timer: null };
+    }
+    window.bigkiji.getInfo().then((i) => {
+      document.getElementById('mode').textContent = i.ptyMode === 'pty' ? 'LIVE · pty' : 'LIVE · pipe';
+      for (const id in (i.counters || {})) {
+        if (cardMap[id]) cardMap[id].count.textContent = String(i.counters[id].count);
+      }
+    });
+    window.addEventListener('bk:event', (e) => {
+      const evt = e.detail;
+      if (evt.type === 'pulse' && evt.stats) { // 実測値は1行をその場更新（行スパム廃止）
+        document.getElementById('tvitals').textContent =
+          `load ${evt.stats.load.toFixed(1)} · ${evt.stats.usedGB}/${evt.stats.totalGB}G · procs ${evt.stats.procs}`;
+        return;
+      }
+      const now = performance.now();
+      stamps.push(now);
+      while (stamps.length && now - stamps[0] > 1000) stamps.shift();
+      log.classList.toggle('noanim', stamps.length > 10);
+      const meta = evt.agent ? window.AGENT_META[evt.agent] : null;
+      const row = document.createElement('div');
+      row.className = 'row' + (evt.source === 'system' ? ' sys' : '');
+      const t = new Date(evt.ts);
+      const hh = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + ':' + String(t.getSeconds()).padStart(2, '0');
+      row.innerHTML = '<time>' + hh + '</time>' +
+        (meta ? '<span class="chip" style="color:' + meta.color + ';background:' + meta.color + '22">' + meta.icon + meta.label + '</span>' : '') +
+        '<span class="txt"></span>';
+      row.querySelector('.txt').textContent = evt.text;
+      log.appendChild(row);
+      while (log.children.length > 60) log.removeChild(log.firstChild);
+      log.scrollTop = log.scrollHeight;
+      count.textContent = String(++n);
+
+      // SYNAPSE FEED連動: ツール実行/実ファイル書込を進行カード化（AI同士のやりとりが見える）
+      if (evt.source === 'pi' && evt.type === 'task') {
+        const tn = (evt.text.match(/^pi:(\S+)/) || [])[1] || 'tool';
+        const m3 = evt.agent ? window.AGENT_META[evt.agent] : null;
+        feedCard(tn, '🔧', tn + (m3 ? ' → ' + m3.role : ''), m3 ? m3.color : '#4e8cff', true);
+      }
+      if (evt.source === 'vault' && evt.agent && window.AGENT_META[evt.agent]) {
+        feedCard('fs' + evt.ts, '✎', evt.text.slice(2, 44), window.AGENT_META[evt.agent].color, false);
+      }
+      // カード更新（再生分はスナップショット済みカウントに含まれるため加算しない）
+      if (evt.agent && cardMap[evt.agent] && !evt._replay) {
+        const cd = cardMap[evt.agent];
+        cd.count.textContent = String((+cd.count.textContent || 0) + 1);
+        cd.el.classList.add('hot');
+        clearTimeout(cd.timer);
+        cd.timer = setTimeout(() => cd.el.classList.remove('hot'), 1400);
+      }
+    });
+
+    // ---- SYNAPSE FEED: キャンバスと連動する進行カード（実イベント→ポップ→✓解決） ----
+    const feed = document.getElementById('feed');
+    const feedCards = [];
+    function fadeCard(fc, ms) {
+      setTimeout(() => {
+        fc.el.classList.add('gone');
+        setTimeout(() => { fc.el.remove(); const i = feedCards.indexOf(fc); if (i >= 0) feedCards.splice(i, 1); }, 350);
+      }, ms);
+    }
+    function feedCard(key, icon, text, color, running) {
+      let fc = running ? feedCards.find((c) => c.key === key && c.running) : null;
+      if (fc) { fc.tx.textContent = text; return fc; } // 進行中カードは差し替え更新
+      const el = document.createElement('div');
+      el.className = 'fcd' + (running ? ' running' : '');
+      el.style.setProperty('--c', color || '#34d399');
+      el.innerHTML = '<span class="fi"></span><span class="ft"></span><span class="st">' + (running ? '●' : '✓') + '</span>';
+      el.querySelector('.fi').textContent = icon;
+      el.querySelector('.ft').textContent = text;
+      feed.prepend(el);
+      fc = { key, el, tx: el.querySelector('.ft'), st: el.querySelector('.st'), running: !!running };
+      feedCards.unshift(fc);
+      while (feedCards.length > 4) feedCards.pop().el.remove();
+      if (!running) fadeCard(fc, 4000);
+      return fc;
+    }
+    function feedResolve(key, err) {
+      const fc = feedCards.find((c) => c.key === key && c.running);
+      if (!fc) return;
+      fc.running = false;
+      fc.el.classList.remove('running');
+      fc.el.classList.add('done');
+      fc.st.textContent = err ? '✗' : '✓';
+      fadeCard(fc, 2600); // 次々に解決して退場していく
+    }
+
+    // ---- コンポーザー: ⏎でpty、πモード時はPi RPC（ローカル¥0）へ ----
+    const cmd = document.getElementById('cmd');
+    const piToggle = document.getElementById('piToggle');
+    const piAnswer = document.getElementById('piAnswer');
+    let piMode = true; // 既定の宛先=AI（初回⏎でPiが自動起動）
+    piToggle.addEventListener('click', () => {
+      piMode = !piMode;
+      piToggle.classList.toggle('pion', piMode);
+      cmd.placeholder = window.t(piMode ? 'ph_ai' : 'ph_shell');
+      if (!piMode) { piAnswer.classList.remove('on'); piAnswer.textContent = ''; }
+      cmd.focus();
+    });
+    cmd.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return; // IME変換確定のEnterでは送信しない
+      if (e.key === 'Enter' && cmd.value.trim()) {
+        if (piMode) {
+          window.bigkiji.piPrompt(cmd.value); // 未起動でもmain側で自動起動
+          piAnswer.textContent = '';
+          piAnswer.classList.add('on');
+        } else {
+          window.bigkiji.ptyInput(cmd.value + '\n');
+        }
+        cmd.value = '';
+      }
+      if (e.key === 'Escape') cmd.blur();
+    });
+    window.bigkiji.onPiEvent((ev) => {
+      if (ev.kind === 'turn_start') {
+        feedCard('turn', '🗣', (ev.text || '') + ' · ' + (ev.model || '').split('/').pop(), '#FFE81F', true);
+      } else if (ev.kind === 'delta') {
+        piAnswer.classList.add('on');
+        piAnswer.textContent = (piAnswer.textContent + ev.text).slice(-1600);
+        piAnswer.scrollTop = piAnswer.scrollHeight;
+        // AI談義のライブ断片（思考/相談の中身が小窓でも見える）
+        feedCard('think', '🧠', ev.text.replace(/\s+/g, ' ').slice(-46), '#FFE81F', true);
+      } else if (ev.kind === 'tool_end') {
+        feedResolve(ev.toolName, ev.isError);
+      } else if (ev.kind === 'speak') {
+        feedCard('speak' + Date.now(), '🔊', 'voice reply', '#34d399', false);
+      }
+    });
+    window.bigkiji.onPiStats((s) => {
+      feedResolve('think');
+      feedResolve('turn');
+      feedCard('tok' + Date.now(), '✅', s.turn ? ('in ' + s.turn.input + ' · out ' + s.turn.output + ' tok') : 'turn done', '#34d399', false);
+    });
+    window.bigkiji.onComposerFocus(() => { cmd.focus(); cmd.select(); });
+    document.getElementById('openCanvas').addEventListener('click', () => window.bigkiji.openMain());
+    document.getElementById('nudge').addEventListener('click', () => {
+      piAnswer.textContent = '';
+      piAnswer.classList.add('on');
+      window.bigkiji.piPrompt('(Self-proposal mode) Based on recent deliverables, knowledge and status, suggest exactly one highest-value next move, briefly and conversationally. End by asking "Shall I do it?" in the owner\'s language.');
+    });
+    window.applyI18n();
+    const voiceBtn = document.getElementById('voiceBtn');
+    voiceBtn.addEventListener('click', async () => {
+      const r = await window.bigkiji.voiceToggle();
+      voiceBtn.textContent = r.on ? '🔊' : '🔇';
+    });
+
+    // D&D: ファイルを落とすと @パス を入力欄へ挿入
+    document.addEventListener('dragover', (e) => e.preventDefault());
+    document.addEventListener('drop', (e) => {
+      e.preventDefault();
+      for (const f of e.dataTransfer.files) {
+        try {
+          const p = window.bigkiji.getPathForFile(f);
+          if (p) cmd.value = (cmd.value + ' @' + p).trim() + ' ';
+        } catch (_) {}
+      }
+      cmd.focus();
+    });
+
+    // ---- v12 ライブ音声: PTT/トグル録音は全廃 → 1タップでハンズフリー会話 ----
+    // マイク所有権はmainが調停（メイン窓が開いていればそちらがキャプチャし、このボタンは状態表示）
+    if (window.BKLive) window.BKLive.init({ button: document.getElementById('mic') });
+  </script>
+  <script type="module">
+    import { mountOrb } from './orb-core.js';
+    const wrap = document.getElementById('orbWrap');
+    const cmd = document.getElementById('cmd');
+    // オーブタップ＝会話（入力）開始。キャンバスはヘッダの ⛶ ボタンから
+    const orb = mountOrb(wrap, { segments: 160, onClick: () => { cmd.focus(); cmd.select(); } });
+
+    const seen = new Set();
+    let lastStats = null;
+    const buckets = new Array(40).fill(0); // 直近40秒の実イベント数（トレイのオーブ発光に使用）
+    function onEvt(evt, replay) {
+      if (seen.has(evt.id)) return;
+      seen.add(evt.id);
+      if (seen.size > 400) seen.delete(seen.values().next().value);
+      if (evt.stats) lastStats = evt.stats;
+      if (!replay) {
+        orb.spike(evt.source === 'system' ? 0.18 : 0.5);
+        buckets[buckets.length - 1]++;
+      }
+      evt._replay = replay;
+      window.dispatchEvent(new CustomEvent('bk:event', { detail: evt }));
+    }
+    window.bigkiji.onBusEvent((evt) => onEvt(evt, false));
+    window.bigkiji.getInfo().then((i) => {
+      (i.recent || []).forEach((evt) => onEvt(evt, true));
+      if (i.lastStats) lastStats = i.lastStats;
+    });
+    setInterval(() => { buckets.push(0); buckets.shift(); }, 1000);
+
+    // ---- メニューバーアイコン = グラデーションバッジ + 白❖（活動量で発光が強まる） ----
+    const bar = document.createElement('canvas');
+    bar.width = bar.height = 40; // 論理20px @2x
+    const bg = bar.getContext('2d');
+    const MARK_PATHS = [
+      'M12 2.8l3.6 3.6L12 10 8.4 6.4 12 2.8z', 'M12 14l3.6 3.6L12 21.2 8.4 17.6 12 14z',
+      'M2.8 12l3.6-3.6L10 12l-3.6 3.6L2.8 12z', 'M14 12l3.6-3.6L21.2 12l-3.6 3.6L14 12z',
+    ];
+    function drawTrayOrb() {
+      bg.clearRect(0, 0, 40, 40);
+      const act = Math.min(buckets.slice(-8).reduce((a, b) => a + b, 0), 8);
+      // 角丸バッジ: エメラルド→シアン→バイオレット→ピンクの宇宙グラデーション
+      const grad = bg.createLinearGradient(4, 4, 36, 36);
+      grad.addColorStop(0, '#34d399');
+      grad.addColorStop(0.36, '#22d3ee');
+      grad.addColorStop(0.68, '#8b5cf6');
+      grad.addColorStop(1, '#f472b6');
+      bg.shadowColor = 'rgba(139,92,246,0.85)';
+      bg.shadowBlur = 3 + act;
+      bg.fillStyle = grad;
+      bg.beginPath(); bg.roundRect(3.5, 3.5, 33, 33, 10.5); bg.fill();
+      bg.shadowBlur = 0;
+      // 上部グロス（ガラスの艶）
+      const gloss = bg.createLinearGradient(0, 4, 0, 22);
+      gloss.addColorStop(0, 'rgba(255,255,255,0.34)');
+      gloss.addColorStop(1, 'rgba(255,255,255,0)');
+      bg.fillStyle = gloss;
+      bg.beginPath(); bg.roundRect(5, 5, 30, 16, 8); bg.fill();
+      // 白の❖マーク
+      bg.save();
+      bg.translate(20 - 12 * 1.02, 20 - 12 * 1.02);
+      bg.scale(1.02, 1.02);
+      bg.fillStyle = 'rgba(255,255,255,0.96)';
+      bg.shadowColor = 'rgba(255,255,255,0.6)'; bg.shadowBlur = 2;
+      for (const d of MARK_PATHS) bg.fill(new Path2D(d));
+      bg.restore();
+      window.bigkiji.trayRender({ dataURL: bar.toDataURL('image/png'), title: '', template: false });
+    }
+    drawTrayOrb();
+    setInterval(drawTrayOrb, 2000);
+  </script>
+</body>
+</html>

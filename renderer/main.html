@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>BigKiji Universe — Synapse Canvas</title>
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+<script type="importmap">
+  { "imports": {
+      "three": "../node_modules/three/build/three.module.js",
+      "three/addons/": "../node_modules/three/examples/jsm/"
+  } }
+</script>
+<style>
+  :root {
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --dur-fast: 120ms; --dur-base: 200ms; --dur-state: 280ms;
+    --em: #34d399; --ink: rgba(233,246,240,.94); --dim: rgba(226,240,234,.55);
+    --faint: rgba(226,240,234,.32); --label: rgba(226,240,234,.44);
+    --hairline: rgba(255,255,255,.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #05080f;
+    font-family: -apple-system, "Hiragino Sans", sans-serif; }
+
+  /* ComfyUI生成の星雲（最背面・ゆっくり漂う） */
+  #bgNebula { position: fixed; inset: -60px; z-index: 0; pointer-events: none;
+    background: url(./assets/nebula.png) center / cover no-repeat; opacity: .5;
+    animation: bgDrift2 90s ease-in-out infinite alternate; }
+  /* SpaceX風・動く宇宙背景（アニメーションSVG。loops/に動画があればその上に重なる） */
+  #bgAnim { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  #bgAnim svg { width: 100%; height: 100%; display: block; }
+  #bgField { position: fixed; inset: 0; z-index: 0; pointer-events: none; } /* 動画ループ受け口 */
+  #scrim { position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background: radial-gradient(ellipse 72% 60% at 50% 40%, transparent, rgba(2,4,9,.55)); }
+  @keyframes bgDrift1 { to { transform: translate(90px, -55px) scale(1.12); } }
+  @keyframes bgDrift2 { to { transform: translate(-110px, 45px) scale(1.07); } }
+  @keyframes bgDrift3 { to { transform: translate(60px, 70px) scale(1.15); } }
+  @keyframes starPar1 { to { transform: translate(-46px, 16px); } }
+  @keyframes starPar2 { to { transform: translate(-96px, 34px); } }
+  @keyframes twinkle { 0%, 100% { opacity: .22; } 50% { opacity: .95; } }
+  @keyframes dashDrift { to { stroke-dashoffset: -420; } }
+  @keyframes rimPulse { 0%, 100% { opacity: .38; } 50% { opacity: .58; } }
+  .grain { position: fixed; inset: 0; z-index: 40; pointer-events: none; opacity: .04; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  .app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }
+
+  header { flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px 10px 84px; -webkit-app-region: drag; }
+  .bkMark { width: 16px; height: 16px; filter: drop-shadow(0 0 7px rgba(52,211,153,.7)); }
+  .bkMark .bkP { stroke-dasharray: 16; stroke-dashoffset: 16; animation: draw 900ms var(--ease-out) forwards; }
+  .bkMark .bkP:nth-child(2) { animation-delay: 120ms; }
+  .bkMark .bkP:nth-child(3) { animation-delay: 240ms; }
+  .bkMark .bkP:nth-child(4) { animation-delay: 360ms; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  header h1 { color: var(--ink); font-size: 13.5px; font-weight: 600; letter-spacing: .05em; }
+  header .sub { color: var(--faint); font-size: 11px; }
+  .stats { margin-left: auto; display: flex; align-items: baseline; gap: 0;
+    -webkit-app-region: no-drag; font-family: "SF Mono", Menlo, monospace;
+    font-size: 10px; color: var(--label); font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--dim); font-weight: 600; margin-left: 4px; }
+  .stats .sep { margin: 0 9px; width: 1px; height: 10px; background: var(--hairline);
+    align-self: center; }
+
+  .stage { flex: 1; display: flex; min-height: 0; }
+  #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; }
+  #canvasWrap canvas { display: block; }
+
+  /* HUDコーナーブラケット（SpaceX管制風の枠） */
+  .hudCorners i { position: absolute; width: 20px; height: 20px; z-index: 24;
+    border: 1px solid rgba(52,211,153,.30); pointer-events: none; }
+  .hudCorners i:nth-child(1) { top: 8px; left: 10px; border-right: 0; border-bottom: 0; }
+  .hudCorners i:nth-child(2) { top: 8px; right: 10px; border-left: 0; border-bottom: 0; }
+  .hudCorners i:nth-child(3) { bottom: 8px; left: 10px; border-right: 0; border-top: 0; }
+  .hudCorners i:nth-child(4) { bottom: 8px; right: 10px; border-left: 0; border-top: 0; }
+
+  /* MISSION OUTPUT — 成果物 & エージェント結果パネル（実ファイル・クリックでFinder表示） */
+  #results { position: absolute; left: 14px; bottom: 14px; z-index: 26; width: 286px;
+    max-height: 36%; display: flex; flex-direction: column;
+    background: rgba(8,14,22,.66); border: 1px solid var(--hairline); border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+    overflow: hidden; }
+  #results .rhead { flex: none; display: flex; align-items: baseline; gap: 8px;
+    padding: 9px 12px 7px; border-bottom: 1px solid var(--hairline); cursor: pointer;
+    font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .12em; color: var(--em); }
+  #results.min #resultList { display: none; }
+  #results.min .rhead { border-bottom: none; }
+  #results .rhead span { color: var(--label); font-weight: 600; letter-spacing: .06em; }
+  #resultList { flex: 1; overflow-y: auto; padding: 5px 8px 9px; }
+  #resultList::-webkit-scrollbar { width: 0; }
+  #resultList .empty { color: var(--faint); font-size: 10.5px; padding: 8px 6px;
+    font-family: "SF Mono", Menlo, monospace; }
+  .rrow { display: flex; gap: 6px; align-items: baseline; padding: 3px 6px; border-radius: 7px;
+    cursor: pointer; white-space: nowrap;
+    transition: background var(--dur-fast) var(--ease-out); }
+  .rrow:hover { background: rgba(255,255,255,.05); }
+  .rrow:active { transform: scale(0.99); }
+  .rrow .rchip { flex: none; font-size: 8.5px; font-weight: 700; padding: 0 5px; border-radius: 4px; }
+  .rrow .rname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    color: rgba(226,240,234,.78); font-size: 11px; }
+  .rrow time { flex: none; color: var(--faint); font-family: "SF Mono", Menlo, monospace;
+    font-size: 9px; font-variant-numeric: tabular-nums; }
+
+  /* 要点ポップアップ（実イベントの要約・3D位置追従） */
+  #popups { position: absolute; inset: 0; z-index: 27; pointer-events: none; }
+  .popup { position: absolute; transform: translate(-50%, -110%) scale(0.96); opacity: 0;
+    max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background: rgba(9,15,23,.82); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent);
+    border-radius: 9px; padding: 4px 9px; font-size: 10.5px; color: var(--dim);
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+  .popup.on { opacity: 1; transform: translate(-50%, -120%) scale(1); }
+  .popup b { color: var(--c); margin-right: 5px; font-size: 10px; }
+  .popup i { font-style: normal; color: #FFE81F; margin-left: 5px; font-family: "SF Mono", Menlo, monospace; font-size: 9px; }
+
+  /* 博物館プレート（近景LOD・実データ展示） */
+  .plate { position: absolute; z-index: 26; pointer-events: none; opacity: 0; width: 178px;
+    transform: translate(0, -50%);
+    background: rgba(8,14,22,.78); border: 1px solid var(--hairline);
+    border-left: 2px solid var(--c); border-radius: 10px; padding: 7px 10px;
+    transition: opacity 300ms var(--ease-out); }
+  .plate .ph { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--ink); }
+  .plate .ph svg { width: 10px; height: 10px; color: var(--c); }
+  .plate .ph span { color: var(--faint); font-weight: 600; font-size: 9.5px; }
+  .plate .pb { margin-top: 3px; font-family: "SF Mono", Menlo, monospace; font-size: 9.5px;
+    color: var(--label); font-variant-numeric: tabular-nums; }
+  .plate .pb i { font-style: normal; color: var(--em); }
+  .plate .pb em { display: block; font-style: normal; color: var(--dim); font-family: -apple-system;
+    font-size: 10px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* スターウォーズ・イエローの伝達テロップ（透視変形・実イベントのみ） */
+  #crawl { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    width: 72%; max-width: 680px; perspective: 240px; z-index: 25;
+    pointer-events: none; text-align: center; }
+  #crawlText { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; transform: rotateX(36deg); transform-origin: 50% 0%;
+    font-family: "Helvetica Neue", -apple-system, sans-serif; font-weight: 800;
+    font-size: 13.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: #FFE81F; text-shadow: 0 0 16px rgba(255,232,31,.45);
+    opacity: 0; transition: opacity var(--dur-base) var(--ease-out); }
+  #crawlText.on { opacity: .92; }
+
+  /* ノードツールチップ（実カウント・実時刻） */
+  #tip { position: absolute; z-index: 30; pointer-events: none; opacity: 0;
+    transform: translate(-50%, calc(-100% - 14px)) scale(0.97);
+    transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+    background: rgba(10,17,26,.78); border: 1px solid var(--hairline); border-radius: 10px;
+    padding: 8px 11px; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 10px 26px -10px rgba(2,4,10,.7); }
+  #tip.on { opacity: 1; transform: translate(-50%, calc(-100% - 18px)) scale(1); }
+  #tip .t { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--ink); }
+  #tip .t svg { width: 11px; height: 11px; }
+  #tip .d { margin-top: 3px; font-family: "SF Mono", Menlo, monospace; font-size: 10px;
+    color: var(--label); font-variant-numeric: tabular-nums; }
+  #tip .d b { color: var(--em); font-weight: 600; }
+
+  aside { flex: none; width: 320px; margin: 0 14px 12px 0; display: flex; flex-direction: column;
+    position: relative;
+    background: rgba(10,17,26,.60); border: 1px solid var(--hairline); border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+    overflow: hidden; }
+  aside .head { flex: none; padding: 10px 12px 7px; color: var(--label);
+    font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .12em; }
+  /* VITALS: システム実測値はログを流さず、この1行がその場で更新される */
+  #vitals { flex: none; display: flex; align-items: center; gap: 9px; padding: 2px 12px 6px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 10px; color: var(--label);
+    font-variant-numeric: tabular-nums; }
+  #vitals b { color: var(--dim); font-weight: 600; }
+  #vitals canvas { width: 54px; height: 13px; opacity: .85; }
+  /* LIVE LINKS: いま「どことどこ」が作業しているか */
+  /* WORKING/IDLE: 動いているかが一目で分かる常設インジケータ（実イベント駆動） */
+  #workState { position: absolute; top: 10px; right: 16px; z-index: 28;
+    display: flex; align-items: center; gap: 6px;
+    font: 700 11px "SF Mono", Menlo, monospace; letter-spacing: 1.2px;
+    padding: 4px 11px; border-radius: 999px;
+    color: #34d399; border: 1px solid rgba(52,211,153,.4); background: rgba(5,12,9,.55); }
+  #workState i { width: 7px; height: 7px; border-radius: 50%; background: #34d399; }
+  #workState.on i { animation: wsPulse 1s ease-out infinite; }
+  #workState.idle { color: rgba(159,216,194,.55); border-color: rgba(159,216,194,.16); }
+  #workState.idle i { background: rgba(159,216,194,.35); }
+  @keyframes wsPulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); } 100% { box-shadow: 0 0 0 7px rgba(52,211,153,0); } }
+  /* COMMS: 誰⇄誰が何をしているか（最重要の意思疎通表示） */
+  #comms { flex: none; display: flex; flex-direction: column; gap: 3px; margin: 4px 10px 2px; }
+  .crow { display: flex; align-items: center; gap: 6px;
+    font: 11px "SF Mono", Menlo, monospace; color: rgba(226,240,234,.82);
+    background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.05);
+    border-radius: 7px; padding: 3px 8px;
+    transform: translateY(-2px); opacity: 0; animation: crowIn .22s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes crowIn { to { transform: none; opacity: 1; } }
+  .crow .pair { color: var(--cc, #34d399); font-weight: 700; white-space: nowrap; }
+  .crow .arr { color: var(--cc, #34d399); animation: arrPulse 1.3s ease-out infinite; }
+  .crow .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crow .mdl { color: rgba(159,216,194,.6); font-size: 10px; white-space: nowrap; }
+  .crow.old { opacity: .45; animation: none; transform: none; }
+  .crow.old .arr { animation: none; }
+  @keyframes arrPulse { 0% { opacity: .35; } 50% { opacity: 1; } 100% { opacity: .35; } }
+  #links { flex: none; display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+    padding: 0 10px 8px; border-bottom: 1px solid var(--hairline); min-height: 26px; }
+  .lchip { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px; color: var(--c);
+    border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+    background: color-mix(in srgb, var(--c) 12%, transparent); }
+  .lchip i { width: 5px; height: 5px; border-radius: 50%; background: var(--c);
+    animation: linkPulse 1.1s ease-in-out infinite; }
+  @keyframes linkPulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .lchip.idle { color: var(--faint); border-color: var(--hairline);
+    background: rgba(255,255,255,.03); }
+  .lchip.idle i { animation: none; opacity: .3; }
+
+  /* 思考ボックス: Piの思考がライブで流れる（考えている間だけ出現） */
+  #thinkBox { position: absolute; left: 16px; top: 52px; z-index: 26; width: 330px;
+    opacity: 0; transform: translateY(-5px); pointer-events: none;
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+    background: rgba(8,14,22,.8); border: 1px solid rgba(255,232,31,.28); border-radius: 12px;
+    padding: 9px 12px; box-shadow: 0 0 28px -10px rgba(255,232,31,.35); }
+  #thinkBox.on { opacity: 1; transform: none; }
+  #thinkBox .th { display: flex; align-items: center; gap: 6px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .14em; color: #FFE81F; }
+  #thinkBox .th i { width: 6px; height: 6px; border-radius: 50%; background: #FFE81F;
+    animation: linkPulse 1s ease-in-out infinite; }
+  #thinkBox .tb { margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--dim);
+    max-height: 132px; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
+  #chips { flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 0 10px 9px;
+    border-bottom: 1px solid var(--hairline); }
+  .fchip { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid transparent;
+    color: var(--dim); background: rgba(255,255,255,.045); cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out); }
+  .fchip svg { width: 9px; height: 9px; }
+  .fchip:active { transform: scale(0.97); }
+  .fchip.on { color: var(--c, var(--em)); background: color-mix(in srgb, var(--c, var(--em)) 14%, transparent);
+    border-color: color-mix(in srgb, var(--c, var(--em)) 30%, transparent); }
+  #eventlog { flex: 1; overflow-y: auto; padding: 6px 10px 10px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; line-height: 1.7; }
+  #eventlog::-webkit-scrollbar { width: 0; }
+  .erow { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; border-radius: 6px;
+    padding: 1px 6px; opacity: 0; transform: translateY(4px);
+    animation: enter var(--dur-base) var(--ease-out) forwards;
+    transition: background 260ms var(--ease-out); }
+  #eventlog.noanim .erow { animation-duration: 1ms; }
+  .erow.hidden { display: none; }
+  @keyframes enter { to { opacity: 1; transform: translateY(0); } }
+  .erow.arrive { background: rgba(52,211,153,.15); }
+  .erow time { color: rgba(226,240,234,.3); font-size: 9.5px; flex: none; font-variant-numeric: tabular-nums; }
+  .erow .chip { flex: none; display: inline-flex; align-items: center; gap: 3px;
+    font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 4px; }
+  .erow .chip svg { width: 9px; height: 9px; }
+  .erow .txt { color: rgba(226,240,234,.66); overflow: hidden; text-overflow: ellipsis; }
+  .erow.sys .txt { color: var(--faint); }
+  #liveChip { position: absolute; left: 50%; bottom: 10px; z-index: 5;
+    transform: translateX(-50%) translateY(6px) scale(0.97); opacity: 0; pointer-events: none;
+    font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 700; letter-spacing: .1em;
+    color: var(--em); background: rgba(52,211,153,.14); border: 1px solid rgba(52,211,153,.3);
+    border-radius: 999px; padding: 3px 12px; cursor: pointer;
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+  #liveChip.on { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); pointer-events: auto; }
+  #liveChip:active { transform: translateX(-50%) scale(0.97); }
+
+  /* ターンフロー: 何が終わり・何が動いているかのカード列（実イベント由来） */
+  #flow { flex: none; display: flex; gap: 6px; align-items: stretch; margin: 0 14px 6px;
+    min-height: 34px; overflow-x: auto; }
+  #flow::-webkit-scrollbar { height: 0; }
+  .fcard { flex: none; display: flex; align-items: center; gap: 7px;
+    background: rgba(8,14,22,.72); border: 1px solid var(--hairline);
+    border-left: 2px solid var(--c, var(--em)); border-radius: 9px; padding: 5px 11px;
+    font-size: 10.5px; color: var(--dim); white-space: nowrap; max-width: 250px;
+    opacity: 0; transform: translateY(4px);
+    animation: enter var(--dur-base) var(--ease-out) forwards; }
+  .fcard:not(:first-child)::before { content: '›'; color: var(--faint); margin-right: 7px; }
+  .fcard .fi { font-size: 12px; }
+  .fcard .fl { overflow: hidden; text-overflow: ellipsis; font-family: "SF Mono", Menlo, monospace; }
+  .fcard .fs { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .fcard.running { border-color: color-mix(in srgb, var(--c, var(--em)) 45%, transparent); }
+  .fcard.running .fs { background: var(--c, var(--em)); animation: linkPulse 1s ease-in-out infinite; }
+  .fcard.done { opacity: .75; }
+  .fcard.done .fs { background: var(--em); }
+  .fcard.err .fs { background: #fb7185; }
+
+  /* 指示バー（開いた瞬間フォーカス＝どこに打てばいいか迷わない） */
+  .cmdbar { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 14px 8px;
+    background: rgba(8,14,22,.7); border: 1px solid rgba(52,211,153,.22); border-radius: 11px;
+    padding: 8px 12px; box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 24px -8px rgba(52,211,153,.35); }
+  .cmdbar .ci { color: var(--em); font-size: 13px; text-shadow: 0 0 9px rgba(52,211,153,.8); }
+  #ccmd { flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+    color: var(--ink); font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; caret-color: var(--em); }
+  #ccmd::placeholder { color: var(--faint); }
+  /* v12 ライブ音声ボタン: 状態はtransform+opacityの脈動のみ（craft規則準拠） */
+  @keyframes livePulse { 0%, 100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+  #liveBtn.listen, #liveBtn.capture, #liveBtn.think, #liveBtn.speak {
+    color: var(--lc); border-color: color-mix(in srgb, var(--lc) 45%, transparent);
+    background: color-mix(in srgb, var(--lc) 14%, transparent);
+    animation: livePulse var(--lp, 1.6s) ease-in-out infinite; }
+  #liveBtn.listen { --lc: #00f3ff; --lp: 1.8s; }
+  #liveBtn.capture { --lc: #00ff9d; --lp: .8s; }
+  #liveBtn.think { --lc: #FFE81F; --lp: 1.1s; }
+  #liveBtn.speak { --lc: #f472b6; --lp: .7s; }
+
+  /* Core周囲の思考プロセス断片（近景で可視化・実イベント/Pi思考） */
+  .thought { position: absolute; z-index: 25; pointer-events: none; max-width: 240px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; color: rgba(180,240,215,.75);
+    text-shadow: 0 0 8px rgba(52,211,153,.5); transform: translate(-50%, -50%); }
+
+  /* NEURAL DASHBOARD（v11）: ログ垂れ流しの代替。ガラスネイビー＋グロー縁
+     （backdrop-filterはvibrancy禁則のため不使用・家の様式=rgbaティント+hairline+inset光） */
+  .term { flex: none; height: 158px; margin: 0 14px 14px; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, rgba(8,16,28,.88), rgba(4,9,18,.93));
+    border: 1px solid color-mix(in srgb, var(--em) 24%, transparent); border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 34px -14px rgba(52,211,153,.5);
+    overflow: hidden; transition: height .24s cubic-bezier(.2,.8,.2,1); }
+  .term.tall { height: 272px; }
+  .term .bar { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    border-bottom: 1px solid var(--hairline); cursor: pointer; }
+  .term .tabs { display: flex; gap: 4px; }
+  .term .tab { font: 700 9.5px "SF Mono", Menlo, monospace; letter-spacing: .1em; color: var(--label);
+    background: rgba(255,255,255,.04); border: 1px solid transparent; border-radius: 7px;
+    padding: 3px 9px; cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out); }
+  .term .tab:active { transform: scale(0.97); }
+  .term .tab.on { color: var(--em); background: color-mix(in srgb, var(--em) 13%, transparent);
+    border-color: color-mix(in srgb, var(--em) 32%, transparent); }
+  /* STAGE: ロードマップ現在地（実ターンライフサイクル駆動）＋進捗バー */
+  #stageWrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  #stageLine { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 600 10px "SF Mono", Menlo, monospace; letter-spacing: .06em; color: rgba(0,243,255,.78);
+    text-shadow: 0 0 10px rgba(0,243,255,.35); }
+  #stageLine.busy { animation: stagePulse 1.2s ease-in-out infinite; }
+  @keyframes stagePulse { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+  #stageTrack { height: 2px; border-radius: 1px; background: rgba(255,255,255,.07); overflow: hidden; }
+  #stageBar { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #00f3ff, #00ff9d);
+    box-shadow: 0 0 8px rgba(0,243,255,.6); transition: width .5s var(--ease-out); }
+  .term .bar em { flex: none; font-style: normal; color: rgba(52,211,153,.6); font-size: 10px; }
+  .paneOff { display: none !important; }
+  #dashBody { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 7px 10px 9px; gap: 7px; }
+  /* METRICS: 枠付き実測メーターのグリッド（数値は全て実測・飾りの乱数なし） */
+  #meters { flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+  .meter { border: 1px solid color-mix(in srgb, var(--c) 26%, transparent); border-radius: 8px;
+    background: color-mix(in srgb, var(--c) 5%, transparent); padding: 4px 8px 5px; min-width: 0; }
+  .meter label { display: block; font: 700 7.5px "SF Mono", Menlo, monospace; letter-spacing: .1em;
+    color: color-mix(in srgb, var(--c) 75%, white 12%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meter .mv { display: flex; align-items: baseline; gap: 3px; margin-top: 1px; min-width: 0; }
+  .meter .mv b { font: 700 13px "SF Mono", Menlo, monospace; color: var(--ink);
+    font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meter .mv span { font: 600 8px "SF Mono", Menlo, monospace; color: var(--label); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .meter i { display: block; height: 3px; border-radius: 2px; margin-top: 3px; overflow: hidden;
+    background: rgba(255,255,255,.06); }
+  .meter i u { display: block; height: 100%; width: 0%; border-radius: 2px; background: var(--c);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--c) 70%, transparent);
+    transition: width .5s var(--ease-out); }
+  /* NEURAL TRAVERSAL（左）＋ QUERY/CODEストリーム（右） */
+  #neuralRow { flex: 1; min-height: 0; display: flex; gap: 8px; }
+  #traversal { flex: 1.1; min-width: 0; border: 1px solid var(--hairline); border-radius: 8px;
+    background: rgba(3,7,14,.5); }
+  #codeStream { flex: 1; min-width: 0; overflow-y: auto; border: 1px solid var(--hairline);
+    border-radius: 8px; background: rgba(3,7,14,.5); padding: 4px 8px;
+    font: 10px "SF Mono", Menlo, monospace; line-height: 1.65; }
+  #codeStream::-webkit-scrollbar { width: 0; }
+  .cline { color: rgba(226,240,234,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; transform: translateY(3px); animation: enter var(--dur-base) var(--ease-out) forwards; }
+  .cline .ck { color: #00f3ff; }
+  .cline .cn { color: #FFE81F; font-weight: 700; }
+  .cline .cms { color: var(--label); }
+  .cline.ok .cms { color: var(--em); }
+  .cline.err .cms { color: #fb7185; }
+  .cline.delta { color: rgba(159,216,194,.72); }
+  .cline details { display: inline; }
+  .cline details summary { display: inline; cursor: pointer; color: var(--label); list-style: none; }
+  .cline details summary::-webkit-details-marker { display: none; }
+  .cline details[open] summary { color: var(--em); }
+  .cline details pre { white-space: pre-wrap; word-break: break-all; color: rgba(226,240,234,.75);
+    background: rgba(255,255,255,.04); border-radius: 6px; padding: 4px 7px; margin: 3px 0 4px;
+    max-height: 110px; overflow-y: auto; }
+  #terminal { flex: 1; padding: 6px 10px; min-height: 0; }
+  #terminal .xterm-viewport { background: transparent !important; }
+  #terminal .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+
+  /* 起動シーケンス（初回のみ） */
+  header, .stage, .term { opacity: 0; transform: translateY(6px); animation: boot 460ms var(--ease-out) forwards; }
+  .stage { animation-delay: 100ms; } .term { animation-delay: 200ms; }
+  @keyframes boot { to { opacity: 1; transform: translateY(0); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+  <div id="bgNebula"></div><div id="bgAnim"></div><div id="bgField"></div><div id="scrim"></div>
+  <div class="app">
+    <header>
+      <span id="mark"></span>
+      <h1>BigKiji Universe</h1><span class="sub">Orchestration Synapse Canvas</span>
+      <span class="stats">
+        <span>ev/min<b id="sEvm">0</b></span><span class="sep"></span>
+        <span>T+<b id="sUp">0:00</b></span><span class="sep"></span>
+        <span>load<b id="sLoad">–</b></span><span class="sep"></span>
+        <span>mem<b id="sMem">–</b></span><span class="sep"></span>
+        <span>fps<b id="sFps">–</b></span><span class="sep"></span>
+        <span>pi-tok<b id="sTok">0/0</b></span><span class="sep"></span>
+        <b id="sMode">…</b>
+      </span>
+    </header>
+    <div class="stage">
+      <div id="canvasWrap">
+        <div class="hudCorners"><i></i><i></i><i></i><i></i></div>
+        <div id="workState" class="idle"><i></i><span>IDLE</span></div>
+        <div id="views" style="position:absolute;top:10px;left:16px;z-index:28;display:flex;gap:5px">
+          <button class="fchip on" data-d="11.5" style="--c:#34d399">☀ SYSTEM</button>
+          <button class="fchip" data-d="6.5" style="--c:#a78bfa">🌌 FILES</button>
+          <button class="fchip" data-d="4.6" style="--c:#FFE81F">⌖ CLOSE</button>
+          <button class="fchip on" id="autoCamBtn" style="--c:#f472b6" title="Auto-zoom to the orb that starts transmitting">🎥 AUTO</button>
+        </div>
+        <div id="crawl"><span id="crawlText"></span></div>
+        <div id="thinkBox"><div class="th"><i></i><span data-i18n="coreThink">…</span></div><div class="tb" id="thinkText"></div></div>
+        <div id="popups"></div>
+        <div id="tip"></div>
+        <div id="results">
+          <div class="rhead"><span data-i18n="mission">MISSION OUTPUT</span><span data-i18n="missionSub">…</span></div>
+          <div id="resultList"><div class="empty" data-i18n="missionEmpty">…</div></div>
+        </div>
+      </div>
+      <aside>
+        <div class="head" data-i18n="eventlog">SYNAPSE EVENT LOG</div>
+        <div id="vitals">
+          <span>load<b id="vLoad">–</b></span>
+          <canvas id="vSpark" width="108" height="26"></canvas>
+          <span>mem<b id="vMem">–</b></span>
+          <span>procs<b id="vProc">–</b></span>
+        </div>
+        <div id="links"><span class="lchip idle"><i></i><span data-i18n="idleLink">…</span></span></div>
+        <div id="comms"></div>
+        <div id="chips"></div>
+        <div id="eventlog"></div>
+        <button id="liveChip">↓ LIVE</button>
+      </aside>
+    </div>
+    <div id="flow"></div>
+    <div class="cmdbar">
+      <span class="ci">❖</span>
+      <input id="ccmd" type="text" spellcheck="false"
+        data-i18n-ph="ph_ai" placeholder="" />
+      <button id="piBtn" class="fchip on" style="--c:#FFE81F" title="Toggle destination: AI ⇄ shell">π AI</button>
+      <button id="liveBtn" class="fchip" style="--c:#00f3ff" title="Live voice — one tap for hands-free conversation (tap again to end)">🎙 LIVE</button>
+    </div>
+    <div class="term">
+      <div class="bar">
+        <div class="tabs">
+          <button id="tabNeural" class="tab on">⧉ NEURAL</button>
+          <button id="tabTerm" class="tab">❯ TERMINAL</button>
+        </div>
+        <div id="stageWrap">
+          <span id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</span>
+          <span id="stageTrack"><span id="stageBar"></span></span>
+        </div>
+        <em data-i18n="syncNote">…</em>
+      </div>
+      <div id="dashBody">
+        <div id="meters">
+          <div class="meter" style="--c:#00f3ff"><label>SYNAPSE FLUX</label>
+            <div class="mv"><b id="mFlux">0</b><span>ev/min</span></div><i><u id="bFlux"></u></i></div>
+          <div class="meter" style="--c:#FFE81F"><label>TOKEN VELOCITY</label>
+            <div class="mv"><b id="mTok">—</b><span>tok/s</span></div><i><u id="bTok"></u></i></div>
+          <div class="meter" style="--c:#a78bfa"><label>TRAVERSAL LATENCY</label>
+            <div class="mv"><b id="mLat">—</b><span>ms/tool</span></div><i><u id="bLat"></u></i></div>
+          <div class="meter" style="--c:#00ff9d"><label>GRAPH LINKS</label>
+            <div class="mv"><b id="mGraph">0</b><span id="mGraphSub">nodes</span></div><i><u id="bGraph"></u></i></div>
+          <div class="meter" style="--c:#4e8cff"><label>MODEL TIER</label>
+            <div class="mv"><b id="mTier">—</b><span id="mTierSub"></span></div><i><u id="bTier"></u></i></div>
+          <div class="meter" style="--c:#34d399"><label>RENDER</label>
+            <div class="mv"><b id="mFps">—</b><span>fps</span></div><i><u id="bFps"></u></i></div>
+        </div>
+        <div id="neuralRow">
+          <canvas id="traversal"></canvas>
+          <div id="codeStream"></div>
+        </div>
+      </div>
+      <div id="terminal" class="paneOff"></div>
+    </div>
+  </div>
+  <div class="grain"></div>
+
+  <script>
+    // ---- SpaceX風・動く宇宙背景（アニメーションSVGを生成） ----
+    (function buildSpaceBg() {
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const stars = [];
+      for (let i = 0; i < 84; i++) {
+        const x = (Math.random() * 1920) | 0, y = (Math.random() * 830) | 0;
+        const r = (0.5 + Math.random() * 1.1).toFixed(2);
+        const tw = Math.random() < 0.28
+          ? `animation:twinkle ${(3 + Math.random() * 4).toFixed(1)}s ease-in-out ${(Math.random() * 5).toFixed(1)}s infinite;`
+          : '';
+        const g = Math.random() < 0.6 ? 1 : 2;
+        stars.push(`<circle class="sg${g}" cx="${x}" cy="${y}" r="${r}" fill="${Math.random() < 0.7 ? '#dfeee8' : '#9fe8cf'}" opacity="${(0.25 + Math.random() * 0.5).toFixed(2)}" style="${tw}"/>`);
+      }
+      const anim = (name, dur) => reduced ? '' : `animation:${name} ${dur} ease-in-out infinite alternate; transform-box:fill-box; transform-origin:center;`;
+      const dash = (dur) => reduced ? '' : `animation:dashDrift ${dur} linear infinite;`;
+      const el = document.getElementById('bgAnim');
+      el.innerHTML = `
+      <svg viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="deep" cx="50%" cy="36%" r="80%">
+            <stop offset="0%" stop-color="#081119"/><stop offset="55%" stop-color="#04070d"/><stop offset="100%" stop-color="#020409"/>
+          </radialGradient>
+          <radialGradient id="neb1"><stop offset="0%" stop-color="rgba(16,185,129,0.15)"/><stop offset="100%" stop-color="rgba(16,185,129,0)"/></radialGradient>
+          <radialGradient id="neb2"><stop offset="0%" stop-color="rgba(78,140,255,0.11)"/><stop offset="100%" stop-color="rgba(78,140,255,0)"/></radialGradient>
+          <radialGradient id="neb3"><stop offset="0%" stop-color="rgba(139,92,246,0.09)"/><stop offset="100%" stop-color="rgba(139,92,246,0)"/></radialGradient>
+          <filter id="rimBlur"><feGaussianBlur stdDeviation="16"/></filter>
+          <filter id="dotGlow"><feGaussianBlur stdDeviation="2.2"/></filter>
+        </defs>
+        <rect width="1920" height="1080" fill="url(#deep)"/>
+        <ellipse cx="480" cy="290" rx="520" ry="320" fill="url(#neb1)" style="${anim('bgDrift1', '120s')}"/>
+        <ellipse cx="1500" cy="230" rx="560" ry="290" fill="url(#neb2)" style="${anim('bgDrift2', '150s')}"/>
+        <ellipse cx="1250" cy="760" rx="430" ry="240" fill="url(#neb3)" style="${anim('bgDrift3', '100s')}"/>
+        <g style="${reduced ? '' : 'animation:starPar1 220s ease-in-out infinite alternate;'}">${stars.filter((_, i) => i % 5 !== 0).join('')}</g>
+        <g style="${reduced ? '' : 'animation:starPar2 150s ease-in-out infinite alternate;'}">${stars.filter((_, i) => i % 5 === 0).join('')}</g>
+        <!-- 軌道トラジェクトリ（HUD） -->
+        <ellipse cx="960" cy="520" rx="640" ry="215" fill="none" stroke="rgba(125,223,192,0.10)" stroke-width="1" stroke-dasharray="5 12" style="${dash('46s')}"/>
+        <ellipse cx="960" cy="520" rx="930" ry="330" fill="none" stroke="rgba(125,223,192,0.07)" stroke-width="1" stroke-dasharray="4 14" style="${dash('70s')}"/>
+        <path id="trj" d="M 180,520 a 780,272 0 1,0 1560,0 a 780,272 0 1,0 -1560,0" fill="none" stroke="rgba(125,223,192,0.12)" stroke-width="1" stroke-dasharray="6 10" style="${dash('58s')}"/>
+        ${reduced ? '' : `<circle r="3" fill="#aef2d6" filter="url(#dotGlow)"><animateMotion dur="64s" repeatCount="indefinite"><mpath href="#trj"/></animateMotion></circle>`}
+        <!-- 惑星ホライズン（下端のリム発光） -->
+        <circle cx="960" cy="2705" r="1760" fill="#030608"/>
+        <circle cx="960" cy="2705" r="1760" fill="none" stroke="rgba(90,235,185,0.5)" stroke-width="9" filter="url(#rimBlur)" style="${reduced ? '' : 'animation:rimPulse 9s ease-in-out infinite;'}"/>
+        <circle cx="960" cy="2705" r="1760" fill="none" stroke="rgba(160,245,210,0.55)" stroke-width="1.3"/>
+        <circle cx="960" cy="2705" r="1795" fill="none" stroke="rgba(110,235,190,0.08)" stroke-width="62" filter="url(#rimBlur)"/>
+      </svg>`;
+    })();
+  </script>
+  <script src="./agents.js"></script>
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script>
+    document.getElementById('mark').innerHTML = window.BIGKIJI_MARK;
+    // ---- 統合ターミナル（xterm.js ⇄ node-pty） ----
+    const term = new Terminal({
+      fontFamily: '"SF Mono", Menlo, monospace', fontSize: 12.5, cursorBlink: true,
+      theme: { background: '#060b12', foreground: '#d7efe4', cursor: '#34d399',
+               selectionBackground: 'rgba(52,211,153,0.3)' },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('terminal'));
+    term.writeln('\x1b[38;2;52;211;153m' + window.t('banner') + '\x1b[0m');
+    const doFit = () => { try { fit.fit(); window.bigkiji.ptyResize(term.cols, term.rows); } catch (_) {} };
+    doFit();
+    window.addEventListener('resize', doFit);
+    term.onData((d) => window.bigkiji.ptyInput(d));
+    window.bigkiji.onPtyData((d) => term.write(d));
+    setTimeout(doFit, 250); // 起動アニメ完了後に再フィット
+    // 下部は既定=NEURALダッシュボード。TERMINALタブで実シェル(xterm)へ切替
+    //（ptyはSHELL入力とclaude/gemini/codex CLI惑星発光の源泉なので廃止しない）
+    const dashBody = document.getElementById('dashBody');
+    const termPane = document.getElementById('terminal');
+    const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm');
+    function showPane(showTerm) {
+      dashBody.classList.toggle('paneOff', showTerm);
+      termPane.classList.toggle('paneOff', !showTerm);
+      tabN.classList.toggle('on', !showTerm);
+      tabT.classList.toggle('on', showTerm);
+      if (showTerm) setTimeout(doFit, 30); // 非表示中はxtermの寸法が0のため表示後に再フィット
+    }
+    tabN.addEventListener('click', (e) => { e.stopPropagation(); showPane(false); });
+    tabT.addEventListener('click', (e) => { e.stopPropagation(); showPane(true); });
+    window.bkShowTerm = () => showPane(true); // SHELL宛先で送信した瞬間に自動でターミナルへ
+    // バークリックで高さ切替（158px⇄272px）
+    document.querySelector('.term .bar').addEventListener('click', () => {
+      document.querySelector('.term').classList.toggle('tall');
+      setTimeout(doFit, 260);
+    });
+  </script>
+  <script src="./voice-live.js"></script>
+  <script>
+    // v12 フルデュプレックス音声（VAD＋Barge-in）。マイク所有権はmainが調停
+    if (window.BKLive) window.BKLive.init({ button: document.getElementById('liveBtn') });
+  </script>
+  <script type="module" src="./synapse.js"></script>
+</body>
+</html>

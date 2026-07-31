@@ -1,0 +1,8 @@
+node_modules/
+recordings/
+*.log
+.DS_Store
+.env
+renderer/assets/*.bak*
+tools/selftest-result-*.json
+.playwright-mcp/

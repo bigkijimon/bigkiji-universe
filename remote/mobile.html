@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#05080f" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<title>BigKiji Universe Mobile</title>
+<style>
+  :root {
+    --ease: cubic-bezier(0.23, 1, 0.32, 1);
+    --em: #34d399; --cy: #00f3ff; --yl: #FFE81F; --pk: #f472b6;
+    --ink: rgba(233,246,240,.94); --dim: rgba(226,240,234,.6); --faint: rgba(226,240,234,.34);
+    --hairline: rgba(255,255,255,.09);
+    --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: #05080f; color: var(--ink);
+    font-family: -apple-system, "SF Pro", sans-serif; overscroll-behavior: none; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* ── header ── */
+  header { flex: none; display: flex; align-items: center; gap: 8px;
+    padding: calc(var(--sat) + 8px) 12px 6px; z-index: 30; }
+  header .mark { color: var(--em); font-size: 15px; text-shadow: 0 0 10px rgba(52,211,153,.8); }
+  header h1 { font-size: 12.5px; font-weight: 700; letter-spacing: .05em; }
+  header .sub { color: var(--faint); font-size: 9.5px; font-family: "SF Mono", Menlo, monospace; }
+  #conn { margin-left: auto; display: flex; align-items: center; gap: 5px;
+    font: 700 9px "SF Mono", Menlo, monospace; letter-spacing: .08em; color: var(--faint); }
+  #conn i { width: 7px; height: 7px; border-radius: 50%; background: #fb7185;
+    transition: background .2s var(--ease); }
+  #conn.on i { background: var(--em); animation: breathe 3s ease-in-out infinite; }
+  #conn.on { color: var(--em); }
+  @keyframes breathe { 0%,100% { opacity: .7; } 50% { opacity: 1; } }
+
+  /* ── LIVE COMMENTARY BAR ── */
+  #comm { flex: none; margin: 0 10px 4px; padding: 5px 10px; z-index: 30;
+    background: rgba(8,14,22,.72); border: 1px solid rgba(0,243,255,.22); border-radius: 9px;
+    font: 600 10.5px "SF Mono", Menlo, monospace; color: var(--cy);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: .55; transition: opacity .2s var(--ease); }
+  #comm.on { opacity: 1; text-shadow: 0 0 12px rgba(0,243,255,.4); }
+
+  /* ── synapse canvas ── */
+  #cvWrap { flex: 1; position: relative; min-height: 0; }
+  #cv { position: absolute; inset: 0; touch-action: none; }
+  #selChip { position: absolute; left: 50%; bottom: 12px; z-index: 5;
+    transform: translateX(-50%) translateY(6px) scale(.96); opacity: 0; pointer-events: none;
+    font: 700 10.5px "SF Mono", Menlo, monospace; letter-spacing: .08em; color: var(--c, var(--em));
+    background: rgba(8,14,22,.8); border: 1px solid var(--c, var(--em)); border-radius: 999px;
+    padding: 4px 12px; transition: opacity .2s var(--ease), transform .2s var(--ease); }
+  #selChip.on { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  #vstate { position: absolute; top: 10px; right: 12px; z-index: 5; display: none;
+    font: 700 9.5px "SF Mono", Menlo, monospace; letter-spacing: .1em;
+    padding: 4px 11px; border-radius: 999px; color: var(--lc, var(--cy));
+    border: 1px solid var(--lc, var(--cy)); background: rgba(5,10,16,.7);
+    animation: breathe 1.4s ease-in-out infinite; }
+  #vstate.on { display: block; }
+
+  /* ── reply stream ── */
+  #reply { flex: none; margin: 0 10px 6px; max-height: 24vh; overflow-y: auto; display: none;
+    background: rgba(8,14,22,.78); border: 1px solid rgba(255,232,31,.2); border-radius: 10px;
+    padding: 8px 11px; font-size: 12.5px; line-height: 1.6; color: var(--dim);
+    white-space: pre-wrap; word-break: break-word; -webkit-overflow-scrolling: touch; }
+  #reply.on { display: block; }
+  #reply .you { color: var(--cy); }
+
+  /* ── composer ── */
+  #composer { flex: none; display: flex; gap: 7px; align-items: center;
+    padding: 6px 10px calc(var(--sab) + 84px); z-index: 20; }
+  #txt { flex: 1; min-width: 0; background: rgba(8,14,22,.85); border: 1px solid rgba(52,211,153,.28);
+    border-radius: 11px; padding: 11px 13px; color: var(--ink); outline: none;
+    font: 13px "SF Mono", Menlo, monospace; caret-color: var(--em);
+    transition: border-color .15s var(--ease); }
+  #txt:focus { border-color: rgba(52,211,153,.6); }
+  #txt::placeholder { color: var(--faint); }
+  .cbtn { flex: none; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--hairline); background: rgba(255,255,255,.05); border-radius: 11px;
+    color: var(--dim); font-size: 16px; transition: transform .12s var(--ease); }
+  .cbtn:active { transform: scale(0.94); }
+  #send { color: var(--em); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
+  @keyframes livePulse { 0%,100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.07); } }
+  #mic.listen, #mic.capture, #mic.think, #mic.speak {
+    color: var(--lc); border-color: var(--lc); background: rgba(0,0,0,.35);
+    animation: livePulse var(--lp, 1.8s) ease-in-out infinite; }
+  #mic.listen { --lc: #00f3ff; --lp: 1.8s; }
+  #mic.capture { --lc: #00ff9d; --lp: .8s; }
+  #mic.think { --lc: #FFE81F; --lp: 1.1s; }
+  #mic.speak { --lc: #f472b6; --lp: .7s; }
+
+  /* ── BottomSheet metrics ── */
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; height: 332px;
+    transform: translateY(calc(100% - 74px - var(--sab)));
+    background: linear-gradient(180deg, rgba(8,16,28,.96), rgba(4,9,18,.98));
+    border-top: 1px solid rgba(52,211,153,.3); border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 40px -12px rgba(0,243,255,.25);
+    transition: transform .26s var(--ease); padding-bottom: var(--sab); }
+  #sheet.open { transform: translateY(0); }
+  #sheet.drag { transition: none; }
+  #grab { padding: 8px 14px 4px; touch-action: none; }
+  #grab .bar { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.22); margin: 0 auto 8px; }
+  #stageLine { font: 600 10px "SF Mono", Menlo, monospace; letter-spacing: .05em; color: var(--cy);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #stageLine.busy { animation: breathe 1.2s ease-in-out infinite; }
+  #stageTrack { height: 3px; border-radius: 2px; background: rgba(255,255,255,.08); margin-top: 5px; overflow: hidden; }
+  #stageBar { display: block; height: 100%; width: 0%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--cy), #00ff9d);
+    box-shadow: 0 0 8px rgba(0,243,255,.6); transition: width .5s var(--ease); }
+  #meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; padding: 10px 14px 6px; }
+  .meter { border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); border-radius: 9px;
+    background: color-mix(in srgb, var(--c) 6%, transparent); padding: 6px 9px; min-width: 0; }
+  .meter label { display: block; font: 700 8px "SF Mono", Menlo, monospace; letter-spacing: .08em;
+    color: color-mix(in srgb, var(--c) 80%, white 10%);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meter b { display: block; font: 700 16px "SF Mono", Menlo, monospace; color: var(--ink);
+    font-variant-numeric: tabular-nums; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meter span { font: 600 8.5px "SF Mono", Menlo, monospace; color: var(--faint); }
+  .meter i { display: block; height: 3px; border-radius: 2px; margin-top: 4px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .meter i u { display: block; height: 100%; width: 0%; background: var(--c); border-radius: 2px;
+    transition: width .5s var(--ease); }
+  #feedM { padding: 2px 14px 10px; overflow: hidden; }
+  #feedM .fl { font: 10px "SF Mono", Menlo, monospace; color: var(--faint); line-height: 1.8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #feedM .fl b { color: var(--dim); font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="mark">❖</span><h1>BigKiji Universe</h1><span class="sub">MOBILE DECK</span>
+    <span id="conn"><i></i><span id="connT">CONNECTING</span></span>
+  </header>
+  <div id="comm">[LIVE] Linking to the BigKiji nerve center…</div>
+  <div id="cvWrap">
+    <canvas id="cv"></canvas>
+    <span id="selChip"></span>
+    <span id="vstate">LISTENING</span>
+  </div>
+  <div id="reply"></div>
+  <div id="composer">
+    <input id="txt" type="text" autocomplete="off" spellcheck="false"
+      placeholder="Command the universe…  ⏎ to send" enterkeyhint="send" />
+    <button id="mic" class="cbtn" title="Live voice">🎙</button>
+    <button id="send" class="cbtn" title="Send">▲</button>
+  </div>
+  <div id="sheet">
+    <div id="grab"><div class="bar"></div>
+      <div id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</div>
+      <div id="stageTrack"><span id="stageBar"></span></div>
+    </div>
+    <div id="meters">
+      <div class="meter" style="--c:#00f3ff"><label>SYNAPSE FLUX</label><b id="mFlux">0</b><span>ev/min</span><i><u id="bFlux"></u></i></div>
+      <div class="meter" style="--c:#FFE81F"><label>TOKEN VELOCITY</label><b id="mTok">—</b><span>tok/s</span><i><u id="bTok"></u></i></div>
+      <div class="meter" style="--c:#a78bfa"><label>TRAVERSAL LAT</label><b id="mLat">—</b><span>ms/tool</span><i><u id="bLat"></u></i></div>
+      <div class="meter" style="--c:#00ff9d"><label>GRAPH LINKS</label><b id="mGraph">0</b><span>nodes</span><i><u id="bGraph"></u></i></div>
+      <div class="meter" style="--c:#4e8cff"><label>MODEL TIER</label><b id="mTier">—</b><span id="mTierSub"></span><i><u id="bTier"></u></i></div>
+      <div class="meter" style="--c:#34d399"><label>LINK RTT</label><b id="mRtt">—</b><span>ms</span><i><u id="bRtt"></u></i></div>
+    </div>
+    <div id="feedM"></div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from '/vendor/three.module.js';
+
+/* ── auth token: 初回 /?t=xxx で入場 → localStorage保存（cookieも同時に付く） ── */
+const qs = new URLSearchParams(location.search);
+if (qs.get('t')) { localStorage.setItem('bk_t', qs.get('t')); history.replaceState(null, '', '/'); }
+const TOKEN = localStorage.getItem('bk_t') || '';
+const api = (p) => p + (TOKEN ? (p.includes('?') ? '&' : '?') + 't=' + TOKEN : '');
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+const $ = (id) => document.getElementById(id);
+const AGENTS = {
+  'claude-code': ['Claude', '#d97757'], gemini: ['Gemini', '#4e8cff'], codex: ['Codex', '#00a67d'],
+  biglama: ['BigLama', '#a78bfa'], marble: ['Marble', '#34d399'], justin: ['Justin', '#f472b6'],
+  risa: ['Risa', '#fbbf24'], coco: ['Coco', '#f87171'],
+};
+
+/* ── LIVE COMMENTARY BAR ── */
+let commT = null;
+function comm(text) {
+  const el = $('comm');
+  el.textContent = text.slice(0, 130);
+  el.classList.add('on');
+  clearTimeout(commT);
+  commT = setTimeout(() => el.classList.remove('on'), 5200);
+}
+
+/* ── STAGE ── */
+let stageT = null;
+function setStage(text, { busy = false, pct = null, hold = 0 } = {}) {
+  const l = $('stageLine');
+  l.textContent = '> ' + text;
+  l.classList.toggle('busy', busy);
+  if (pct != null) $('stageBar').style.width = pct + '%';
+  clearTimeout(stageT);
+  if (hold) stageT = setTimeout(() => { l.textContent = '> STANDBY — AWAITING DIRECTIVE'; l.classList.remove('busy'); $('stageBar').style.width = '0%'; }, hold);
+}
+
+/* ── metrics（全て実測） ── */
+const evTimes = [];
+const latHist = [];
+let lastTokRate = 0, vaultCount = 0, curModel = '', sseRtt = 0;
+const setM = (v, b, val, max) => { $(v).textContent = val; $(b).style.width = Math.min(100, (parseFloat(val) || 0) / max * 100) + '%'; };
+setInterval(() => {
+  const now = performance.now();
+  while (evTimes.length && now - evTimes[0] > 60000) evTimes.shift();
+  setM('mFlux', 'bFlux', String(evTimes.length), 60);
+  setM('mTok', 'bTok', lastTokRate ? lastTokRate.toFixed(1) : '—', 300);
+  const lat = latHist.length ? Math.round(latHist.reduce((a, b) => a + b, 0) / latHist.length) : 0;
+  $('mLat').textContent = lat || '—';
+  $('bLat').style.width = lat ? Math.max(6, 100 - lat / 40) + '%' : '0%';
+  setM('mGraph', 'bGraph', String(vaultCount), 4000);
+  const tier = curModel.includes('preview') ? 'T1' : curModel.includes('lite') ? 'T2' : curModel.includes('qwen') ? 'T3' : '—';
+  $('mTier').textContent = tier;
+  $('mTierSub').textContent = tier === 'T3' ? 'LOCAL ¥0' : curModel.split('/').pop().slice(0, 14);
+  $('bTier').style.width = tier === 'T1' ? '100%' : tier === 'T2' ? '66%' : tier === 'T3' ? '33%' : '0%';
+  setM('mRtt', 'bRtt', sseRtt ? String(sseRtt) : '—', 400);
+}, 1000);
+
+/* ── mini feed（sheet内・直近4行） ── */
+const feedLines = [];
+function feedM(html) {
+  feedLines.unshift(html);
+  while (feedLines.length > 4) feedLines.pop();
+  $('feedM').innerHTML = feedLines.map((h) => `<div class="fl">${h}</div>`).join('');
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ── reply stream + mobile sentence-TTS ── */
+let replyBuf = '', ttsIdx = 0;
+function replyShow(html, cls) {
+  const r = $('reply');
+  r.classList.add('on');
+  if (cls === 'you') r.innerHTML += `\n<span class="you">${html}</span>\n`;
+  else r.innerHTML += html;
+  r.scrollTop = r.scrollHeight;
+  if (r.textContent.length > 4000) r.innerHTML = esc(r.textContent.slice(-3000));
+}
+const synthQ = [];
+function speakNext() {
+  if (!('speechSynthesis' in window)) return;
+  if (speechSynthesis.speaking || !synthQ.length) return;
+  const s = synthQ.shift();
+  const u = new SpeechSynthesisUtterance(s);
+  u.lang = /[぀-ヿ一-鿿]/.test(s) ? 'ja-JP' : 'en-US';
+  u.rate = 1.05;
+  u.onend = () => { if (!synthQ.length && !speechSynthesis.pending) setVState(voice.live ? 'LISTEN' : null); speakNext(); };
+  setVState('SPEAK');
+  speechSynthesis.speak(u);
+}
+function ttsScan(flush) {
+  if (!voice.live) return;
+  let i = ttsIdx;
+  for (let j = i; j < replyBuf.length; j++) {
+    if ('.!?。！？\n'.includes(replyBuf[j]) && j - i >= 12) { synthQ.push(replyBuf.slice(i, j + 1)); i = j + 1; }
+  }
+  if (flush && replyBuf.slice(i).trim()) { synthQ.push(replyBuf.slice(i)); i = replyBuf.length; }
+  ttsIdx = i;
+  speakNext();
+}
+function ttsCut() { synthQ.length = 0; try { speechSynthesis.cancel(); } catch (_) {} }
+
+/* ── SSE sync engine（EventSource自動再接続＋visibility復帰） ── */
+let es = null, esTimer = null, lastPing = 0;
+function applyState(s) {
+  vaultCount = s.vaultCount || 0;
+  curModel = s.model || '';
+}
+function connect() {
+  if (es) { try { es.close(); } catch (_) {} }
+  const t0 = performance.now();
+  es = new EventSource(api('/api/events'));
+  es.onopen = () => { sseRtt = Math.round(performance.now() - t0); $('conn').classList.add('on'); $('connT').textContent = 'LINKED'; };
+  es.onerror = () => {
+    $('conn').classList.remove('on'); $('connT').textContent = 'RETRY';
+    clearTimeout(esTimer); esTimer = setTimeout(connect, 3000);
+  };
+  es.addEventListener('state', (e) => applyState(JSON.parse(e.data)));
+  es.addEventListener('commentary', (e) => { const c = JSON.parse(e.data); comm('[LIVE] ' + c.text); });
+  es.addEventListener('pi', (e) => {
+    const p = JSON.parse(e.data);
+    if (p.kind === 'turn_start') {
+      replyBuf = ''; ttsIdx = 0;
+      curModel = p.model || curModel;
+      setStage(`STAGE 1/4: ROUTING → ${(p.model || '').split('/').pop()}`, { busy: true, pct: 15 });
+      excite('core');
+    } else if (p.kind === 'delta') {
+      replyBuf += p.text;
+      replyShow(esc(p.text));
+      ttsScan(false);
+      setStage('STAGE 2/4: REASONING [PROCESSING…]', { busy: true, pct: 40 });
+      excite('core');
+    } else if (p.kind === 'tool_end') {
+      if (typeof p.ms === 'number') { latHist.push(p.ms); while (latHist.length > 8) latHist.shift(); }
+      feedM(`<b>${esc(p.toolName)}</b> ${p.isError ? '✗' : '✓'} ${p.ms ?? '—'}ms`);
+    }
+  });
+  es.addEventListener('stats', (e) => {
+    const s = JSON.parse(e.data);
+    const tok = s.turn ? s.turn.input + s.turn.output : 0;
+    if (tok && s.ms > 400) lastTokRate = tok / (s.ms / 1000);
+    setStage(`STAGE 4/4: COMPLETE — in ${s.turn ? s.turn.input : 0} · out ${s.turn ? s.turn.output : 0} tok`, { pct: 100, hold: 6000 });
+    ttsScan(true);
+  });
+  es.addEventListener('bus', (e) => {
+    const b = JSON.parse(e.data);
+    evTimes.push(performance.now());
+    if (b.agent && AGENTS[b.agent]) excite(b.agent);
+    if (b.source === 'pi' && b.type === 'task') setStage(`STAGE 3/4: TOOL EXECUTION`, { busy: true, pct: 70 });
+  });
+  es.addEventListener('swarm', (e) => {
+    const s = JSON.parse(e.data);
+    if (s.mode === 'consensus') ['gemini', 'claude-code', 'codex'].forEach(excite);
+  });
+  es.addEventListener('touch', () => { evTimes.push(performance.now()); ambientFlash(); });
+}
+connect();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    connect();
+    fetch(api('/api/state')).then((r) => r.json()).then(applyState).catch(() => {});
+  }
+});
+
+/* ── composer ── */
+async function sendPrompt(text) {
+  if (!text.trim()) return;
+  replyShow(esc('❯ ' + text), 'you');
+  try {
+    const r = await fetch(api('/api/prompt'), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
+    });
+    if (!r.ok) comm('[LIVE] ⚠️ Prompt rejected — check token / connection');
+  } catch (_) { comm('[LIVE] ⚠️ Send failed — offline?'); }
+}
+$('send').addEventListener('click', () => { sendPrompt($('txt').value); $('txt').value = ''; });
+$('txt').addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter') { sendPrompt($('txt').value); $('txt').value = ''; }
+});
+
+/* ── BottomSheet drag ── */
+const sheet = $('sheet');
+let sy = 0, sOpen = false, dragging = false;
+$('grab').addEventListener('touchstart', (e) => { dragging = true; sy = e.touches[0].clientY; sheet.classList.add('drag'); }, { passive: true });
+window.addEventListener('touchmove', (e) => {
+  if (!dragging) return;
+  const dy = e.touches[0].clientY - sy;
+  const base = sOpen ? 0 : sheet.getBoundingClientRect().height - 74;
+  const y = Math.max(0, Math.min(sheet.getBoundingClientRect().height - 60, base + dy));
+  sheet.style.transform = `translateY(${y}px)`;
+}, { passive: true });
+window.addEventListener('touchend', (e) => {
+  if (!dragging) return;
+  dragging = false;
+  sheet.classList.remove('drag');
+  sheet.style.transform = '';
+  const dy = (e.changedTouches[0] ? e.changedTouches[0].clientY : sy) - sy;
+  sOpen = sOpen ? dy < 60 : dy < -40;
+  sheet.classList.toggle('open', sOpen);
+});
+$('grab').addEventListener('click', () => { sOpen = !sOpen; sheet.classList.toggle('open', sOpen); });
+
+/* ══ Mobile Synapse Canvas（Three.js・軽量BHノード＋光ファイバー束＋パルス） ══ */
+const wrap = $('cvWrap');
+const renderer = new THREE.WebGLRenderer({ canvas: $('cv'), alpha: true, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
+camera.position.set(0, 2.2, 13);
+const G = new THREE.Group();
+scene.add(G);
+
+function glowTex(color, dark) { // ミニBH風スプライト（暗芯＋色リム）
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const rg = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+  if (dark) {
+    rg.addColorStop(0, '#000');
+    rg.addColorStop(0.42, '#050508');
+    rg.addColorStop(0.62, color);
+    rg.addColorStop(0.78, color + '66');
+    rg.addColorStop(1, 'transparent');
+  } else {
+    rg.addColorStop(0, '#fff');
+    rg.addColorStop(0.25, color);
+    rg.addColorStop(1, 'transparent');
+  }
+  g.fillStyle = rg;
+  g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const nodes = {}; // id → {sprite, line, lineMat, dot, act, curve, pos}
+const coreSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex('#34d399', true), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+coreSprite.scale.setScalar(3.4);
+G.add(coreSprite);
+nodes.core = { sprite: coreSprite, act: 0 };
+
+const ids = Object.keys(AGENTS);
+ids.forEach((id, i) => {
+  const [label, color] = AGENTS[id];
+  const a = (i / ids.length) * Math.PI * 2;
+  const pos = new THREE.Vector3(Math.cos(a) * 5.1, (i % 2 ? 1 : -1) * 1.15, Math.sin(a) * 5.1);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex(color, true), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  sp.scale.setScalar(1.7);
+  sp.position.copy(pos);
+  sp.userData = { id, label, color };
+  G.add(sp);
+  // 光ファイバー: コア→ノードの湾曲ラインを3本ずらして束感を出す（モバイル軽量版）
+  const mid = pos.clone().multiplyScalar(0.5).add(new THREE.Vector3(0, 1.3, 0));
+  const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(0, 0, 0), mid, pos);
+  const lineMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false });
+  for (let k = 0; k < 3; k++) {
+    const off = new THREE.Vector3((Math.random() - 0.5) * 0.22, (Math.random() - 0.5) * 0.22, (Math.random() - 0.5) * 0.22);
+    const pts = curve.getPoints(24).map((p, pi2) => p.clone().add(off.clone().multiplyScalar(Math.sin(pi2 / 24 * Math.PI))));
+    G.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+  }
+  const dot = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex(color, false), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 }));
+  dot.scale.setScalar(0.5);
+  G.add(dot);
+  nodes[id] = { sprite: sp, lineMat, dot, act: 0, t: 0, curve, pos };
+});
+// アンビエント神経叢（軽量500粒）
+{
+  const N = 500;
+  const arr = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const r = 6.5 + Math.random() * 4, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+    arr[i * 3] = r * Math.sin(ph) * Math.cos(th);
+    arr[i * 3 + 1] = r * Math.cos(ph) * 0.6;
+    arr[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  const ambient = new THREE.Points(g, new THREE.PointsMaterial({ color: 0x00f3ff, size: 0.05, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
+  G.add(ambient);
+  window.__amb = ambient;
+}
+let ambFlash = 0;
+function ambientFlash() { ambFlash = 1; }
+function excite(id) { const n = nodes[id]; if (!n) return; n.act = 1; if (n.dot) { n.t = 0; } }
+
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(wrap);
+resize();
+
+/* gestures: 1本ドラッグ=orbit / ピンチ=zoom / ダブルタップ=focus / タップ=選択 */
+let touches = new Map(), lastTap = 0, pinchD = 0, focusT = null;
+const ray = new THREE.Raycaster();
+function pick(x, y) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1), camera);
+  const hits = ray.intersectObjects(ids.map((id) => nodes[id].sprite));
+  return hits.length ? hits[0].object.userData : null;
+}
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touches.size === 2) {
+    const [a, b] = [...touches.values()];
+    pinchD = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+  const now = performance.now();
+  if (touches.size === 1) {
+    if (now - lastTap < 300) { // ダブルタップ
+      const hit = pick(e.clientX, e.clientY);
+      focusT = hit ? nodes[hit.id].pos.clone() : null; // ノード=フォーカス / 空=リセット
+      if (!hit) camera.position.set(0, 2.2, 13);
+    } else {
+      const hit = pick(e.clientX, e.clientY);
+      const chip = $('selChip');
+      if (hit) {
+        chip.textContent = hit.label.toUpperCase() + ' — TAP×2 TO FOCUS';
+        chip.style.setProperty('--c', hit.color);
+        chip.classList.add('on');
+        setTimeout(() => chip.classList.remove('on'), 2600);
+      }
+    }
+    lastTap = now;
+  }
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  if (touches.size === 1) {
+    G.rotation.y += (e.clientX - t.x) * 0.005;
+    G.rotation.x = Math.max(-0.5, Math.min(0.5, G.rotation.x + (e.clientY - t.y) * 0.003));
+  } else if (touches.size === 2) {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const [a, b] = [...touches.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchD) camera.position.z = Math.max(6, Math.min(20, camera.position.z * (pinchD / d)));
+    pinchD = d;
+    return;
+  }
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
+const endT = (e) => { touches.delete(e.pointerId); pinchD = 0; };
+renderer.domElement.addEventListener('pointerup', endT);
+renderer.domElement.addEventListener('pointercancel', endT);
+
+const clock = new THREE.Clock();
+(function tick() {
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  G.rotation.y += dt * 0.05;
+  for (const id of ids) {
+    const n = nodes[id];
+    n.act = Math.max(0, n.act - dt * 0.6);
+    n.lineMat.opacity = 0.14 + n.act * 0.55;
+    n.sprite.material.opacity = 0.75 + n.act * 0.25;
+    n.sprite.scale.setScalar(1.7 + n.act * 0.5);
+    if (n.act > 0 && n.t < 1) { // 神経伝達パルス走行
+      n.t = Math.min(1, n.t + dt * (1.2 + n.act));
+      n.curve.getPoint(n.t, n.dot.position);
+      n.dot.material.opacity = n.act;
+    } else n.dot.material.opacity = 0;
+  }
+  nodes.core.act = Math.max(0, nodes.core.act - dt * 0.5);
+  coreSprite.scale.setScalar(3.4 + nodes.core.act * 0.7 + Math.sin(clock.elapsedTime * 1.4) * 0.08);
+  ambFlash = Math.max(0, ambFlash - dt * 1.4);
+  if (window.__amb) window.__amb.material.opacity = 0.3 + ambFlash * 0.4;
+  if (focusT) { // ダブルタップフォーカス: カメラをノード寄りへ滑走（ease-out的lerp）
+    const target = focusT.clone().normalize().multiplyScalar(focusT.length() + 3.4).add(new THREE.Vector3(0, 1.2, 0));
+    camera.position.lerp(target, 1 - Math.exp(-dt * 4));
+    if (camera.position.distanceTo(target) < 0.05) focusT = null;
+  }
+  camera.lookAt(0, 0, 0);
+  renderer.render(scene, camera);
+})();
+
+/* ══ Live Voice（iPhone側VAD＋Barge-in＝speechSynthesis.cancel） ══ */
+const voice = { live: false, ctx: null, stream: null, node: null, speech: false, floor: 0.008,
+  speechStart: 0, silenceStart: 0, utterStart: 0, utterFrom: 0, w: 0 };
+const SR = 16000;
+const ring = new Float32Array(SR * 30);
+function setVState(p) {
+  const el = $('vstate'), mic = $('mic');
+  mic.classList.remove('listen', 'capture', 'think', 'speak');
+  if (!p || !voice.live) { el.classList.remove('on'); return; }
+  el.classList.add('on');
+  el.textContent = { LISTEN: 'LISTENING', CAPTURE: 'HEARING YOU', THINK: 'THINKING…', SPEAK: 'SPEAKING — INTERRUPT ANYTIME' }[p] || p;
+  el.style.setProperty('--lc', { LISTEN: '#00f3ff', CAPTURE: '#00ff9d', THINK: '#FFE81F', SPEAK: '#f472b6' }[p]);
+  mic.classList.add({ LISTEN: 'listen', CAPTURE: 'capture', THINK: 'think', SPEAK: 'speak' }[p]);
+}
+const WORKLET = URL.createObjectURL(new Blob([`
+class P extends AudioWorkletProcessor {
+  constructor(){ super(); this.frac = 0; this.prev = null; }
+  process(inputs){
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch || !ch.length) return true;
+    const r = sampleRate / 16000; // 48k/44.1kどちらでも線形補間で16kへ
+    let data;
+    if (this.prev === null) data = ch;
+    else { data = new Float32Array(ch.length + 1); data[0] = this.prev; data.set(ch, 1); }
+    const n = data.length;
+    const out = []; let sum = 0; let p = this.frac;
+    while (p <= n - 1 - 1e-9) {
+      const i = Math.floor(p), f = p - i;
+      const v = data[i] + (data[i + 1] - data[i]) * f;
+      out.push(v); sum += v * v; p += r;
+    }
+    this.frac = p - (n - 1); this.prev = data[n - 1];
+    if (out.length) {
+      const o = new Float32Array(out);
+      this.port.postMessage({ pcm: o, rms: Math.sqrt(sum / o.length) }, [o.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('bkm', P);`], { type: 'text/javascript' }));
+
+function wavEncode(f32) {
+  const n = f32.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, f32[i])); v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  return buf;
+}
+function onFrame({ pcm, rms }) {
+  if (!voice.live) return;
+  for (let i = 0; i < pcm.length; i++) { ring[voice.w] = pcm[i]; voice.w = (voice.w + 1) % ring.length; }
+  const now = performance.now();
+  if (!voice.speech) voice.floor = voice.floor * 0.98 + rms * 0.02;
+  const speaking = speechSynthesis.speaking || synthQ.length > 0;
+  const thresh = Math.max(voice.floor * (speaking ? 4 : 3), 0.010);
+  if (!voice.speech) {
+    if (rms > thresh) {
+      if (!voice.speechStart) voice.speechStart = now;
+      if (now - voice.speechStart >= (speaking ? 250 : 90)) {
+        voice.speech = true; voice.utterStart = now;
+        const back = Math.round(((now - voice.speechStart) + 300) / 1000 * SR);
+        voice.utterFrom = (voice.w - Math.min(back, ring.length - 1) + ring.length) % ring.length;
+        if (speaking) ttsCut(); // ★Barge-in: AIの声を即カットして聞く体制へ
+        setVState('CAPTURE');
+      }
+    } else voice.speechStart = 0;
+  } else {
+    if (rms < Math.max(voice.floor * 1.8, 0.006)) {
+      if (!voice.silenceStart) voice.silenceStart = now;
+      if (now - voice.silenceStart >= 700) { endUtter(now); return; }
+    } else voice.silenceStart = 0;
+    if (now - voice.utterStart > 20000) endUtter(now);
+  }
+}
+async function endUtter(now) {
+  voice.speech = false; voice.silenceStart = 0; voice.speechStart = 0;
+  if (now - voice.utterStart < 300) { setVState('LISTEN'); return; }
+  const len = (voice.w - voice.utterFrom + ring.length) % ring.length;
+  const pcm = new Float32Array(len);
+  for (let i = 0; i < len; i++) pcm[i] = ring[(voice.utterFrom + i) % ring.length];
+  setVState('THINK');
+  try {
+    const r = await fetch(api('/api/voice'), { method: 'POST', body: wavEncode(pcm) });
+    const j = await r.json();
+    if (j.text) { replyShow(esc('🎙 ' + j.text), 'you'); replyBuf = ''; ttsIdx = 0; }
+    else setVState('LISTEN');
+  } catch (_) { setVState('LISTEN'); comm('[LIVE] ⚠️ Voice upload failed'); }
+}
+$('mic').addEventListener('click', async () => {
+  if (voice.live) { // ライブ終了
+    voice.live = false;
+    ttsCut();
+    try { voice.node && voice.node.disconnect(); } catch (_) {}
+    try { voice.stream && voice.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+    try { voice.ctx && voice.ctx.close(); } catch (_) {}
+    voice.ctx = voice.stream = voice.node = null;
+    setVState(null);
+    comm('[LIVE] 🎙 Live voice session ended');
+    return;
+  }
+  try {
+    voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    voice.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await voice.ctx.resume().catch(() => {});
+    await voice.ctx.audioWorklet.addModule(WORKLET);
+    const src = voice.ctx.createMediaStreamSource(voice.stream);
+    voice.node = new AudioWorkletNode(voice.ctx, 'bkm');
+    const mute = voice.ctx.createGain(); mute.gain.value = 0;
+    src.connect(voice.node).connect(mute).connect(voice.ctx.destination);
+    voice.node.port.onmessage = (e) => onFrame(e.data);
+    voice.live = true; voice.speech = false;
+    if ('speechSynthesis' in window) speechSynthesis.getVoices(); // iOSのvoiceロード誘発
+    setVState('LISTEN');
+    comm('[LIVE] 🎙 Live voice — hands-free. Speak anytime; interrupt me freely.');
+  } catch (err) {
+    comm('[LIVE] ⚠️ Mic unavailable: ' + (err.message || err.name));
+  }
+});
+</script>
+</body>
+</html>

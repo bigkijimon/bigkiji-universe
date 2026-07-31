@@ -1,0 +1,4 @@
+#!/bin/zsh
+# bigkiji — BigKiji Universe リモートCLIラッパ（symlink経由でも自位置を解決）
+SELF=${0:A}
+exec node "${SELF:h}/bigkiji-cli.js" "$@"

@@ -1,0 +1,6 @@
+#!/bin/zsh
+# bigkiji-tmux — Termius/SSH用: tmuxセッション "bigkiji" にアタッチ（無ければ作成）。
+# 切断してもAgent処理は落ちない（処理本体は常駐Electronアプリ側。CLIはtmuxが保持）。
+SELF=${0:A}
+TMUX_BIN=$(command -v tmux || echo /opt/homebrew/bin/tmux)
+exec "$TMUX_BIN" new-session -A -s bigkiji "${SELF:h}/bigkiji"
