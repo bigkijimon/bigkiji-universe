@@ -32,8 +32,10 @@ const audioUi = fs.readFileSync(path.join(__dirname, '../src/components/UI/audio
 const settingsUi = fs.readFileSync(path.join(__dirname, '../src/components/UI/settings-modal.js'), 'utf8');
 const main = fs.readFileSync(path.join(__dirname, '../src/core/main.js'), 'utf8');
 const localServer = fs.readFileSync(path.join(__dirname, './qwen3-tts-server.py'), 'utf8');
+const naturalTts = fs.readFileSync(path.join(__dirname, '../src/core/natural-tts-service.js'), 'utf8');
 assert.match(audioUi, /ownerGain/); assert.match(audioUi, /agentGain/); assert.match(audioUi, /firstAudioMs/);
 assert.match(settingsUi, /FIRST SPEECH SLA/); assert.match(settingsUi, /DEFAULT ENGLISH/); assert.doesNotMatch(settingsUi, /ElevenLabs|OpenAI TTS/);
 assert.match(main, /spoken-progress-fallback/); assert.match(main, /speechFirstPlayed/);
+assert.doesNotMatch(main, /ttsService\.start\(\);/); assert.match(naturalTts, /ensureReady/); assert.match(naturalTts, /BIGKIJI_TTS_IDLE_MS/);
 assert.match(localServer, /devices = \["mps", "cpu"\]/); assert.match(localServer, /127\.0\.0\.1/);
 console.log('voice engine selftest: PASS');

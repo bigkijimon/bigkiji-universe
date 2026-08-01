@@ -451,7 +451,7 @@ function speakAgent(text, agent = 'pi') {
 }
 ipcMain.handle('voice:toggle', () => {
   voiceOn = !voiceOn;
-  if (!voiceOn) ttsKill();
+  if (!voiceOn) { ttsKill(); ttsService?.stop(); }
   if (voiceOn) speak('Voice is on. BigKiji is ready.', { agent: 'codex' });
   return { on: voiceOn };
 });
@@ -942,7 +942,7 @@ ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});
   if (ttsService && (before.audio.ttsEndpoint !== next.audio.ttsEndpoint || before.audio.ttsModel !== next.audio.ttsModel)) {
-    ttsService.stop(); ttsService.start();
+    ttsService.stop();
   }
   if (previewServer && (before.preview.preferredPort !== next.preview.preferredPort || before.preview.enabled !== next.preview.enabled)) {
     const root = previewServer.root; previewServer.close();
@@ -1111,7 +1111,7 @@ app.whenReady().then(() => {
   ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore });
   ttsService.on('status', (status) => broadcast('voice:engine-status', status));
   ttsService.on('log', (text) => text && bus.push({ source: 'system', type: 'info', text: `TTS: ${String(text).slice(0, 180)}` }));
-  ttsService.start(); // asynchronous: never blocks first paint
+  // Local neural TTS is intentionally lazy: first speech wakes it, idle timeout closes it.
   cmuxBridge = new CmuxBridge({ settingsStore, defaultBin: PATHS.cmuxBin });
   cmuxBridge.on('snapshot', (snapshot) => broadcast('cmux:snapshot', snapshot));
   cmuxBridge.start();

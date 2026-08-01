@@ -36,7 +36,8 @@ class NaturalTTSService extends EventEmitter {
     this.cacheDir = path.join(userData, 'tts-cache');
     this.proc = null;
     this.starting = null;
-    this.status = { state: 'offline', engine: 'system-neural', ready: false, latencyMs: null, detail: 'Not started' };
+    this.idleTimer = null;
+    this.status = { state: 'sleeping', engine: 'system-neural', ready: false, latencyMs: null, detail: 'Starts on first speech request' };
     fs.mkdirSync(this.cacheDir, { recursive: true });
   }
   snapshot() { return { ...this.status, endpoint: this.settingsStore.get().audio.ttsEndpoint }; }
@@ -74,7 +75,29 @@ class NaturalTTSService extends EventEmitter {
     });
     this._pollHealth();
   }
-  stop() { if (this.proc) { try { this.proc.kill(); } catch (_) {} this.proc = null; } this.starting = null; }
+  stop() {
+    clearTimeout(this.idleTimer); this.idleTimer = null;
+    if (this.proc) { try { this.proc.kill(); } catch (_) {} this.proc = null; }
+    this.starting = null;
+    this._setStatus({ state: 'sleeping', ready: false, engine: 'system-neural', detail: 'Stopped after idle timeout' });
+  }
+  async ensureReady(timeoutMs = 9000) {
+    const existing = await this.health(500).catch(() => null);
+    if (existing?.ready) return true;
+    await this.start();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const health = await this.health(650).catch(() => null);
+      if (health?.ready) return true;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return false;
+  }
+  _scheduleIdleStop() {
+    clearTimeout(this.idleTimer);
+    const idleMs = Math.max(15000, Number(process.env.BIGKIJI_TTS_IDLE_MS || 60000));
+    this.idleTimer = setTimeout(() => this.stop(), idleMs); this.idleTimer.unref?.();
+  }
   async _pollHealth() {
     for (let i = 0; i < 90 && this.proc; i++) {
       const health = await this.health(700).catch(() => null);
@@ -118,6 +141,7 @@ class NaturalTTSService extends EventEmitter {
     if (!buffer && !forceSystem) {
       try {
         const cfg = this.settingsStore.get().audio;
+        if (!await this.ensureReady(Math.min(cfg.qwenTtsTimeoutMs, 12000))) throw new Error('local TTS wake timeout');
         const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), cfg.qwenTtsTimeoutMs);
         const response = await fetch(`${cfg.ttsEndpoint}/synthesize`, {
           method: 'POST', signal: ctrl.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
@@ -151,6 +175,7 @@ class NaturalTTSService extends EventEmitter {
     const latencyMs = Date.now() - started;
     this._setStatus({ state: fallback ? 'fallback' : 'ready', ready: !fallback, engine, latencyMs,
       detail: fallback ? `${process.platform} system voice fallback active` : `${path.basename(payload.model)} ready` });
+    this._scheduleIdleStop();
     return { buffer, track, agent: profile.key, language, speed: profile.speed, engine, fallback,
       requestedAt, synthesizedAt: Date.now(), synthesisMs: latencyMs, text: clean };
   }
