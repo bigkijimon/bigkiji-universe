@@ -35,6 +35,7 @@
     "test:radial-spark": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/radial-spark-selftest.mjs",
     "test:comfy": "node tools/comfy-bridge-selftest.js",
     "test:telemetry": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/telemetry-store-selftest.mjs",
+    "test:cli-theme": "node tools/cli-theme-selftest.js",
     "test:architecture": "node tools/architecture-selftest.js",
     "test:runtime-policy": "node tools/runtime-policy-selftest.js",
     "test:voice-engine": "node tools/voice-engine-selftest.js",
@@ -45,7 +46,7 @@
     "test:daemon": "node tools/daemon-selftest.js",
     "test:security": "node tools/security-selftest.js",
     "test:conversation": "node tools/conversation-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry && npm run test:cli-theme",
     "audit:delegations": "node tools/delegation-audit.js",
     "index:memory": "node tools/index-system-memory.js",
     "postinstall": "node tools/postinstall.js"
