@@ -239,7 +239,7 @@ function feedM(html) {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /* ── reply stream + mobile sentence-TTS ── */
-let replyBuf = '', ttsIdx = 0;
+let replyBuf = '';
 function replyShow(html, cls) {
   const r = $('reply');
   r.classList.add('on');
@@ -260,14 +260,16 @@ function speakNext() {
   setVState('SPEAK');
   speechSynthesis.speak(u);
 }
-function ttsScan(flush) {
+function ownerSpeech(text) {
+  return String(text || '')
+    .replace(/<(?:thought|thinking|analysis)\b[^>]*>[\s\S]*?<\/(?:thought|thinking|analysis)>/gi, '')
+    .replace(/^\s*(?:thinking|thought|analysis|internal reasoning)\s*:\s*.*$/gim, '')
+    .trim();
+}
+function ttsFinal() {
   if (!voice.live) return;
-  let i = ttsIdx;
-  for (let j = i; j < replyBuf.length; j++) {
-    if ('.!?。！？\n'.includes(replyBuf[j]) && j - i >= 12) { synthQ.push(replyBuf.slice(i, j + 1)); i = j + 1; }
-  }
-  if (flush && replyBuf.slice(i).trim()) { synthQ.push(replyBuf.slice(i)); i = replyBuf.length; }
-  ttsIdx = i;
+  const finalText = ownerSpeech(replyBuf);
+  if (finalText) synthQ.push(finalText);
   speakNext();
 }
 function ttsCut() { synthQ.length = 0; try { speechSynthesis.cancel(); } catch (_) {} }
@@ -292,14 +294,13 @@ function connect() {
   es.addEventListener('pi', (e) => {
     const p = JSON.parse(e.data);
     if (p.kind === 'turn_start') {
-      replyBuf = ''; ttsIdx = 0;
+      replyBuf = '';
       curModel = p.model || curModel;
       setStage(`STAGE 1/4: ROUTING → ${(p.model || '').split('/').pop()}`, { busy: true, pct: 15 });
       excite('core');
     } else if (p.kind === 'delta') {
       replyBuf += p.text;
       replyShow(esc(p.text));
-      ttsScan(false);
       setStage('STAGE 2/4: REASONING [PROCESSING…]', { busy: true, pct: 40 });
       excite('core');
     } else if (p.kind === 'tool_end') {
@@ -312,7 +313,7 @@ function connect() {
     const tok = s.turn ? s.turn.input + s.turn.output : 0;
     if (tok && s.ms > 400) lastTokRate = tok / (s.ms / 1000);
     setStage(`STAGE 4/4: COMPLETE — in ${s.turn ? s.turn.input : 0} · out ${s.turn ? s.turn.output : 0} tok`, { pct: 100, hold: 6000 });
-    ttsScan(true);
+    ttsFinal();
   });
   es.addEventListener('bus', (e) => {
     const b = JSON.parse(e.data);
@@ -632,7 +633,7 @@ async function endUtter(now) {
   try {
     const r = await fetch(api('/api/voice'), { method: 'POST', body: wavEncode(pcm) });
     const j = await r.json();
-    if (j.text) { replyShow(esc('🎙 ' + j.text), 'you'); replyBuf = ''; ttsIdx = 0; }
+    if (j.text) { replyShow(esc('🎙 ' + j.text), 'you'); replyBuf = ''; }
     else setVState('LISTEN');
   } catch (_) { setVState('LISTEN'); comm('[LIVE] ⚠️ Voice upload failed'); }
 }

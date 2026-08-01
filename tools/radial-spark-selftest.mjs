@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { radialShellPoint, fibonacciLeafPoint } from '../renderer/radial-folder-geometry.js';
-import { SynapseSparkShedder } from '../renderer/synapse-spark-shedder.js';
+import { radialShellPoint, fibonacciLeafPoint } from '../src/domain/3d-canvas/components/radial-folder-geometry.js';
+import { SynapseSparkShedder } from '../src/domain/3d-canvas/shaders/synapse-spark-shedder.js';
 
 const first = radialShellPoint('School/docs', 1, 2);
 const again = radialShellPoint('School/docs', 1, 2);

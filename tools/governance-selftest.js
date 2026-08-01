@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 const assert = require('assert');
-const g = require('../governance');
+const g = require('../src/core/governance');
 
 assert.equal(g.isSubstantiveTask('こんにちは'), false);
 assert.equal(g.isSubstantiveTask('BigKiji Universeのモデル降格処理を実装して検証してください。'), true);

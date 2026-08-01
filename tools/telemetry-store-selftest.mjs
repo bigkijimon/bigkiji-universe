@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { TelemetryStore } from '../renderer/telemetry-store.js';
+import { TelemetryStore } from '../src/domain/telemetry/components/telemetry-store.js';
 
 const store = new TelemetryStore({ limit: 3 });
 store.ingest({ id: '1', source: 'claude-code', kind: 'tool_start', text: 'Refactoring shader', ts: 1000 }, 'pi');

@@ -3,7 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ComfyUIMediaBridge } = require('../comfyui-media-bridge');
+const { ComfyUIMediaBridge } = require('../src/domain/telemetry/components/comfyui-media-bridge');
 
 const root = '/Users/yuma/Documents/ComfyUI';
 const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-comfy-'));

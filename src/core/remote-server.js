@@ -72,14 +72,14 @@ function start(deps) {
   };
 
   const STATIC = {
-    '/': ['remote/mobile.html', 'text/html; charset=utf-8'],
-    '/manifest.webmanifest': ['remote/manifest.webmanifest', 'application/manifest+json'],
-    '/sw.js': ['remote/sw.js', 'text/javascript'],
-    '/icon-192.png': ['remote/icon-192.png', 'image/png'],
-    '/icon-512.png': ['remote/icon-512.png', 'image/png'],
+    '/': ['src/components/UI/remote/mobile.html', 'text/html; charset=utf-8'],
+    '/manifest.webmanifest': ['src/components/UI/remote/manifest.webmanifest', 'application/manifest+json'],
+    '/sw.js': ['src/components/UI/remote/sw.js', 'text/javascript'],
+    '/icon-192.png': ['src/components/UI/remote/icon-192.png', 'image/png'],
+    '/icon-512.png': ['src/components/UI/remote/icon-512.png', 'image/png'],
     '/vendor/three.module.js': ['node_modules/three/build/three.module.js', 'text/javascript'],
     '/vendor/three.core.js': ['node_modules/three/build/three.core.js', 'text/javascript'], // r172分割ビルドの内部import先
-    '/favicon.ico': ['remote/icon-192.png', 'image/png'],
+    '/favicon.ico': ['src/components/UI/remote/icon-192.png', 'image/png'],
   };
 
   const server = http.createServer((req, res) => {

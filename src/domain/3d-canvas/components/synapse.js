@@ -6,18 +6,26 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildOrbGroup } from './orb-core.js';
 import { CoreInflowSynapse } from './core-inflow-synapse.js';
 import { Roadmap3D } from './roadmap-3d.js';
-import { ViralMembrane } from './viral-membrane.js';
-import { FileDetailPopup } from './file-detail-popup.js';
+import { ViralMembrane } from '../shaders/viral-membrane.js';
+import { FileDetailPopup } from '../../../components/UI/file-detail-popup.js';
 import { ParticleCluster } from './particle-cluster.js';
 import { SmoothFocusController, zoomAroundPoint } from './camera-controls.js';
-import { TelemetryStore } from './telemetry-store.js';
-import { RightTelemetryPanel } from './right-telemetry-panel.js';
-import { SynapseSparkShedder } from './synapse-spark-shedder.js';
+import { TelemetryStore } from '../../telemetry/components/telemetry-store.js';
+import { RightTelemetryPanel } from '../../telemetry/components/right-telemetry-panel.js';
+import { SynapseSparkShedder } from '../shaders/synapse-spark-shedder.js';
 import { radialShellPoint, fibonacciLeafPoint } from './radial-folder-geometry.js';
+import { PiAgentsFleetBox } from '../../pi-agent/components/pi-agents-fleet-box.js';
+import { HybridOrbitController } from './hybrid-orbit-controller.js';
+import { RelationshipField } from './relationship-field.js';
+import { CoreAccretionField } from '../shaders/core-accretion-field.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
 const telemetryStore = new TelemetryStore({ limit: 120 });
+const fleetBox = new PiAgentsFleetBox({ root: document.getElementById('fleetHud') });
+let roadmap3d = null;
+window.bigkiji.onFleet?.((snapshot) => fleetBox.update(snapshot));
+window.bigkiji.fleetSnapshot?.().then((snapshot) => fleetBox.update(snapshot)).catch(() => {});
 let generatedMedia = null;
 function applyGeneratedAsset(assetUrl, mime = '') {
   if (!assetUrl) return;
@@ -50,7 +58,7 @@ window.bigkiji.onComfyEvent?.((event) => {
   if (event.state === 'completed' && event.target === 'canvas-background') applyGeneratedAsset(event.assetUrl, event.mime);
 });
 window.bigkiji.comfyStatus?.().then((state) => telemetryStore.setComfy(state)).catch(() => {});
-window.bigkiji.onTaskEvent((task) => telemetryStore.upsertTask(task));
+window.bigkiji.onTaskEvent((task) => { telemetryStore.upsertTask(task); roadmap3d?.ingestTask(task); });
 window.bigkiji.onTaskLog((log) => telemetryStore.ingest({ ...log, source: log.provider || 'task', kind: 'exec' }, 'task-log'));
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -60,6 +68,13 @@ wrap.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05080f, 0.02);
+const relationshipField = new RelationshipField(scene, { maxEdges: 180 });
+window.bigkiji.onRelationshipSnapshot?.((snapshot) => {
+  if (snapshot.state === 'ready') relationshipField.setSnapshot(snapshot);
+});
+window.bigkiji.relationshipSnapshot?.().then((snapshot) => {
+  if (snapshot.state === 'ready') relationshipField.setSnapshot(snapshot);
+}).catch(() => {});
 const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 300);
 // 既定＝惑星系（v9反転・オーナー指定）。拡大するとファイル銀河→博物館が展開。
 // #mid=ファイル銀河 / #near=博物館（検証用プリセット）
@@ -69,6 +84,7 @@ else if (location.hash === '#side') camera.position.set(4.6, 2.2, 3.4); // 会�
 else camera.position.set(0, 4.5, 10.5);
 
 const controls = new OrbitControls(camera, renderer.domElement);
+const hybridOrbit = new HybridOrbitController();
 controls.enableDamping = false; // input stops immediately: no motion-sickness inertia
 // Motion-safe camera: no ambient drift or rotation. Explicit cluster/file
 // focus, cursor-centred wheel zoom and the three view buttons may move it.
@@ -381,8 +397,19 @@ function flashFile(rel) {
   cl.grp.add(sp); // 雲と一緒に惑星へ追従
   fileFlashes.push({ sp, t0: performance.now() });
 }
+function fileWorldPoint(rel) {
+  const ref = galaxyState.map[rel]; if (!ref) return null;
+  const cloud = fileClouds[ref.key]; if (!cloud) return null;
+  const positions = cloud.points.geometry.attributes.position.array;
+  const point = new THREE.Vector3(positions[ref.i * 3], positions[ref.i * 3 + 1], positions[ref.i * 3 + 2]);
+  return cloud.grp.localToWorld(point);
+}
 window.bigkiji.onVaultFiles(buildFileGalaxy);
-window.bigkiji.onVaultTouch((paths) => paths.forEach(flashFile));
+window.bigkiji.onVaultTouch((paths) => {
+  paths.forEach(flashFile); relationshipField.pulse(paths);
+  const first = paths.map((path) => galaxyState.map[path]).find(Boolean);
+  if (first) autoFocusOn(first.key);
+});
 
 // ---------- 星（中景） ----------
 const stars = (() => {
@@ -539,7 +566,8 @@ const neural = (() => {
 })();
 
 // ---------- Core（銀河核 = Pi・ブラックホール） ----------
-const core = buildOrbGroup({ segments: 96, ringRadius: 1.42, baseScale: 1.15, style: 'blackhole', diskTexUrl: './assets/accretion.png' });
+const core = buildOrbGroup({ segments: 96, ringRadius: 1.3, baseScale: 0.88, style: 'blackhole',
+  diskTexUrl: './assets/accretion.png', diskOpacity: 0.22 });
 scene.add(core.group);
 const coreLabel = labelSprite('BigKiji Core', { glyph: '❖', glyphColor: '#34d399' });
 coreLabel.position.y = -2.35;
@@ -554,7 +582,9 @@ coreHalo.scale.setScalar(4.8); // v11: 写実円盤を主役にするためハ�
 coreHalo.renderOrder = -1;
 scene.add(coreHalo);
 const coreFx = new CoreInflowSynapse(scene, { maxParticles: 512 });
-const roadmap3d = new Roadmap3D(scene);
+const coreAccretion = new CoreAccretionField(scene, { count: 2600, radius: 2.75 });
+roadmap3d = new Roadmap3D(scene);
+window.bigkiji.knowledgeState?.().then((state) => roadmap3d.setPlans(state)).catch(() => {});
 const corePosition = () => core.group.position.clone();
 const eventTarget = (evt) => {
   const id = evt && (evt.agent || evt.agentId);
@@ -659,7 +689,7 @@ ids.forEach((id, i) => {
     makeMoon(grp, nm, col.clone().lerp(new THREE.Color('#ffffff'), 0.35),
       0.42 + j * 0.13, 0.035, (0.6 + j * 0.17) * (j % 2 ? -1 : 1), j * 2.4));
 
-  nodes[id] = { grp, orb, sel, label, angle0, radius, yBase, tiltAmp, tiltPhase,
+  nodes[id] = { id, grp, orb, sel, label, angle0, radius, yBase, tiltAmp, tiltPhase, orbitFlat: ORBIT_FLAT,
     w: (0.026 + i * 0.005) * (i % 2 ? -1 : 1), flash: 0, moons, lastText: '', angleNow: angle0 }; // 公転ゆっくり
 });
 
@@ -708,20 +738,22 @@ varying float vA; varying float vT;
 void main(){
   float t = aT;
   vec3 span = uEnd - uStart;
-  float hl = max(length(span.xz), 1e-3);
-  vec2 perp = vec2(-span.z, span.x) / hl;
+  vec3 forward = normalize(span);
+  vec3 side = normalize(cross(abs(forward.y) > 0.92 ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0), forward));
+  vec3 up = normalize(cross(forward, side));
+  vec3 radial = side * cos(aPhase * 6.28318) + up * sin(aPhase * 6.28318);
+  vec3 coreSurface = uStart + forward * (0.30 + abs(aOff) * 0.16) + radial * (0.16 + abs(aOff) * 0.34);
+  vec3 clusterSurface = uEnd + radial * (0.20 + abs(aOff) * 0.74);
   float bow = sin(t * 3.14159);
   float sway = sin(uTime * (0.5 + aPhase * 0.13) + aPhase) * 0.16;
   float o = (aOff + sway * 0.6) * bow;
-  vec3 p = uStart + span * t;
-  p.x += perp.x * o;
-  p.z += perp.y * o;
-  p.y += bow * (0.14 + 0.1 * sin(uTime * 0.33 + aPhase * 2.0));
+  vec3 p = mix(coreSurface, clusterSurface, t);
+  // Gravity-curved arc: wide at the source cluster and increasingly tight as
+  // it approaches a distributed absorption point on the Core surface.
+  p += side * o * (0.35 + 0.65 * t) + up * bow * (0.13 + 0.12 * sin(uTime * 0.33 + aPhase * 2.0));
   // 繊維ごとの微細な縒り（ねじれ）＝束が「筋繊維」に見える肝。転送中は縒りが速まる
   float tw = sin(t * 12.0 + aPhase * 7.0 + uTime * (0.4 + uActive * 1.2));
-  p.x += perp.x * tw * 0.013;
-  p.z += perp.y * tw * 0.013;
-  p.y += cos(t * 10.0 + aPhase * 5.0) * 0.015 * bow;
+  p += radial * tw * 0.013 + up * cos(t * 10.0 + aPhase * 5.0) * 0.015 * bow;
   vA = step(aIdx, uShow);
   vT = t;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
@@ -790,24 +822,31 @@ const fiberPulses = fiberBundles.map(({ id }) => {
     }));
     sp.scale.setScalar(0.055 + (i % 3) * 0.012);
     scene.add(sp);
-    return { sp, phase: i / 8 + Math.random() * 0.08, speed: 0.045 + Math.random() * 0.035, dir: i % 2 ? -1 : 1 };
+    return { sp, phase: i / 8 + Math.random() * 0.08, speed: 0.045 + Math.random() * 0.035, dir: 1 };
   });
   return { id, parts };
 });
 const fiberPulsePoint = (start, end, s, phase, out) => {
   const bow = Math.sin(s * Math.PI);
   const span = _fiberSpan.subVectors(end, start);
-  const len = Math.max(Math.hypot(span.x, span.z), 1e-3);
-  const px = -span.z / len, pz = span.x / len;
-  const sway = Math.sin(phase * 0.7 + s * 7.0) * 0.045;
-  out.copy(start).addScaledVector(span, s);
-  out.x += px * (sway * 0.6) * bow;
-  out.z += pz * (sway * 0.6) * bow;
-  out.y += bow * 0.19;
+  _fiberForward.copy(span).normalize();
+  _fiberSide.crossVectors(Math.abs(_fiberForward.y) > 0.92 ? _fiberAxisX : UP_Y, _fiberForward).normalize();
+  _fiberUp.crossVectors(_fiberForward, _fiberSide).normalize();
+  const radialAngle = phase * Math.PI * 2;
+  _fiberRadial.copy(_fiberSide).multiplyScalar(Math.cos(radialAngle)).addScaledVector(_fiberUp, Math.sin(radialAngle));
+  _fiberSource.copy(start).addScaledVector(_fiberRadial, 0.24 + (phase % 0.21) * 1.8);
+  _fiberDestination.copy(end).addScaledVector(_fiberForward, -0.34).addScaledVector(_fiberRadial, 0.16 + (phase % 0.13));
+  out.lerpVectors(_fiberSource, _fiberDestination, s);
+  const gravityCurve = bow * (0.2 + 0.22 * (1 - s));
+  out.addScaledVector(_fiberSide, Math.sin(phase * 9 + s * 4.8) * gravityCurve);
+  out.addScaledVector(_fiberUp, gravityCurve * 0.56);
   return out;
 };
 const _fiberSpan = new THREE.Vector3();
 const _fiberPulse = new THREE.Vector3();
+const _fiberForward = new THREE.Vector3(), _fiberSide = new THREE.Vector3(), _fiberUp = new THREE.Vector3();
+const _fiberRadial = new THREE.Vector3(), _fiberSource = new THREE.Vector3(), _fiberDestination = new THREE.Vector3();
+const _fiberAxisX = new THREE.Vector3(1, 0, 0);
 
 // ---------- デュプレックス光流（軌道沿い・実イベント/実トークン駆動） ----------
 const dotTex = radialTexture('rgba(255,255,255,0.95)', 'rgba(120,255,200,0)');
@@ -1451,8 +1490,11 @@ function setFocus(key, i) {
   const p = cl.points.geometry.attributes.position.array;
   const leaf = new THREE.Vector3(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
   const hubV = (cl.leafHub[i] || cl.center).clone();
+  const bend = leaf.clone().lerp(hubV, 0.52).add(new THREE.Vector3(0, 0.12, 0.08));
+  const rootBend = hubV.clone().lerp(cl.center, 0.5).add(new THREE.Vector3(0.08, 0.1, 0));
+  const curve = new THREE.CatmullRomCurve3([leaf, bend, hubV, rootBend, cl.center.clone()]);
   const line = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([leaf, hubV, cl.center.clone()]),
+    new THREE.BufferGeometry().setFromPoints(curve.getPoints(24)),
     new THREE.LineBasicMaterial({
       color: (COMPANY_META[cl.files[i].c] || [0, '#ffffff'])[1], transparent: true,
       opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -1550,7 +1592,7 @@ renderer.domElement.addEventListener('click', (event) => {
     applyFilter(); focusAgent(picked.id);
   } else {
     // Background selection dismisses detail without snapping back to Core.
-    filePopup.close(); cameraFocus.cancel(); clearFocus();
+    filePopup.close(); cameraFocus.cancel(); clearFocus(); hybridOrbit.select(null);
   }
 });
 renderer.domElement.addEventListener('dblclick', (event) => {
@@ -1607,7 +1649,9 @@ function setStage(text, { busy = false, pct = 0, hold = 0 } = {}) {
 }
 
 // コードストリーム: 実行中のツール呼び出し/クエリ/思考を最小ハイライトで構造化表示
-const codeStream = document.getElementById('codeStream');
+// The old raw stream is no longer rendered; retain a detached sink so the
+// existing structured-log helpers remain compatible with task telemetry.
+const codeStream = document.getElementById('codeStream') || document.createElement('div');
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 function codeLine(html, cls = '') {
   const el = document.createElement('div');
@@ -1727,20 +1771,52 @@ function focusCloud(key, index, deep = false) {
   const p = cl.points.geometry.attributes.position.array;
   const worldPoint = new THREE.Vector3(p[index * 3], p[index * 3 + 1], p[index * 3 + 2]);
   cl.grp.localToWorld(worldPoint);
+  hybridOrbit.select(key);
   cameraFocus.focus(worldPoint, deep ? 2.8 : 4.4);
 }
 function focusAgent(id, deep = false) {
   const nd = nodes[id]; if (!nd) return;
+  hybridOrbit.select(id);
   cameraFocus.focus(nd.grp.position.clone(), deep ? 3.2 : 5.2);
   filePopup.close();
 }
 const autoCamBtn = document.getElementById('autoCamBtn');
-autoCamBtn.textContent = '📷 MANUAL';
-autoCamBtn.title = 'No automatic camera motion · wheel zooms toward the pointer';
-autoCamBtn.classList.add('on');
-autoCamBtn.disabled = true;
-function autoFocusOn() { /* transmission events never move the locked camera */ }
-function disableAutoCam() { /* retained for view-button call sites */ }
+const AUTO_CAM_KEY = 'bigkiji.camera.auto.v2';
+let autoCam = localStorage.getItem(AUTO_CAM_KEY) === 'on';
+let autoPausedUntil = 0;
+let autoLastMove = 0;
+let autoReleaseTimer = null;
+function renderAutoCam() {
+  const paused = autoCam && performance.now() < autoPausedUntil;
+  autoCamBtn.textContent = paused ? '⏸ AUTO PAUSED' : autoCam ? '🎥 AUTO' : '📷 MANUAL';
+  autoCamBtn.title = autoCam ? 'Follows important real events · manual input pauses for 12 seconds' : 'Manual camera · click to enable event focus';
+  autoCamBtn.classList.toggle('on', autoCam);
+  autoCamBtn.disabled = false;
+}
+function setAutoCam(enabled) {
+  autoCam = !!enabled;
+  localStorage.setItem(AUTO_CAM_KEY, autoCam ? 'on' : 'off');
+  if (!autoCam) { autoPausedUntil = 0; clearTimeout(autoReleaseTimer); }
+  renderAutoCam();
+}
+function pauseAutoCam(ms = 12000) {
+  if (!autoCam) return;
+  autoPausedUntil = performance.now() + ms;
+  renderAutoCam();
+  setTimeout(renderAutoCam, ms + 20);
+}
+function autoFocusOn(id) {
+  const now = performance.now();
+  if (!autoCam || now < autoPausedUntil || now - autoLastMove < 8000 || !nodes[id]) return false;
+  autoLastMove = now;
+  focusAgent(id, false);
+  clearTimeout(autoReleaseTimer);
+  autoReleaseTimer = setTimeout(() => hybridOrbit.select(null), 4600);
+  return true;
+}
+function disableAutoCam() { setAutoCam(false); }
+autoCamBtn.addEventListener('click', (event) => { event.stopPropagation(); setAutoCam(!autoCam); });
+renderAutoCam();
 
 // ビュー切替（SYSTEM/FILES/CLOSE）— カメラ距離をなめらかに遷移
 let targetDist = null;
@@ -1755,10 +1831,14 @@ viewsEl.addEventListener('click', (e) => {
 const zoomPlane = new THREE.Plane();
 const zoomAnchor = new THREE.Vector3();
 const viewNormal = new THREE.Vector3();
+let wheelReleaseTimer = null;
 renderer.domElement.addEventListener('wheel', (event) => {
   event.preventDefault();
   event.stopImmediatePropagation();
   targetDist = null;
+  hybridOrbit.beginInteraction(); pauseAutoCam();
+  clearTimeout(wheelReleaseTimer);
+  wheelReleaseTimer = setTimeout(() => hybridOrbit.endInteraction(), 180);
   cameraFocus.cancel(); // stop a previous file focus from pulling the camera back
   const picked = pickAt(event);
   let anchor = picked.point;
@@ -1778,14 +1858,14 @@ renderer.domElement.addEventListener('wheel', (event) => {
 renderer.domElement.addEventListener('pointerdown', (event) => {
   gestureStart = { x: event.clientX, y: event.clientY };
   suppressGestureClick = false;
-  targetDist = null; disableAutoCam();
+  targetDist = null; hybridOrbit.beginInteraction(); pauseAutoCam();
 });
-renderer.domElement.addEventListener('pointerup', () => { gestureStart = null; });
-renderer.domElement.addEventListener('pointercancel', () => { gestureStart = null; suppressGestureClick = false; });
+renderer.domElement.addEventListener('pointerup', () => { gestureStart = null; hybridOrbit.endInteraction(); });
+renderer.domElement.addEventListener('pointercancel', () => { gestureStart = null; suppressGestureClick = false; hybridOrbit.endInteraction(); });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  filePopup.close(); clearFocus(); cameraFocus.reset();
+  filePopup.close(); clearFocus(); cameraFocus.cancel(); hybridOrbit.select(null);
 });
 
 let galaxyO = 0, museumO = 0;
@@ -1842,7 +1922,7 @@ const clock = new THREE.Clock();
       ru.uGlow.value = 0.045 + galaxyO * 0.03 + act * 0.09;
       ru.uActive.value = act;
     }
-    if (!reduced) cl.grp.rotation.y = t * 0.05 * (k === 'core' ? 1 : -1) + hash01(k) * 6; // 雲ごとに漂う
+    if (!reduced) cl.grp.rotation.y += delta * 0.008 * hybridOrbit.motionScale * (k === 'core' ? 1 : -1); // Obsidian風の緩い漂い
     // 光の行き来: 無数の小さな光がエッジ上を不規則に往来（perf降格時は消灯）
     const flowOn = perfStage < 2 && !reduced && (galaxyO > 0.04 || cl.boost > 0.05);
     cl.flowMat.opacity = flowOn ? Math.max(0.22 * gO + 0.55 * galaxyO, 0.06) * (0.7 + cl.boost * 0.8) : 0;
@@ -1867,6 +1947,7 @@ const clock = new THREE.Clock();
   stardust.visible = perfStage < 2;
   coreFx.update(now, reduced || perfStage >= 2);
   roadmap3d.update(delta, reduced || perfStage >= 2);
+  relationshipField.update(delta, fileWorldPoint, reduced || perfStage >= 2);
   // 神経叢の明滅（シェーダ駆動・perf降格で減光）
   neural.mat.uniforms.uTime.value = t;
   neural.mat.uniforms.uFade.value = reduced ? 0.2 : perfStage === 0 ? 0.5 : perfStage === 1 ? 0.3 : 0.12;
@@ -1876,19 +1957,14 @@ const clock = new THREE.Clock();
 
   coreActivity *= 0.975;
   core.update({ activity: coreActivity + galaxyO * 0.15, reduced, t, delta, camera });
+  coreAccretion.update(t, coreActivity + galaxyO * 0.18, reduced || perfStage >= 2, delta);
   coreHalo.material.opacity = 0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04);
   coreHalo.scale.setScalar(4.8 + Math.min(coreActivity, 1) * 0.8);
 
   for (const id of ids) {
     const nd = nodes[id];
-    nd.angleNow = nd.angle0 + (reduced ? 0 : t * nd.w);
-    const rr = nd.radius * (1 + (reduced ? 0 : 0.012 * Math.sin(t * 0.5 + nd.angle0 * 3))); // 漂い: 半径の微呼吸
-    nd.grp.position.set(
-      Math.cos(nd.angleNow) * rr,
-      nd.yBase + Math.sin(nd.angleNow + nd.tiltPhase) * nd.tiltAmp // 3D傾斜軌道（軌道線と一致）
-        + (reduced ? 0 : Math.sin(t * 0.9 + nd.angle0) * 0.15),    // 漂い: 上下ボブ
-      Math.sin(nd.angleNow) * rr * ORBIT_FLAT
-    );
+    const active = streams[id] && streams[id].until > now ? 1 : 0;
+    nd.grp.position.copy(hybridOrbit.updateNode(nd, delta, { reduced, now, hovered: hoverCloudKey === id, activity: active }));
     nd.flash *= 0.92;
     nd.orb.update({ activity: 0.06 + nd.flash * 1.2, reduced, t, delta, camera });
     if (nd.sel.material.opacity > 0.01) nd.sel.material.rotation += delta * 0.8;
@@ -1959,9 +2035,9 @@ const clock = new THREE.Clock();
     const active = streams[fp.id] && streams[fp.id].until > now;
     const pulseOpacity = active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0);
     for (const part of fp.parts) {
-      let s = (t * part.speed + part.phase) % 1;
-      if (part.dir < 0) s = 1 - s;
-      fiberPulsePoint(core.group.position, nd.grp.position, s, t + part.phase * 12, _fiberPulse);
+      const s = (t * part.speed + part.phase) % 1;
+      const source = fileClouds[fp.id]?.grp.position || nd.grp.position;
+      fiberPulsePoint(source, core.group.position, s, part.phase, _fiberPulse);
       part.sp.position.copy(_fiberPulse);
       part.sp.material.opacity = pulseOpacity * (0.72 + 0.28 * Math.sin(t * 4 + part.phase * 10));
       part.sp.scale.setScalar((active ? 0.07 : 0.055) + (part.phase % 0.13));

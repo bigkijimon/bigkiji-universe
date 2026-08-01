@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <title>BigKiji</title>
 <script type="importmap">
-  { "imports": { "three": "../node_modules/three/build/three.module.js" } }
+  { "imports": { "three": "../../../node_modules/three/build/three.module.js" } }
 </script>
 <style>
   :root {
@@ -377,7 +377,7 @@
     if (window.BKLive) window.BKLive.init({ button: document.getElementById('mic') });
   </script>
   <script type="module">
-    import { mountOrb } from './orb-core.js';
+    import { mountOrb } from '../../domain/3d-canvas/components/orb-core.js';
     const wrap = document.getElementById('orbWrap');
     const cmd = document.getElementById('cmd');
     // オーブタップ＝会話（入力）開始。キャンバスはヘッダの ⛶ ボタンから

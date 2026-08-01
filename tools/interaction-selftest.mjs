@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { SmoothFocusController, zoomAroundPoint } from '../renderer/camera-controls.js';
-import { CoreInflowSynapse } from '../renderer/core-inflow-synapse.js';
+import { SmoothFocusController, zoomAroundPoint } from '../src/domain/3d-canvas/components/camera-controls.js';
+import { CoreInflowSynapse } from '../src/domain/3d-canvas/components/core-inflow-synapse.js';
 
 const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 300);
 camera.position.set(0, 4, 10);
@@ -30,8 +30,9 @@ const inflow = new CoreInflowSynapse(scene, { maxParticles: 16 });
 const core = new THREE.Vector3(0, 0, 0);
 const outer = new THREE.Vector3(4, 1, 0);
 inflow.handle({ kind: 'tool_end', isError: true }, () => core, () => outer);
-assert.equal(inflow.particles.length, 1);
-assert(inflow.particles[0].from.length() > outer.length(), 'error signal must begin outside its source cluster');
-assert(inflow.particles[0].to.equals(core), 'error signal must flow inward to BigKiji Core');
+assert.equal(inflow.particles.length, 8, 'a real event must sample the whole source cluster, not emit one centre ray');
+assert(inflow.particles.some((particle) => particle.from.distanceTo(outer) > 0.25), 'sources must spread across the particle cluster');
+assert(inflow.particles.every((particle) => particle.to.distanceTo(core) > 0.1 && particle.to.distanceTo(core) < 1.2), 'destinations must cover the Core surface');
+assert(inflow.particles.some((particle) => particle.c1.distanceTo(particle.from.clone().lerp(particle.to, 0.28)) > 0.15), 'gravity paths must bend instead of using straight interpolation');
 
 console.log('interaction selftest: PASS');

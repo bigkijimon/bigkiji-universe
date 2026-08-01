@@ -22,10 +22,11 @@ function cleanText(value, max = 1200) {
     .replace(/\s+/g, ' ').trim().slice(0, max);
 }
 function emptyState() {
-  return { version: 1, project: 'bigkiji-universe', tasks: [], plans: [], events: [], updatedAt: null };
+  return { version: 2, project: 'bigkiji-universe', tasks: [], plans: [], events: [],
+    physicalLayout: {}, fleetMetrics: null, updatedAt: null };
 }
 function emptyGraph() {
-  return { version: 1, project: 'bigkiji-universe', nodes: [], edges: [], updatedAt: null };
+  return { version: 2, project: 'bigkiji-universe', nodes: [], edges: [], updatedAt: null };
 }
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback(); }
@@ -36,8 +37,14 @@ function writeJson(file, data) {
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-function loadState() { return readJson(STATE_PATH, emptyState); }
-function loadGraph() { return readJson(GRAPH_PATH, emptyGraph); }
+function loadState() {
+  const state = readJson(STATE_PATH, emptyState);
+  return { ...emptyState(), ...state, version: 2, tasks: state.tasks || [], plans: state.plans || [], events: state.events || [] };
+}
+function loadGraph() {
+  const graph = readJson(GRAPH_PATH, emptyGraph);
+  return { ...emptyGraph(), ...graph, version: 2, nodes: graph.nodes || [], edges: graph.edges || [] };
+}
 function saveState(state) { state.updatedAt = new Date().toISOString(); writeJson(STATE_PATH, state); return state; }
 function saveGraph(graph) { graph.updatedAt = new Date().toISOString(); writeJson(GRAPH_PATH, graph); return graph; }
 
@@ -73,6 +80,27 @@ function recordEvent(taskId, event) {
   state.events = state.events.slice(-300);
   saveState(state);
 }
+function savePhysicalLayout(layout) {
+  const state = loadState();
+  state.physicalLayout = { ...layout, savedAt: new Date().toISOString() };
+  saveState(state);
+  const graph = loadGraph();
+  for (const [domain, files] of Object.entries(layout.domains || {})) {
+    const domainId = `source-domain:${domain}`;
+    upsertNode(graph, domainId, 'source-domain', domain);
+    for (const file of files) {
+      const fileId = `source-file:${file}`;
+      upsertNode(graph, fileId, 'source-file', file);
+      edge(graph, domainId, fileId, 'contains');
+    }
+  }
+  saveGraph(graph);
+  return state.physicalLayout;
+}
+function saveFleetMetrics(metrics) {
+  const state = loadState(); state.fleetMetrics = { ...metrics, savedAt: new Date().toISOString() }; saveState(state);
+  return state.fleetMetrics;
+}
 function upsertNode(graph, id, type, label) {
   const existing = graph.nodes.find((n) => n.id === id);
   if (existing) { existing.label = cleanText(label, 240); existing.updatedAt = new Date().toISOString(); return; }
@@ -91,4 +119,4 @@ function canSpend(provider, planned = false) { return assertExecutor(provider) &
 
 module.exports = { ROOT, STATE_PATH, GRAPH_PATH, ALLOWED_EXECUTORS, PAID_EXECUTORS,
   cleanText, hash, loadState, loadGraph, saveState, saveGraph, createTask, rememberPlan,
-  findPlan, recordEvent, assertExecutor, canSpend };
+  findPlan, recordEvent, savePhysicalLayout, saveFleetMetrics, assertExecutor, canSpend };

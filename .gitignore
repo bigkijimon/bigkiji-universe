@@ -3,6 +3,7 @@ recordings/
 *.log
 .DS_Store
 .env
-renderer/assets/*.bak*
+src/components/UI/assets/*.bak*
+graphify-out/
 tools/selftest-result-*.json
 .playwright-mcp/

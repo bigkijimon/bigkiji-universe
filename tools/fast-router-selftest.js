@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const router = require('../fast-api-router');
+const router = require('../src/domain/pi-agent/fast-api-router');
 assert.deepStrictEqual(router.PRIORITY, ['ollama', 'glm']);
 assert.deepStrictEqual(router.PAID_EXECUTORS, ['claude-code', 'glm']);
 assert.deepStrictEqual(router.availableOrder({ ollama: true, glm: false, codex: true, kimi: true }), ['ollama']);

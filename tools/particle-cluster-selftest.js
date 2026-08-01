@@ -2,9 +2,10 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const synapse = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'synapse.js'), 'utf8');
-const cluster = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'particle-cluster.js'), 'utf8');
-const galaxy = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'synapse.js'), 'utf8');
+const canvasRoot = path.join(__dirname, '..', 'src', 'domain', '3d-canvas', 'components');
+const synapse = fs.readFileSync(path.join(canvasRoot, 'synapse.js'), 'utf8');
+const cluster = fs.readFileSync(path.join(canvasRoot, 'particle-cluster.js'), 'utf8');
+const galaxy = synapse;
 assert.equal(/buildAgentHole|全AI＝ブラックホール/.test(synapse), false);
 assert.match(cluster, /index < this\.count/);
 assert.match(cluster, /new THREE\.LineSegments/);

@@ -143,7 +143,11 @@ function route(text, dispatch) {
     saveKB(kb);
     const saved = (best.token_cost_history && best.token_cost_history.initial_discussion) || '?';
     cfg.emit.liveComment(cfg.C.cacheHit(best.task_description, saved), 'ok');
-    cfg.emit.broadcast('bk:swarm', { mode: 'cache', hash: best.task_pattern_hash, score: +bestScore.toFixed(2) });
+    const cachedTokens = Number(best.token_cost_history?.cached_execution) || 0;
+    const baselineTokens = Number(best.token_cost_history?.initial_discussion);
+    cfg.emit.broadcast('bk:swarm', { mode: 'cache', hash: best.task_pattern_hash, score: +bestScore.toFixed(2),
+      baselineTokens: Number.isFinite(baselineTokens) ? baselineTokens : null, cachedTokens,
+      savedTokens: Number.isFinite(baselineTokens) ? Math.max(0, baselineTokens - cachedTokens) : null });
     const roles = Object.entries(best.agent_roles || {}).map(([k, v]) => `${k}=${(v && v.role) || '?'}`).join(', ');
     const playbook = `[CACHED PLAYBOOK ${best.task_pattern_hash}] Proven plan for a similar task ` +
       `(similarity ${(bestScore * 100) | 0}%). Roles: ${roles || 'core'}. ` +

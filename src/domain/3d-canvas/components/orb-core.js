@@ -211,7 +211,7 @@ function accretionTexture(colorHex) {
 
 // Optional ComfyUI/Wan loop input. The static accretion texture remains the
 // deterministic fallback; a video is only attached when an explicit asset is
-// present under renderer/assets/loops/.
+// present under src/components/UI/assets/loops/.
 function makeVideoTexture(url) {
   const video = document.createElement('video');
   video.src = url; video.muted = true; video.loop = true; video.autoplay = true;
@@ -226,7 +226,7 @@ function makeVideoTexture(url) {
   return { video, tex };
 }
 
-export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, colors = EMERALD, seed = 0, baseScale = 1, style = 'orb', diskTexUrl = null, tint = null } = {}) {
+export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, colors = EMERALD, seed = 0, baseScale = 1, style = 'orb', diskTexUrl = null, tint = null, diskOpacity = 0.5 } = {}) {
   const group = new THREE.Group();
   const isHole = style === 'blackhole';
   const uniforms = {
@@ -287,7 +287,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
     const tintCol = new THREE.Color(tint || '#ffffff');
     diskU = {
       uMap: { value: accretionTexture(colors.surface) },
-      uSpin: { value: seed }, uOpa: { value: 0.5 }, uDop: { value: 0.85 },
+      uSpin: { value: seed }, uOpa: { value: diskOpacity }, uDop: { value: 0.85 },
       uCamPos: { value: new THREE.Vector3() }, uCenter: { value: new THREE.Vector3() },
       uAxis: { value: new THREE.Vector3(0, 1, 0) }, uTint: { value: tintCol },
       uInGeo: { value: 1.22 / 2.05 }, uTexIn: { value: 0.28 }, // 形状内周→テクスチャ白熱内縁の対応
@@ -352,7 +352,7 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
     // 降着円盤: アイドルでも静かに自転し、活動量で回転と輝度が上がる（実データ駆動）
     if (disk && !reduced) {
       diskU.uSpin.value += delta * (0.35 + a * 1.7);
-      diskU.uOpa.value = 0.5 + Math.min(a, 1) * 0.42 + sim.hover * 0.08; // 写実円盤はアイドルでも主役級に見せる
+      diskU.uOpa.value = diskOpacity + Math.min(a, 1) * 0.32 + sim.hover * 0.06;
     }
     if (disk && camera) {
       diskU.uCamPos.value.copy(camera.position);

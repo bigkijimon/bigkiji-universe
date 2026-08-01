@@ -32,7 +32,7 @@ const context = {
   },
   requestAnimationFrame(callback) { frameQueue.push(callback); return frameQueue.length; },
 };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'terminal-resizer.js'), 'utf8'), context);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'components', 'terminal-resizer.js'), 'utf8'), context);
 const resizer = new context.window.TerminalResizer({ handle, container, onResize: () => { fitCalls++; }, storage: context.window.localStorage });
 
 assert.equal(cssHeight, '460px', 'saved height must be restored');

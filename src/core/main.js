@@ -6,26 +6,35 @@ const fs = require('fs');
 // v13: dotenv-expandで.env APIキーをprocess.envへ（model-routerが検知する）
 const { expand } = require('dotenv-expand');
 const dotenv = require('dotenv');
-expand(dotenv.config({ path: path.join(__dirname, '.env') }));
+const APP_ROOT = path.resolve(__dirname, '..', '..');
+const UI_ROOT = path.join(APP_ROOT, 'src', 'components', 'UI');
+expand(dotenv.config({ path: path.join(APP_ROOT, '.env') }));
 const { Orchestrator } = require('./orchestrator');
-const { PiBridge, MODEL: PI_MODEL } = require('./pi-bridge');
+const { PiBridge, MODEL: PI_MODEL } = require('../domain/pi-agent/pi-bridge');
 // v13: model-routerを直接インポート（Ollamaウォームアップ等）
-const router = require('./model-router');
+const router = require('../domain/pi-agent/model-router');
 const { C } = require('./commentary'); // v12: 英語実況の単一情報源（crawl/PWA/CLI共用）
-const taskCache = require('./task-cache'); // v12: Swarm合意形成＋JSONナレッジキャッシュ
+const taskCache = require('../domain/pi-agent/task-cache'); // v12: Swarm合意形成＋JSONナレッジキャッシュ
 const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Checker検収
-const knowledge = require('./pi-knowledge-orchestrator');
-const { TaskRunner } = require('./task-runner');
-const fastRouter = require('./fast-api-router');
-const { ComfyUIMediaBridge } = require('./comfyui-media-bridge');
+const knowledge = require('../domain/pi-agent/pi-knowledge-orchestrator');
+const { TaskRunner } = require('../domain/pi-agent/task-runner');
+const fastRouter = require('../domain/pi-agent/fast-api-router');
+const { ComfyUIMediaBridge } = require('../domain/telemetry/components/comfyui-media-bridge');
+const { FleetMetricsStore } = require('./fleet-metrics-store');
+const { RelationshipSnapshotService } = require('./relationship-snapshot-service');
+const { sanitizeOwnerSpeech } = require('./tts-policy');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'hud-radial-spark-v6';
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'domain-fleet-graph-v7';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
 const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: '/Users/yuma/Documents/CEOBigKiji', maxParallel: 2 });
+const fleetMetrics = new FleetMetricsStore({ knowledge });
+const relationshipService = new RelationshipSnapshotService({
+  graphPath: path.join('/Users/yuma/Documents/CEOBigKiji', 'graphify-out', 'graph.json'),
+});
 
 let tray = null;
 let trayWin = null;
@@ -73,13 +82,22 @@ function spawnShell() {
 
 let remote = null; // v12 リモートサーバ（whenReadyで起動・全broadcastをSSEへ中継）
 function broadcast(channel, payload) {
+  if (channel === 'pi:stats') fleetMetrics.ingestStats(payload);
+  else if (channel === 'bk:swarm') fleetMetrics.ingestSwarm(payload);
+  else if (channel === 'voice:live-state') fleetMetrics.ingestVoice(payload);
+  else if (channel === 'vault:touch') fleetMetrics.ingestSync({ text: payload?.[0] || 'Vault sync' });
   for (const w of [trayWin, mainWin]) {
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
   }
   if (remote) remote.publish(channel, payload);
 }
-taskRunner.on('task', (task) => broadcast('task:event', task));
+taskRunner.on('task', (task) => { fleetMetrics.ingestTask(task); broadcast('task:event', task); });
 taskRunner.on('log', (log) => broadcast('task:log', log));
+fleetMetrics.on('update', (snapshot) => broadcast('pi:fleet', snapshot));
+relationshipService.on('update', (snapshot) => {
+  broadcast('relationship:snapshot', snapshot);
+  if (snapshot.state === 'ready') fleetMetrics.ingestSync({ text: `Graphify ${snapshot.nodes.length} nodes`, ms: snapshot.loadMs });
+});
 // LIVE COMMENTARY（英語実況）: デスクトップの実況バー・モバイルPWA・CLIが同じ行を受ける
 function liveComment(text, sev = 'info') {
   if (!text) return;
@@ -250,7 +268,7 @@ function createTrayWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: false }, // 非表示中もメニューバー・ダッシュボード描画を継続
   });
-  trayWin.loadFile(path.join(__dirname, 'renderer', 'tray.html'));
+  trayWin.loadFile(path.join(UI_ROOT, 'tray.html'));
   // show:false生成だとvibrancy層が付かないことがある（glass-lab実測: show:true即時なら効く）
   // → 表示のたびにmaterialを付け直して確実にすりガラス化
   trayWin.on('show', () => {
@@ -283,7 +301,7 @@ function createMainWindow() {
     titleBarStyle: 'hiddenInset', title: 'BigKiji Universe — Synapse Canvas',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
-  mainWin.loadFile(path.join(__dirname, 'renderer', 'main.html'),
+  mainWin.loadFile(path.join(UI_ROOT, 'main.html'),
     process.env.SNAP_DIST ? { hash: process.env.SNAP_DIST } : undefined); // SNAP用LOD距離プリセット
   mainWin.once('ready-to-show', () => {
     mainWin.show();
@@ -336,7 +354,7 @@ function pickVoice(text) {
 }
 function speak(text) {
   if (!voiceOn || !text) return;
-  const clean = String(text).replace(/[*_#`>|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 420);
+  const clean = sanitizeOwnerSpeech(text, 420);
   if (!clean) return;
   if (sayProc) { try { sayProc.kill(); } catch (_) {} }
   broadcast('pi:event', { kind: 'speak', text: clean.slice(0, 40) }); // 発話フェーズを可視化
@@ -359,9 +377,8 @@ const liveVoice = { active: false, owner: null }; // owner = webContents.id（�
 let ttsQueue = [];
 let ttsSynth = null;
 let ttsSeq = 0;
-let ttsLastIdx = 0;
 let ttsDiscard = false;
-function ttsReset() { ttsLastIdx = 0; ttsDiscard = false; ttsQueue = []; }
+function ttsReset() { ttsDiscard = false; ttsQueue = []; }
 function ttsKill() { // Barge-in: 合成中プロセスとキューを即破棄（次のturn_startまで追補も破棄）
   ttsQueue = [];
   ttsDiscard = true;
@@ -369,7 +386,7 @@ function ttsKill() { // Barge-in: 合成中プロセスとキューを即破棄�
   if (sayProc) { try { sayProc.kill(); } catch (_) {} }
 }
 function ttsEnqueue(sentence) {
-  const s = String(sentence).replace(/[*_#`>|]/g, '').replace(/\s+/g, ' ').trim();
+  const s = sanitizeOwnerSpeech(sentence);
   if (!s || ttsDiscard) return;
   ttsQueue.push(s);
   ttsSynthNext();
@@ -395,26 +412,16 @@ function ttsSynthNext() {
     ttsSynthNext();
   });
 }
-function ttsScan(fullText) { // deltaごとに文境界を探して先行合成（体感レイテンシ短縮の本丸）
-  if (!liveVoice.active || ttsDiscard) return;
-  let i = ttsLastIdx;
-  for (let j = i; j < fullText.length; j++) {
-    if ('.!?。！？\n'.includes(fullText[j]) && j - i >= 12) {
-      ttsEnqueue(fullText.slice(i, j + 1));
-      i = j + 1;
-    }
-  }
-  ttsLastIdx = i;
-}
 function ttsFlushRemainder(fullText) {
   if (!liveVoice.active) return;
-  const rest = fullText.slice(ttsLastIdx).trim();
+  // Voice is emitted once, after agent_end. Streaming deltas may contain
+  // draft/internal text and are deliberately never sent to the audio path.
+  const rest = sanitizeOwnerSpeech(fullText);
   if (rest) ttsEnqueue(rest);
-  ttsLastIdx = fullText.length;
 }
 // WAV(16k mono PCM16)→二段STT→Pi。デスクトップIPCとモバイルPWA(/api/voice)の共用経路
 async function handleUtterance(buf, via) {
-  const dir = path.join(__dirname, 'recordings');
+  const dir = path.join(APP_ROOT, 'recordings');
   fs.mkdirSync(dir, { recursive: true });
   const wav = path.join(dir, `live-${Date.now()}.wav`);
   fs.writeFileSync(wav, Buffer.from(buf));
@@ -498,7 +505,7 @@ ipcMain.handle('transcribe', (_e, webmPath) => new Promise((resolve) => {
 ipcMain.handle('mic-permission', async () =>
   process.platform === 'darwin' ? systemPreferences.askForMediaAccess('microphone') : true);
 ipcMain.handle('save-recording', (_e, buf) => {
-  const dir = path.join(__dirname, 'recordings');
+  const dir = path.join(APP_ROOT, 'recordings');
   fs.mkdirSync(dir, { recursive: true });
   const f = path.join(dir, `rec-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`);
   fs.writeFileSync(f, Buffer.from(buf));
@@ -527,7 +534,7 @@ const lastToolArgs = new Map();  // toolName → 直近引数（エラー構造�
 // アプリコードへの自動直書きはしない（検収ゲート＝オーナー/Claude Code承認後に適用）。
 // Piへの調査委任は実行中ターンを乗っ取らないよう、ターン終了後に送る（上限2回/セッション）。
 const ERRLOG_DIR = path.join(os.homedir(), '.bigkiji', 'logs');
-const HEAL_DIR = path.join(__dirname, '..', 'Knowledge', '修復キュー');
+const HEAL_DIR = path.join(APP_ROOT, '..', 'Knowledge', '修復キュー');
 const toolFails = {};
 const healedTools = new Set();
 const healPending = [];
@@ -662,7 +669,8 @@ pi.on('event', (evt) => {
     if (d && d.type === 'text_delta' && d.delta) {
       piDeltaBuf += d.delta;
       piAnswerText += d.delta;
-      ttsScan(piAnswerText); // v12ライブ音声: 文境界を見つけ次第、先行合成（体感レイテンシ短縮）
+      // Thinking/reasoning must never reach audio. TTS is flushed only after
+      // the assistant turn is finalized, through sanitizeOwnerSpeech().
       if (!piDeltaTimer) {
         piDeltaTimer = setTimeout(() => {
           broadcast('pi:event', { kind: 'delta', text: piDeltaBuf });
@@ -796,7 +804,7 @@ async function fastDispatch(text) {
   bus.push({ source: 'system', type: 'info', text: `Fast route completed in ${Date.now() - t0}ms` });
 }
 taskCache.init({
-  kbPath: path.join(__dirname, '..', 'Knowledge', 'task_knowledge_base.json'),
+  kbPath: path.join(APP_ROOT, '..', 'Knowledge', 'task_knowledge_base.json'),
   model: 'qwen3.5:35b-a3b',
   knowledge,
   C,
@@ -813,6 +821,8 @@ ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
 ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
+ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
+ipcMain.handle('relationship:snapshot', () => relationshipService.snapshot());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
 ipcMain.handle('comfy:status', async () => comfy ? comfy.detect() : ({ state: 'offline', progress: 0, message: 'Media bridge is initializing' }));
 ipcMain.handle('comfy:generate', async (_event, spec) => {
@@ -889,11 +899,12 @@ ipcMain.on('open-main', () => createMainWindow());
 ipcMain.handle('get-info', () => {
   let loops = [];
   try {
-    loops = require('fs').readdirSync(path.join(__dirname, 'renderer', 'assets', 'loops'))
+    loops = require('fs').readdirSync(path.join(UI_ROOT, 'assets', 'loops'))
       .filter((f) => /\.(mp4|webm)$/i.test(f));
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
+    fleet: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(),
     buildId: APP_BUILD_ID,
     costPolicy: { planning: ['ollama', 'glm'], paid: ['claude-code', 'glm'], localOperators: ['codex'], blocked: ['gemini', 'kimi', 'openrouter', 'codex-api'] },
     ...bus.snapshot() };
@@ -912,6 +923,17 @@ app.whenReady().then(() => {
   router.ollamaWarmup('qwen3.5:35b-a3b');
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
+  knowledge.savePhysicalLayout({ version: 2, root: APP_ROOT, domains: {
+    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/relationship-snapshot-service.js'],
+    '3d-canvas': ['src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js', 'src/domain/3d-canvas/components/relationship-field.js', 'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/synapse-spark-shedder.js'],
+    terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js'],
+    telemetry: ['src/domain/telemetry/components/right-telemetry-panel.js', 'src/domain/telemetry/components/telemetry-store.js'],
+    'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
+    ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/remote/mobile.html'],
+  } });
+  relationshipService.refresh(true);
+  const relationshipTimer = setInterval(() => relationshipService.refresh(false), 300000);
+  relationshipTimer.unref();
   // Defer filesystem discovery until after the UI/PTY are responsive.
   setImmediate(async () => {
     seikaDirs = findSeikaDirs();
@@ -932,7 +954,7 @@ app.whenReady().then(() => {
   if (!SMOKE) {
     try {
       remote = require('./remote-server').start({
-        appDir: __dirname,
+        appDir: APP_ROOT,
         piSendPrompt: (text) => piSendPrompt(text),
         piAbort: () => pi.abort(),
         handleUtterance,
@@ -960,15 +982,13 @@ app.whenReady().then(() => {
   if (process.env.VOICETEST) {
     setTimeout(() => speak('Voice test OK. Hello, owner. BigKiji Universe is live.'), 1500);
   }
-  // TTSTEST=1 — 文単位ストリーミングTTSとBarge-in切断のヘッドレス検証:
-  // 疑似回答→文境界で逐次合成(chunk配信を計数)→ttsKill()→キュー/合成プロセス残0を確認して終了
+  // TTSTEST=1 — final-only TTS と Thinking 除外、Barge-in切断の検証。
   if (process.env.TTSTEST) {
     let chunks = 0;
     const origBroadcast = broadcast;
     setTimeout(() => {
       liveVoice.active = true;
-      const fake = 'This is sentence one for the streaming test. And here is a second, slightly longer sentence. 最後は日本語の文です、声も日本語に切り替わります。';
-      ttsScan(fake);
+      const fake = '<thinking>never speak this draft</thinking>Final owner report. 作業は完了しました。';
       ttsFlushRemainder(fake);
       // 合成数はttsSeq（say -o 実行回数）で数える
       setTimeout(() => {
@@ -978,7 +998,7 @@ app.whenReady().then(() => {
         let says = '';
         try { says = execSync('pgrep -f "/usr/bin/say" || true').toString().trim(); } catch (_) {}
         console.log(`TTSTEST synthesized=${seqBefore} queueAfterKill=${ttsQueue.length} synthProc=${!!ttsSynth} sayProcs=${says ? says.split('\n').length : 0}`);
-        console.log(`TTSTEST ${seqBefore >= 2 && ttsQueue.length === 0 && !ttsSynth && !says ? 'OK' : 'FAIL'}`);
+        console.log(`TTSTEST ${seqBefore === 1 && ttsQueue.length === 0 && !ttsSynth && !says ? 'OK' : 'FAIL'}`);
         quitting = true;
         app.exit(0);
       }, 4200);
@@ -1011,10 +1031,18 @@ app.whenReady().then(() => {
   }
 
   if (SMOKE) {
-    const state = { trayLoaded: false, mainLoaded: false, errors: [] };
+    // The windows are created earlier in whenReady; on fast machines their
+    // load event can precede this harness. Seed from current WebContents state
+    // so the smoke result measures the app, not listener timing.
+    const state = {
+      trayLoaded: !!trayWin && !trayWin.webContents.isLoadingMainFrame(),
+      mainLoaded: !!mainWin && !mainWin.webContents.isLoadingMainFrame(),
+      errors: [],
+    };
     trayWin.webContents.once('did-finish-load', () => { state.trayLoaded = true; });
     mainWin.webContents.once('did-finish-load', () => { state.mainLoaded = true; });
     for (const [name, w] of [['tray', trayWin], ['main', mainWin]]) {
+      w.webContents.on('did-fail-load', (_event, code, description) => state.errors.push(`${name}: load ${code} ${description}`));
       w.webContents.on('console-message', (_e, level, msg) => {
         if (level >= 3) state.errors.push(`${name}: ${msg}`);
       });
@@ -1031,4 +1059,4 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });

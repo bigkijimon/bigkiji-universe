@@ -2,7 +2,7 @@
   "name": "bigkiji-universe",
   "version": "1.0.0",
   "description": "BigKiji Universe OS — menu-bar orchestration synapse app",
-  "main": "main.js",
+  "main": "src/core/main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
@@ -17,6 +17,9 @@
     "test:radial-spark": "node tools/radial-spark-selftest.mjs",
     "test:comfy": "node tools/comfy-bridge-selftest.js",
     "test:telemetry": "node tools/telemetry-store-selftest.mjs",
+    "test:architecture": "node tools/architecture-selftest.js",
+    "test:runtime-policy": "node tools/runtime-policy-selftest.js",
+    "test": "npm run test:architecture && npm run test:runtime-policy && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },
@@ -30,7 +33,8 @@
     "npmRebuild": false,
     "files": [
       "**/*",
-      "!recordings/**"
+      "!recordings/**",
+      "!graphify-out/**"
     ],
     "extraResources": [
       {

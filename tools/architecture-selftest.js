@@ -1,0 +1,29 @@
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const exists = (file) => fs.existsSync(path.join(root, file));
+
+const required = [
+  'src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js',
+  'src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js',
+  'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/viral-membrane.js',
+  'src/domain/terminal/components/multi-terminal-manager.js',
+  'src/domain/telemetry/components/right-telemetry-panel.js',
+  'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
+  'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
+];
+for (const file of required) assert.ok(exists(file), `missing physical target: ${file}`);
+
+const forbidden = ['renderer', 'remote', 'main.js', 'preload.js', 'orchestrator.js', 'governance.js',
+  'pi-bridge.js', 'task-runner.js', 'fast-api-router.js', 'multi-terminal-manager.js'];
+for (const file of forbidden) assert.ok(!exists(file), `legacy path still exists: ${file}`);
+
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+assert.strictEqual(pkg.main, 'src/core/main.js');
+const html = fs.readFileSync(path.join(root, 'src/components/UI/main.html'), 'utf8');
+assert.match(html, /\.\.\/\.\.\/domain\/3d-canvas\/components\/synapse\.js/);
+assert.match(html, /\.\.\/\.\.\/domain\/terminal\/components\/multi-terminal-manager\.js/);
+console.log('physical architecture selftest: PASS');
