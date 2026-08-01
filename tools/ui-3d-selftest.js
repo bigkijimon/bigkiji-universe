@@ -68,5 +68,8 @@ assert.match(synapse, /uSympathy/);
 assert.match(synapse, /coreSurface/);
 assert.match(synapse, /clusterSurface/);
 assert.match(synapse, /fiberPulsePoint\(source, core\.group\.position/);
+assert.match(synapse, /updateFileCloudDrift/);
+assert.match(synapse, /liveNetwork/);
+assert.match(synapse, /stars\.visible = false/);
 
 console.log('ui/3d contract selftest: PASS');

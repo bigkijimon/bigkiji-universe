@@ -16,6 +16,8 @@ const required = [
   'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
   'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
   'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js',
+  'src/domain/server/daemon.js', 'src/domain/server/daemon-client.js', 'src/domain/server/session-store.js',
+  'src/domain/terminal/bigkiji-cli.js', 'src/cli/tui/monitor.js', 'src/core/tailscale-remote-access.js',
 ];
 for (const file of required) assert.ok(exists(file), `missing physical target: ${file}`);
 

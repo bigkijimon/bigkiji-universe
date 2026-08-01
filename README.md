@@ -11,11 +11,12 @@ The central **Core Accretion Field** receives live data through curved synapse s
 - **3D Force Graph Canvas** — real Vault files, agent relationships, organic synapse strands, pointer zoom, focus and auto-camera modes.
 - **Dynamic Phase Gates** — roadmap phases and status particles rendered as layered 3D planes.
 - **Core Accretion Field** — curved inflow streams and genesis bursts visualize actual activity.
-- **Pi-Agents Fleet** — Arch-Pi, Context-Pi, Sync-Pi, and Voice-Pi report real task duration, measured tokens, and context savings.
+- **Active AI Models Fleet** — only real connected providers are shown; unused models stay asleep until PiAgent assigns an approved task.
 - **Mission Relay + Multi-Terminal** — owner-visible commentary is separate from task streams and interactive terminals.
 - **cmux Operations Index** — macOS workspace, tab, split, theme, color, SSH, VM, remote, diff, browser, agent, and advanced CLI controls. Destructive commands require confirmation.
 - **Dynamic Voice Engine** — independent Owner and Agent tracks, local Qwen3-TTS, English by default, Japanese auto-detection, and thinking-log suppression.
-- **Optional Obsidian, Graphify, ComfyUI, and remote PWA integrations.**
+- **Standalone daemon + CLI/TUI** — `bigkiji` auto-starts the local core on port 8777 and works before Electron is opened.
+- **Optional Obsidian, Graphify, ComfyUI, and Tailscale-secured phone PWA integrations.**
 
 ## Requirements
 
@@ -67,6 +68,7 @@ Common `.env` settings:
 BIGKIJI_VAULT_ROOT=/absolute/path/to/your/ObsidianVault
 KNOWLEDGE_ROOT=/absolute/path/to/local/runtime/knowledge
 GRAPHIFY_GRAPH_PATH=/absolute/path/to/your/ObsidianVault/graphify-out/graph.json
+BIGKIJI_DAEMON_PORT=8777
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 GEMINI_API_KEY=
@@ -95,7 +97,7 @@ Before an external executor starts, BigKiji:
 2. rejects paths outside the configured Vault and blocked providers;
 3. queries local Graphify data, or falls back to local text search;
 4. includes only matching file slices;
-5. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Pi-Agents Fleet HUD.
+5. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
 
 Example sandbox:
 
@@ -146,6 +148,35 @@ On macOS, install and start cmux, then set `CMUX_BIN` if it is not on `PATH`. Th
 
 Windows and Linux automatically use node-pty terminals; the rest of BigKiji remains available.
 
+## Standalone `bigkiji` CLI, daemon, and sessions
+
+`npm install` registers one canonical executable implementation. The command aliases `bigkiji`, `Bigkiji`, `kiji`, and `Kiji` all resolve to the same binary and state store.
+
+```bash
+bigkiji status       # starts the daemon automatically when needed
+bigkiji              # interactive owner console
+bigkiji monitor      # live TUI for cmux or any ANSI terminal
+bigkiji hud          # open Electron and attach to the same daemon
+bigkiji resume       # select a JSONL-backed session
+bigkiji reload       # reload local PiAgent hooks/extensions
+```
+
+The daemon binds to `127.0.0.1:8777` by default. It stores runtime configuration in `~/.bigkiji/daemon.json` and session events in `~/.bigkiji/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves it. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
+
+## Small Window and phone access
+
+Click the BigKiji menu-bar icon to open the transparent Small Window. Its four cards represent only the real execution surfaces: Claude, Codex, PiAgent, and Local Qwen. `OFFLINE` and `SLEEPING` are intentional zero-token states.
+
+To connect an iPhone or Android device:
+
+1. Install and sign in to Tailscale on the Mac and phone using the same tailnet.
+2. Open the Small Window and choose **QR · PHONE**.
+3. BigKiji enables Tailscale Serve for the loopback daemon and shows an authenticated QR link.
+4. Scan the QR code on the phone. The daemon itself remains loopback-only; remote access is mediated by Tailscale.
+
+If Tailscale is logged out or unavailable, the Small Window shows that exact state and does not display a misleading live QR code.
+The mobile 3D deck is not a remote-desktop stream: Three.js renders locally through the phone's WebGL GPU while the Mac sends only compact JSON/SSE state. When the mobile page is hidden, both its render loop and live event connection pause.
+
 ## Local voice
 
 BigKiji defaults to local Qwen3-TTS and starts speaking the first completed sentence while the answer continues. If the neural model is unavailable, it falls back to macOS system voices, `espeak-ng` on Linux, or Windows SAPI.
@@ -162,7 +193,7 @@ npm run check:imports
 SMOKE=1 npx electron .
 ```
 
-The test suite covers architecture, sandbox boundaries, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts.
+The test suite covers architecture, sandbox boundaries, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE event delivery, JSONL session persistence, owner approval, on-demand model activation, and hot reload.
 
 ## Build
 
@@ -219,7 +250,9 @@ npx electron-rebuild -f -w node-pty
 src/core/                 Electron lifecycle, IPC, paths, voice, metrics, cmux bridge
 src/domain/3d-canvas/     graph canvas, camera, roadmap, particles and shaders
 src/domain/pi-agent/      sandbox policy, context pruning, cache, routers and task runner
+src/domain/server/        standalone daemon, GUI/CLI transport and JSONL sessions
 src/domain/terminal/      Mission Relay, terminal tabs, cmux mirror and resize behavior
+src/cli/tui/              ANSI/cmux live monitor
 src/domain/telemetry/     live HUD, event store and optional ComfyUI bridge
 src/components/UI/        shared renderer UI, settings, voice and mobile PWA
 tools/                    self-tests, local Qwen TTS, release verification and CLI tools

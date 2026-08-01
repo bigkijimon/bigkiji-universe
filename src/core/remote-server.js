@@ -87,6 +87,11 @@ function start(deps) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (req.method === 'GET' && p === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, source: 'bigkiji-electron', version: 2, pid: process.pid }));
+      return;
+    }
     if (req.method === 'GET' && STATIC[p]) {
       const [rel, type] = STATIC[p];
       const f = path.join(deps.appDir, rel);

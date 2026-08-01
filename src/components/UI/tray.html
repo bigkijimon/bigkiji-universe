@@ -59,6 +59,9 @@
     letter-spacing: .1em; pointer-events: none;
     animation: hintBreath 3.2s ease-in-out infinite; }
   @keyframes hintBreath { 0%,100% { opacity: .4; } 50% { opacity: .66; } }
+  #orbWrap::after { content:""; position:absolute; left:50%; top:50%; width:18px; height:18px; border:1px solid rgba(255,255,255,0); border-radius:50%; transform:translate(-50%,-50%) scale(.1); pointer-events:none; }
+  #orbWrap.core-awakening::after { animation:trayGenesis 1.25s cubic-bezier(.18,.75,.2,1) forwards; }
+  @keyframes trayGenesis { 0%{opacity:0;border-color:#fff;box-shadow:0 0 24px #fff;transform:translate(-50%,-50%) scale(.1)} 18%{opacity:1;border-color:#34d399;box-shadow:0 0 34px #34d399} 100%{opacity:0;border-color:rgba(245,202,105,.2);box-shadow:0 0 8px rgba(245,202,105,.15);transform:translate(-50%,-50%) scale(15)} }
 
   .composer { flex: none; display: flex; gap: 6px; align-items: center;
     padding: 9px 12px; border-top: 1px solid var(--hairline); }
@@ -151,6 +154,41 @@
   .row .txt { color: rgba(226,240,234,.66); overflow: hidden; text-overflow: ellipsis; }
   .row.sys .txt { color: var(--faint); }
 
+  /* v2 floating HUD: the Electron surface is fully transparent; only useful controls cast a shadow. */
+  .shell { padding: 8px; gap: 7px; overflow: hidden; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+  header, #orbWrap, .composer, #cards, .streamCard, .utilityRow, #piAnswer, #feed > .fcd {
+    border: 1px solid rgba(255,255,255,.10); border-radius: 12px;
+    background: rgba(15,23,42,.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,.7), 0 0 15px rgba(0,255,200,.15);
+  }
+  header { min-height: 44px; padding: 9px 11px; }
+  header .title { color:#fff; text-shadow:0 0 12px rgba(0,243,255,.28); }
+  #orbWrap { height: 142px; }
+  .composer { padding: 7px; border-top:1px solid rgba(255,255,255,.10); }
+  .utilityRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:7px; }
+  .utilityRow select,.utilityRow button { min-width:0; border:1px solid rgba(255,255,255,.10); border-radius:8px; color:#fff; background:rgba(4,10,18,.7); padding:6px 8px; font:9px "SF Mono",Menlo,monospace; }
+  .utilityRow button { color:#00f3ff; cursor:pointer; font-weight:700; }
+  #cards { padding:7px; border-top:1px solid rgba(255,255,255,.1); gap:6px; }
+  .acard { min-height:38px; padding:6px 8px; border-color:color-mix(in srgb,var(--c) 35%,transparent); background:rgba(2,7,15,.62); box-shadow:inset 0 0 15px color-mix(in srgb,var(--c) 5%,transparent); }
+  .acard .an { color:#fff; text-shadow:0 0 8px color-mix(in srgb,var(--c) 45%,transparent); }
+  .acard .ac { color:var(--c); font-size:8px; text-transform:uppercase; }
+  .acard .ad { opacity:.55; }
+  .streamCard { min-height:88px; padding:7px 8px 8px; overflow:hidden; }
+  .streamCard .logHead { padding:0 3px 5px; border:0; }
+  .streamCard .logHead span { color:#00f3ff; }
+  .streamCard #log { height:58px; padding:0 3px; overflow:hidden; -webkit-mask-image:none; line-height:1.7; }
+  .streamCard .row time { color:#ec4899; } .streamCard .row .txt { color:#fff; }
+  #remotePanel { position:absolute; inset:8px; z-index:20; display:none; padding:16px; border:1px solid rgba(0,243,255,.35); border-radius:16px; background:rgba(4,9,18,.94); box-shadow:0 24px 60px rgba(0,0,0,.75),0 0 24px rgba(0,243,255,.16); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
+  #remotePanel.on { display:flex; flex-direction:column; align-items:center; gap:10px; }
+  #remotePanel img { width:220px; height:220px; border-radius:12px; background:#f4fff9; padding:5px; }
+  #remotePanel h2 { color:#00f3ff; font:700 13px -apple-system,sans-serif; }
+  #remotePanel p { color:#cbd5e1; font:10px/1.55 -apple-system,sans-serif; text-align:center; }
+  #remotePanel code { max-width:100%; overflow:hidden; text-overflow:ellipsis; color:#eab308; font:8px "SF Mono",monospace; white-space:nowrap; }
+  #remotePanel a { display:none; border:1px solid rgba(0,243,255,.32); border-radius:8px; color:#00f3ff; background:rgba(0,243,255,.08); padding:7px 11px; font:700 9px -apple-system,sans-serif; text-decoration:none; }
+  #remotePanel a.on { display:inline-flex; }
+  #remotePanel button { border:1px solid rgba(255,255,255,.14); border-radius:8px; color:#fff; background:rgba(255,255,255,.06); padding:7px 11px; cursor:pointer; }
+  .grain { display:none; }
+
   header, #orbWrap, .composer, .logHead, #log { opacity: 0; transform: translateY(5px);
     animation: boot 420ms var(--ease-out) forwards; }
   #orbWrap { animation-delay: 80ms; } .composer { animation-delay: 150ms; }
@@ -170,6 +208,7 @@
       <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
       <span class="status"><span class="dot"></span><span id="mode">…</span></span>
     </header>
+    <div class="utilityRow"><select id="sessionPicker" aria-label="Session history"><option value="">Session history</option></select><button id="remoteQR" type="button">QR · PHONE</button></div>
     <div id="orbWrap">
       <div class="bgHero"></div>
       <div class="hint" data-i18n="hint">…</div>
@@ -187,10 +226,10 @@
     <div id="piAnswer"></div>
     <div id="feed"></div>
     <div id="cards"></div>
-    <div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
+    <div class="streamCard"><div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
       <em id="tvitals" style="margin-left:8px;color:rgba(226,240,234,.4);letter-spacing:0">–</em>
-      <em id="count">0</em></div>
-    <div id="log"></div>
+      <em id="count">0</em></div><div id="log"></div></div>
+    <div id="remotePanel" role="dialog" aria-live="polite"><h2>TAILSCALE PHONE LINK</h2><img id="remoteQRImage" alt="BigKiji Tailscale connection QR code"><p id="remoteHelp">Checking Tailscale…</p><code id="remoteURL"></code><a id="remoteSetup" target="_blank" rel="noreferrer">Enable Tailscale Serve</a><button id="remoteClose" type="button">Close</button></div>
     <div class="grain"></div>
   </div>
 
@@ -203,24 +242,36 @@
     const count = document.getElementById('count');
     let n = 0;
     const stamps = [];
-    // ---- エージェント別ミニカード（実カウント・活動で点灯） ----
+    // ---- Actual model fleet only. Department personalities remain in the 3D canvas, not this control surface. ----
     const cards = document.getElementById('cards');
     const cardMap = {};
-    for (const [id, m] of Object.entries(window.AGENT_META)) {
+    const MODEL_CARDS = {
+      'claude-code': { short:'Claude', color:'#ff7b00', glyph:'›_' },
+      codex: { short:'Codex', color:'#10b981', glyph:'‹›' },
+      'pi-agent-core': { short:'PiAgent', color:'#d946ef', glyph:'π' },
+      'local-qwen': { short:'Local Qwen', color:'#38bdf8', glyph:'◈' },
+    };
+    for (const [id, m] of Object.entries(MODEL_CARDS)) {
       const c = document.createElement('div');
       c.className = 'acard';
       c.style.setProperty('--c', m.color);
-      c.innerHTML = '<span class="ai" style="color:' + m.color + '">' + m.icon + '</span>' +
-        '<span class="an">' + m.short + '</span><span class="ac">0</span><i class="ad"></i>';
+      c.innerHTML = '<span class="ai" style="color:' + m.color + '">' + m.glyph + '</span>' +
+        '<span class="an">' + m.short + '</span><span class="ac">sleeping</span><i class="ad"></i>';
       cards.appendChild(c);
       cardMap[id] = { el: c, count: c.querySelector('.ac'), timer: null };
     }
     window.bigkiji.getInfo().then((i) => {
       document.getElementById('mode').textContent = i.ptyMode === 'pty' ? 'LIVE · pty' : 'LIVE · pipe';
-      for (const id in (i.counters || {})) {
-        if (cardMap[id]) cardMap[id].count.textContent = String(i.counters[id].count);
-      }
+      updateModels(i.modelStatus);
     });
+    function updateModels(snapshot) {
+      for (const model of snapshot?.models || []) {
+        const card = cardMap[model.id]; if (!card) continue;
+        const saved = model.id === 'pi-agent-core' && model.metrics?.prunedContextRatio != null ? ` · ${Math.round(model.metrics.prunedContextRatio)}% saved` : '';
+        card.count.textContent = `${model.status || 'IDLE'}${saved}`; card.el.classList.toggle('hot', !!model.connected);
+      }
+    }
+    window.bigkiji.onModelStatus(updateModels);
     window.addEventListener('bk:event', (e) => {
       const evt = e.detail;
       if (evt.type === 'pulse' && evt.stats) { // 実測値は1行をその場更新（行スパム廃止）
@@ -242,7 +293,7 @@
         '<span class="txt"></span>';
       row.querySelector('.txt').textContent = evt.text;
       log.appendChild(row);
-      while (log.children.length > 60) log.removeChild(log.firstChild);
+      while (log.children.length > 3) log.removeChild(log.firstChild);
       log.scrollTop = log.scrollHeight;
       count.textContent = String(++n);
 
@@ -256,13 +307,6 @@
         feedCard('fs' + evt.ts, '✎', evt.text.slice(2, 44), window.AGENT_META[evt.agent].color, false);
       }
       // カード更新（再生分はスナップショット済みカウントに含まれるため加算しない）
-      if (evt.agent && cardMap[evt.agent] && !evt._replay) {
-        const cd = cardMap[evt.agent];
-        cd.count.textContent = String((+cd.count.textContent || 0) + 1);
-        cd.el.classList.add('hot');
-        clearTimeout(cd.timer);
-        cd.timer = setTimeout(() => cd.el.classList.remove('hot'), 1400);
-      }
     });
 
     // ---- SYNAPSE FEED: キャンバスと連動する進行カード（実イベント→ポップ→✓解決） ----
@@ -316,6 +360,7 @@
       if (e.isComposing || e.keyCode === 229) return; // IME変換確定のEnterでは送信しない
       if (e.key === 'Enter' && cmd.value.trim()) {
         if (piMode) {
+          window.dispatchEvent(new CustomEvent('bk:wake-core'));
           window.bigkiji.piPrompt(cmd.value); // 未起動でもmain側で自動起動
           piAnswer.textContent = '';
           piAnswer.classList.add('on');
@@ -328,6 +373,7 @@
     });
     window.bigkiji.onPiEvent((ev) => {
       if (ev.kind === 'turn_start') {
+        window.dispatchEvent(new CustomEvent('bk:wake-core'));
         feedCard('turn', '🗣', (ev.text || '') + ' · ' + (ev.model || '').split('/').pop(), '#FFE81F', true);
       } else if (ev.kind === 'delta') {
         piAnswer.classList.add('on');
@@ -353,6 +399,31 @@
       piAnswer.classList.add('on');
       window.bigkiji.piPrompt('(Self-proposal mode) Based on recent deliverables, knowledge and status, suggest exactly one highest-value next move, briefly and conversationally. End by asking "Shall I do it?" in the owner\'s language.');
     });
+    const sessionPicker = document.getElementById('sessionPicker');
+    async function refreshSessions() {
+      const sessions = await window.bigkiji.listSessions().catch(() => []);
+      sessionPicker.innerHTML = '<option value="">Session history</option>' + sessions.slice(0, 12).map((session) =>
+        `<option value="${session.id}">${(session.promptSummary || session.id).slice(0, 34)} · ${session.status || 'IDLE'}</option>`).join('');
+    }
+    sessionPicker.addEventListener('change', async () => {
+      if (!sessionPicker.value) return;
+      const session = await window.bigkiji.getSession(sessionPicker.value).catch(() => null);
+      const latest = [...(session?.events || [])].reverse().find((entry) => entry.run || entry.text);
+      piAnswer.textContent = latest?.run ? `${latest.run.status} · ${latest.run.promptPreview || latest.run.id}` : (latest?.text || session?.promptSummary || 'Session loaded');
+      piAnswer.classList.add('on');
+    });
+    window.bigkiji.onSessionUpdate(() => refreshSessions()); refreshSessions();
+
+    const remotePanel = document.getElementById('remotePanel');
+    document.getElementById('remoteQR').addEventListener('click', async () => {
+      remotePanel.classList.add('on'); document.getElementById('remoteHelp').textContent = 'Enabling secure Tailscale Serve…';
+      const access = await window.bigkiji.remoteAccess(true).catch((error) => ({ ready:false, requirement:error.message }));
+      document.getElementById('remoteHelp').textContent = access.ready ? access.requirement : (access.requirement || access.detail || 'Tailscale is unavailable.');
+      document.getElementById('remoteURL').textContent = access.displayUrl || '';
+      const setup = document.getElementById('remoteSetup'); setup.classList.toggle('on', !!access.setupUrl); setup.href = access.setupUrl || '#';
+      const image = document.getElementById('remoteQRImage'); image.style.display = access.qrDataUrl ? 'block' : 'none'; if (access.qrDataUrl) image.src = access.qrDataUrl;
+    });
+    document.getElementById('remoteClose').addEventListener('click', () => remotePanel.classList.remove('on'));
     window.applyI18n();
     const voiceBtn = document.getElementById('voiceBtn');
     voiceBtn.addEventListener('click', async () => {
@@ -382,7 +453,11 @@
     const wrap = document.getElementById('orbWrap');
     const cmd = document.getElementById('cmd');
     // オーブタップ＝会話（入力）開始。キャンバスはヘッダの ⛶ ボタンから
-    const orb = mountOrb(wrap, { segments: 160, onClick: () => { cmd.focus(); cmd.select(); } });
+    const orb = mountOrb(wrap, { segments: 160, dormant: true, onClick: () => { cmd.focus(); cmd.select(); } });
+    window.addEventListener('bk:wake-core', () => orb.wake());
+    window.bigkiji.onPhaseUpdate?.((phase) => {
+      if (phase?.phase === 'PREFLIGHT' || phase?.phase === 'AWAITING_OWNER_DIRECTIVE') orb.wake();
+    });
 
     const seen = new Set();
     let lastStats = null;

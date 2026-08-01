@@ -384,12 +384,12 @@ export function buildOrbGroup({ segments = 160, ringRadius = 1.42, ring = true, 
 }
 
 // 単体マウント（tray用）: 専用renderer+camera+ループ+ポインタ操作つき
-export function mountOrb(container, { segments = 160, onClick, style = 'blackhole' } = {}) {
+export function mountOrb(container, { segments = 160, onClick, style = 'blackhole', dormant = false } = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 3)); // DPR上限3（“4K”精細）
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
-  renderer.domElement.style.cssText = 'position:absolute;inset:0;';
+  renderer.domElement.style.cssText = `position:absolute;inset:0;opacity:${dormant ? 0 : 1};transition:opacity 420ms ease-out;`;
   container.prepend(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -398,9 +398,11 @@ export function mountOrb(container, { segments = 160, onClick, style = 'blackhol
 
   const orb = buildOrbGroup({ segments, style, diskTexUrl: './assets/accretion.png' }); // ComfyUI生成円盤
   scene.add(orb.group);
+  orb.group.visible = !dormant;
 
   const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
   let activity = 0, hover = false, pressed = false, running = true;
+  let awakened = !dormant, wakeAt = 0;
 
   container.addEventListener('pointerenter', () => { hover = true; });
   container.addEventListener('pointerleave', () => { hover = false; pressed = false; });
@@ -429,11 +431,24 @@ export function mountOrb(container, { segments = 160, onClick, style = 'blackhol
     const t = clock.getElapsedTime();
     activity *= 0.972; // 実イベントが止まれば静まる
     orb.update({ activity, hover, pressed, reduced: reducedMq.matches, t, delta, camera });
+    if (awakened && wakeAt) {
+      const progress = Math.min(1, (performance.now() - wakeAt) / (reducedMq.matches ? 420 : 1250));
+      const reveal = THREE.MathUtils.smoothstep(progress, 0.02, 0.78);
+      orb.group.scale.multiplyScalar(Math.max(0.025, reveal));
+      if (progress >= 1) wakeAt = 0;
+    }
     renderer.render(scene, camera);
   })();
 
   return {
     spike(v = 0.5) { activity = Math.min(activity + v, 1.5); },
+    wake() {
+      if (awakened) return false;
+      awakened = true; wakeAt = performance.now(); activity = 1.5; orb.group.visible = true;
+      renderer.domElement.style.opacity = '1'; container.classList.add('core-awakening');
+      setTimeout(() => container.classList.remove('core-awakening'), reducedMq.matches ? 450 : 1400);
+      return true;
+    },
     dispose() { running = false; renderer.dispose(); },
   };
 }

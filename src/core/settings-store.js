@@ -10,6 +10,8 @@ const DEFAULTS = Object.freeze({
     agentVolume: 0.3,
     attentionChime: true,
     chimeTone: 'arrival',
+    telephonyEnabled: true,
+    handsetCue: true,
     defaultLanguage: 'English',
     ownerSpeedEnglish: 1.08,
     ownerSpeedJapanese: 1.04,

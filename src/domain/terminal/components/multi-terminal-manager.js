@@ -24,6 +24,7 @@
       this.fitShell = fitShell;
       this.tasks = new Map();
       this.runs = new Map();
+      this.sessions = new Map();
       this.active = 'neural';
       this.mode = 'stream';
       this.relay = [];
@@ -52,6 +53,11 @@
     upsertRun(run) {
       if (!run?.id) return;
       this.runs.set(run.id, { ...(this.runs.get(run.id) || {}), ...run });
+      this.renderCards();
+    }
+
+    setSessions(sessions = []) {
+      for (const session of sessions) if (session?.id) this.sessions.set(session.id, session);
       this.renderCards();
     }
 
@@ -147,8 +153,18 @@
 
     renderCards() {
       this.actionList.innerHTML = '';
+      const history = [...this.sessions.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 8);
+      if (history.length) {
+        const strip = document.createElement('section'); strip.className = 'session-history-strip';
+        strip.innerHTML = `<div class="history-label"><b>SESSION HISTORY</b><span>${history.length} local JSONL sessions</span></div><div class="history-list">${history.map((session) => `<button type="button" data-session-id="${escapeHtml(session.id)}"><b>${escapeHtml(session.promptSummary || session.id)}</b><span>${escapeHtml(session.status || 'IDLE')} · ${escapeHtml(new Date(session.updatedAt).toLocaleString())}</span></button>`).join('')}</div>`;
+        strip.querySelectorAll('[data-session-id]').forEach((button) => button.onclick = async () => {
+          const session = await window.bigkiji.getSession(button.dataset.sessionId);
+          for (const entry of session?.events || []) { if (entry.run) this.upsertRun(entry.run); if (entry.task) this.upsert(entry.task); }
+        });
+        this.actionList.appendChild(strip);
+      }
       const runs = [...this.runs.values()].filter((run) => !this.dismissedRuns.has(run.id)).reverse().slice(0, 6);
-      if (!runs.length && !this.tasks.size) this.actionList.innerHTML = '<div class="session-empty">No sessions yet. Send a brief to let PiAgent choose the smallest useful model set.</div>';
+      if (!history.length && !runs.length && !this.tasks.size) this.actionList.innerHTML = '<div class="session-empty">No sessions yet. Send a brief to let PiAgent choose the smallest useful model set.</div>';
       for (const run of runs) {
         const card = document.createElement('article'); card.className = 'task-card run-card'; card.style.setProperty('--task-color', '#86a995');
         const canApprove = run.status === 'AWAITING_APPROVAL'; const canCancel = ['AWAITING_APPROVAL', 'DISPATCHING', 'EXECUTING', 'REPAIRING'].includes(run.status);

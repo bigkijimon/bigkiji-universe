@@ -595,6 +595,13 @@
   .session-panel-head span { display:block; margin-top:3px; color:#829188; font:9px -apple-system,BlinkMacSystemFont,sans-serif; }
   .session-panel-head button,.task-dismiss { display:grid; place-items:center; width:27px; height:27px; padding:0; border:1px solid rgba(184,202,191,.16); border-radius:50%; color:#9caaa2; background:rgba(255,255,255,.025); cursor:pointer; font:17px/1 -apple-system,BlinkMacSystemFont,sans-serif; }
   #taskList { flex:1; min-height:0; overflow:auto; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-content:start; gap:10px; padding:12px 16px 18px; scrollbar-width:thin; }
+  .session-history-strip { grid-column:1/-1; display:grid; grid-template-columns:160px minmax(0,1fr); gap:12px; padding:10px; border:1px solid rgba(184,202,191,.11); border-radius:14px; background:rgba(134,169,149,.035); }
+  .history-label { padding:4px 7px; } .history-label b { display:block; color:#c8d4cc; font:700 9px "SF Mono",Menlo,monospace; letter-spacing:.12em; }
+  .history-label span { display:block; margin-top:5px; color:#74847b; font:9px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; }
+  .history-list { display:flex; gap:7px; min-width:0; overflow-x:auto; scrollbar-width:thin; }
+  .history-list button { flex:0 0 210px; min-width:0; padding:8px 10px; border:1px solid rgba(184,202,191,.11); border-radius:10px; color:#cbd6cf; background:rgba(5,10,13,.34); text-align:left; cursor:pointer; }
+  .history-list button:hover,.history-list button:focus-visible { border-color:rgba(134,169,149,.42); background:rgba(134,169,149,.08); outline:none; }
+  .history-list b,.history-list span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .history-list b { font:600 10px -apple-system,BlinkMacSystemFont,sans-serif; } .history-list span { margin-top:4px; color:#738178; font:8px "SF Mono",Menlo,monospace; }
   #taskList .run-card { grid-column:1/-1; }
   .task-card { margin:0; padding:12px 13px; border:1px solid rgba(184,202,191,.13); border-left:3px solid var(--task-color,#86a995); border-radius:14px; background:rgba(255,255,255,.027); box-shadow:0 8px 22px rgba(0,0,0,.09); }
   .task-card .task-head { display:grid; grid-template-columns:minmax(0,1fr) auto 27px; gap:9px; }
@@ -614,7 +621,7 @@
   .task-card .task-actions button { padding:6px 9px; border-color:rgba(134,169,149,.24); border-radius:8px; color:#dce5df; background:rgba(134,169,149,.09); font-family:-apple-system,BlinkMacSystemFont,sans-serif; }
   .task-card .task-actions .quiet { color:#b38f87; background:transparent; border-color:rgba(239,127,116,.18); }
   .session-empty { grid-column:1/-1; align-self:center; justify-self:center; padding:30px; color:#829188; font:11px -apple-system,BlinkMacSystemFont,sans-serif; text-align:center; }
-  @media(max-width:760px){#taskList{grid-template-columns:1fr}.task-card,#taskList .run-card{grid-column:1}}
+  @media(max-width:760px){#taskList{grid-template-columns:1fr}.task-card,#taskList .run-card{grid-column:1}.session-history-strip{grid-template-columns:1fr}.history-label{padding-bottom:0}}
 
   /* The dashboard keeps its information hierarchy on compact windows: metrics
      become a 3×2 grid and traversal/code stay side by side until the terminal
@@ -862,6 +869,8 @@
     window.bigkiji.onBusEvent((event) => multiTerm.appendRelay(event));
     window.bigkiji.listTasks().then((tasks) => tasks.forEach((task) => multiTerm.upsert(task))).catch(() => {});
     window.bigkiji.listRuns().then((runs) => runs.forEach((run) => multiTerm.upsertRun(run))).catch(() => {});
+    window.bigkiji.listSessions?.().then((sessions) => multiTerm.setSessions(sessions)).catch(() => {});
+    window.bigkiji.onSessionUpdate?.((session) => multiTerm.setSessions([session]));
     const previewFrame = document.getElementById('previewFrame'), previewState = document.getElementById('previewState');
     const applyPreview = (status) => { previewState.textContent = status.running ? `${status.url} · live reload` : 'Preview stopped'; if (status.url && previewFrame.src !== status.url) previewFrame.src = status.url; };
     window.bigkiji.previewStatus().then(applyPreview).catch(() => {}); window.bigkiji.onPreviewStatus(applyPreview);

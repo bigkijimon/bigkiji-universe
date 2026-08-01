@@ -226,7 +226,9 @@ function buildFileGalaxy(files) {
 // 1つの雲＝1惑星（or Core）の足元のディレクトリ階層ミニ銀河（ローカル座標・grpごと惑星に追従）
 function buildCloud(key, files) {
   const isCore = key === 'core';
-  const R = isCore ? 1.9 : 1.15; // クラスタ半径
+  // Real file particles need breathing room. The previous radii visually
+  // collapsed unrelated paths into one bright knot.
+  const R = isCore ? 2.75 : 1.72;
   const d0 = isCore ? 0 : 1;     // 階層の起点（Core雲はparts[0]=会社名がL1になる）
   const grp = new THREE.Group();
   scene.add(grp);
@@ -259,6 +261,7 @@ function buildCloud(key, files) {
   };
 
   const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  const basePos = new Float32Array(N * 3), motion = new Float32Array(N * 3);
   const leafHub = new Array(N);
   files.forEach((f, i) => {
     const h = hubOf(f);
@@ -269,6 +272,12 @@ function buildCloud(key, files) {
     const leafPoint = fibonacciLeafPoint(ordered, N, f.p, R);
     const { x, y, z } = leafPoint;
     pos.set([x, y, z], i * 3);
+    basePos.set([x, y, z], i * 3);
+    motion.set([
+      hash01(f.p + ':phase') * Math.PI * 2,
+      0.11 + hash01(f.p + ':speed') * 0.19,
+      R * (0.035 + hash01(f.p + ':drift') * 0.045),
+    ], i * 3);
     const c = new THREE.Color((COMPANY_META[f.c] || [0, '#8fa89c'])[1]);
     c.lerp(new THREE.Color('#ffffff'), 0.06 + 0.22 * (1 - rank[i])); // ガス色主体・新しいものだけ微白熱（白い砂粒化の禁止）
     col.set([c.r, c.g, c.b], i * 3);
@@ -348,6 +357,27 @@ function buildCloud(key, files) {
   flow.frustumCulled = false; // 毎フレーム座標更新のため
   grp.add(flow);
 
+  // One low-cost live hierarchy mesh connects every real file to its real
+  // parent-folder hub. Piecewise quadratic arcs follow the drifting endpoints.
+  const liveSegments = 3;
+  const liveEdgePositions = new Float32Array(N * liveSegments * 2 * 3);
+  const liveEdges = files.map((file, index) => ({
+    index,
+    from: (leafHub[index] || center).clone(),
+    bendX: (hash01(file.p + ':bx') - 0.5) * R * 0.18,
+    bendY: (hash01(file.p + ':by') - 0.5) * R * 0.18,
+    bendZ: (hash01(file.p + ':bz') - 0.5) * R * 0.18,
+  }));
+  const liveNetworkGeo = new THREE.BufferGeometry();
+  liveNetworkGeo.setAttribute('position', new THREE.BufferAttribute(liveEdgePositions, 3));
+  const liveNetworkMat = new THREE.LineBasicMaterial({
+    color: (COMPANY_META[files[0].c] || [0, '#34d399'])[1], transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const liveNetwork = new THREE.LineSegments(liveNetworkGeo, liveNetworkMat);
+  liveNetwork.frustumCulled = false;
+  grp.add(liveNetwork);
+
   // Organic membrane: curved strands replace the old white tree as the primary visual.
   const membrane = new ViralMembrane(scene, {
     color: (COMPANY_META[files[0].c] || [0, '#34d399'])[1], maxStrands: Math.min(72, 12 + N),
@@ -365,7 +395,9 @@ function buildCloud(key, files) {
     membrane.addStrand([h.clone(), mid, leaf], 1);
   }
 
-  fileClouds[key] = { grp, points, ptsMat, rootMat, rootPoint, hubMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
+  fileClouds[key] = { grp, points, ptsMat, rootMat, rootPoint, hubMat, files, leafHub, center,
+    flow, flowMat, fpos, fedges, membrane, boost: 0, basePos, motion, liveSegments,
+    liveEdges, liveEdgePositions, liveNetwork, liveNetworkMat, liveNetworkNext: 0 };
 
   // 常設シナプス束（v11全結合）: 雲の根→担当BHを繋ぐミニ筋繊維束。LODで消えないため、
   // 全ファイル網が「オーケストレーションのシナプスに常時結合している」ことが遠景でも読める。
@@ -374,6 +406,37 @@ function buildCloud(key, files) {
       colorHex: (COMPANY_META[files[0].c] || [0, '#8fa89c'])[1], fibers: 64, seg: 10, spread: 0.26,
     });
   }
+}
+
+function updateFileCloudDrift(cloud, time, now, opacity, reduced) {
+  const positions = cloud.points.geometry.attributes.position.array;
+  for (let index = 0; index < cloud.files.length; index++) {
+    const j = index * 3; const phase = cloud.motion[j];
+    const speed = reduced ? 0 : cloud.motion[j + 1]; const amp = reduced ? 0 : cloud.motion[j + 2];
+    positions[j] = cloud.basePos[j] + Math.sin(time * speed + phase) * amp;
+    positions[j + 1] = cloud.basePos[j + 1] + Math.cos(time * speed * 0.73 + phase * 1.31) * amp * 0.72;
+    positions[j + 2] = cloud.basePos[j + 2] + Math.sin(time * speed * 0.57 + phase * 1.87) * amp;
+  }
+  cloud.points.geometry.attributes.position.needsUpdate = true;
+  cloud.liveNetworkMat.opacity = Math.max(0.035, opacity * 0.13) * (1 + cloud.boost * 0.55);
+  if (now < cloud.liveNetworkNext) return;
+  cloud.liveNetworkNext = now + (reduced ? 260 : 110);
+  let cursor = 0;
+  for (const edge of cloud.liveEdges) {
+    const j = edge.index * 3;
+    const ax = edge.from.x, ay = edge.from.y, az = edge.from.z;
+    const bx = positions[j], by = positions[j + 1], bz = positions[j + 2];
+    for (let segment = 0; segment < cloud.liveSegments; segment++) {
+      for (let endpoint = 0; endpoint < 2; endpoint++) {
+        const ratio = (segment + endpoint) / cloud.liveSegments;
+        const arc = Math.sin(ratio * Math.PI);
+        cloud.liveEdgePositions[cursor++] = THREE.MathUtils.lerp(ax, bx, ratio) + arc * edge.bendX;
+        cloud.liveEdgePositions[cursor++] = THREE.MathUtils.lerp(ay, by, ratio) + arc * edge.bendY;
+        cloud.liveEdgePositions[cursor++] = THREE.MathUtils.lerp(az, bz, ratio) + arc * edge.bendZ;
+      }
+    }
+  }
+  cloud.liveNetwork.geometry.attributes.position.needsUpdate = true;
 }
 
 // pi-sandbox.json の実権限はツールチップ/カードで表示（sandboxTopo）。
@@ -425,6 +488,9 @@ const stars = (() => {
     color: 0x9fd8c2, size: 0.055, transparent: true, opacity: 0.5,
     blending: THREE.AdditiveBlending, depthWrite: false,
   }));
+  // Decorative points are disabled in data-only mode: every free-floating
+  // particle visible to the owner must resolve to a file or a configured agent.
+  p.visible = false;
   scene.add(p);
   return p;
 })();
@@ -495,6 +561,7 @@ const stardust = (() => {
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
+  pts.visible = false;
   scene.add(pts);
   return pts;
 })();
@@ -562,6 +629,7 @@ const neural = (() => {
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
+  pts.visible = false;
   scene.add(pts);
   return { pts, mat };
 })();
@@ -584,6 +652,41 @@ coreHalo.renderOrder = -1;
 scene.add(coreHalo);
 const coreFx = new CoreInflowSynapse(scene, { maxParticles: 512 });
 const coreAccretion = new CoreAccretionField(scene, { count: 2600, radius: 2.75 });
+let coreReveal = 0;
+const coreAwakening = { state: 'dormant', startedAt: 0, rings: [] };
+core.group.visible = false; coreLabel.visible = false; coreHalo.visible = false; coreAccretion.group.visible = false;
+function triggerCoreAwakening() {
+  if (coreAwakening.state !== 'dormant') return;
+  coreAwakening.state = 'genesis'; coreAwakening.startedAt = performance.now(); coreActivity = 1.5;
+  core.group.visible = true; coreLabel.visible = true; coreHalo.visible = true; coreAccretion.group.visible = true;
+  core.group.scale.setScalar(0.025); coreAccretion.group.scale.setScalar(0.025);
+  for (let index = 0; index < 3; index++) {
+    const ring = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex,
+      color: index === 0 ? '#ffffff' : index === 1 ? '#34d399' : '#f5ca69', transparent: true,
+      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    ring.scale.setScalar(0.08); ring.userData.delay = index * 125; scene.add(ring); coreAwakening.rings.push(ring);
+  }
+  spawnRipple(new THREE.Vector3(), new THREE.Color('#ffffff'));
+}
+function updateCoreAwakening(now, reduced) {
+  if (coreAwakening.state === 'dormant') return;
+  const duration = reduced ? 500 : 1800; const progress = Math.min(1, (now - coreAwakening.startedAt) / duration);
+  const reveal = THREE.MathUtils.smoothstep(progress, reduced ? 0 : 0.16, reduced ? 0.82 : 0.76);
+  coreReveal = reveal;
+  const scale = Math.max(0.025, 1 - Math.pow(1 - reveal, 3));
+  core.group.scale.setScalar(scale); coreAccretion.group.scale.setScalar(0.22 + scale * 0.78);
+  for (const ring of coreAwakening.rings) {
+    const rp = Math.max(0, Math.min(1, (now - coreAwakening.startedAt - ring.userData.delay) / (duration * 0.62)));
+    ring.scale.setScalar(0.1 + rp * (reduced ? 2.5 : 7.5));
+    ring.material.opacity = Math.sin(rp * Math.PI) * (1 - progress * 0.35) * 0.86;
+  }
+  if (progress >= 1) {
+    coreAwakening.state = 'awake'; coreReveal = 1;
+    for (const ring of coreAwakening.rings) { scene.remove(ring); ring.material.dispose(); }
+    coreAwakening.rings.length = 0;
+  }
+}
+window.addEventListener('bk:wake-core', triggerCoreAwakening);
 roadmap3d = new Roadmap3D(scene);
 window.bigkiji.knowledgeState?.().then((state) => roadmap3d.setPlans(state)).catch(() => {});
 const corePosition = () => core.group.position.clone();
@@ -621,13 +724,10 @@ function buildAgentCluster(colorHex, id) {
 }
 
 // ---------- 惑星ノード + 軌道 + ムーン ----------
-const MOONS = {
-  justin: ['Video', 'Music', 'Blog', 'Influencer', 'Game'],
-  marble: ['UPCLASS', 'H&S'],
-  risa: ['ArtGraphics', 'ShapeDesign'],
-  biglama: ['MediaStudio'],
-};
-const CORE_MOONS = ['Exec Office', 'Miro', 'Sora'];
+// Folder hubs are generated from vaultFiles. Static moon labels would imply
+// folders that may not exist on another owner's machine, so they are disabled.
+const MOONS = {};
+const CORE_MOONS = [];
 const nodes = {};
 const ids = Object.keys(window.AGENT_META);
 const ringTex = ringTexture();
@@ -720,6 +820,7 @@ const miniOrbs = (() => {
     m.userData = { base: v.clone(), ph: Math.random() * 6.28, w: 0.1 + Math.random() * 0.25 };
     grp.add(m);
   }
+  grp.visible = false;
   scene.add(grp);
   return grp;
 })();
@@ -1263,6 +1364,7 @@ window.bigkiji.onPiEvent((e) => {
   else if (e.kind === 'degrade') roadmap3d.setState('EXECUTE', 'blocked');
   else if (e.kind === 'tool_end') roadmap3d.setState('EXECUTE', e.isError ? 'blocked' : 'completed');
   if (e.kind === 'turn_start') {
+    triggerCoreAwakening();
     flowNewTurn(e);
     turnStartedAt = performance.now();
     setStage(`STAGE 1/4: ROUTING PROMPT → ${(e.model || 'pi').split('/').pop()}`, { busy: true, pct: 15 });
@@ -1297,6 +1399,9 @@ window.bigkiji.onPiEvent((e) => {
   } else if (e.kind === 'status') {
     piRunning = !!e.running; // LIVE LINKS用（宛先ボタンの表示はdestが管理）
   }
+});
+window.bigkiji.onPhaseUpdate?.((phase) => {
+  if (phase?.phase === 'PREFLIGHT' || phase?.phase === 'AWAITING_OWNER_DIRECTIVE') triggerCoreAwakening();
 });
 window.bigkiji.onPiStats((s) => {
   roadmap3d.setState('VERIFY', 'completed'); roadmap3d.pulse(3);
@@ -1391,7 +1496,7 @@ ccmd.addEventListener('keydown', (e) => {
         .catch((error) => telemetryStore.setComfy({ state: 'error', progress: 0, node: 'REQUEST', message: error.message }));
     } else if (dest === 'ai' && /^\/parallel\s+/i.test(ccmd.value)) {
       window.prepareParallelTasks && window.prepareParallelTasks(ccmd.value.replace(/^\/parallel\s+/i, '').trim());
-    } else if (dest === 'ai') window.bigkiji.piPrompt(ccmd.value); // turn_startイベントがパイプラインカードを起こす
+    } else if (dest === 'ai') { triggerCoreAwakening(); window.bigkiji.piPrompt(ccmd.value); }
     else { window.bigkiji.ptyInput(ccmd.value + '\n'); window.bkShowTerm && window.bkShowTerm(); }
     ccmd.value = '';
   }
@@ -1881,6 +1986,7 @@ const clock = new THREE.Clock();
   const t = clock.getElapsedTime();
   const now = performance.now();
   const reduced = reducedMq.matches;
+  updateCoreAwakening(now, reduced);
   if (targetDist != null) {
     const len = camera.position.length();
     const next = THREE.MathUtils.damp(len, targetDist, 4, delta);
@@ -1907,6 +2013,7 @@ const clock = new THREE.Clock();
     cl.hubMat.opacity = Math.max(galaxyO * 0.8, 0.22) * (1 + cl.boost * 0.4);
     cl.rootMat.opacity = Math.max(galaxyO * 0.9, 0.5) * (0.86 + 0.14 * Math.sin(t * 2.1 + hash01(k) * 6));
     cl.rootMat.size = 0.155 * (1 + (reduced ? 0 : 0.12 * Math.sin(t * 2.1 + hash01(k) * 6)) + cl.boost * 0.18);
+    updateFileCloudDrift(cl, t, now, gO, reduced || perfStage >= 2);
     const nd = nodes[k];
     if (nd) { // 雲は自惑星の足元に追従
       cl.grp.position.set(nd.grp.position.x, nd.grp.position.y - 0.48, nd.grp.position.z);
@@ -1941,26 +2048,28 @@ const clock = new THREE.Clock();
     }
   }
   stars.material.opacity = perfStage === 0 ? 0.5 : perfStage === 1 ? 0.28 : 0;
-  stars.visible = perfStage < 2;
+  stars.visible = false;
   stardust.material.uniforms.uTime.value = reduced ? 0 : t;
   stardust.material.uniforms.uFade.value = reduced ? 0.16 : perfStage === 0 ? 0.58 : perfStage === 1 ? 0.3 : 0.04;
   stardust.material.uniforms.uPixelRatio.value = Math.min(devicePixelRatio, 2);
-  stardust.visible = perfStage < 2;
+  stardust.visible = false;
   coreFx.update(now, reduced || perfStage >= 2);
   roadmap3d.update(delta, reduced || perfStage >= 2);
   relationshipField.update(delta, fileWorldPoint, reduced || perfStage >= 2);
   // 神経叢の明滅（シェーダ駆動・perf降格で減光）
   neural.mat.uniforms.uTime.value = t;
   neural.mat.uniforms.uFade.value = reduced ? 0.2 : perfStage === 0 ? 0.5 : perfStage === 1 ? 0.3 : 0.12;
+  neural.pts.visible = false;
   for (const m of fadeSystem) m.opacity = Math.min(m.userData?.base ?? 1, 1) * (m.map ? 1 : 0.11);
   for (const m of fadeMuseum) m.opacity = museumO * (m.map ? 0.95 : 0.9);
-  coreLabel.material.opacity = 1 - museumO * 0.4;
+  coreLabel.material.opacity = (1 - museumO * 0.4) * coreReveal;
 
   coreActivity *= 0.975;
   core.update({ activity: coreActivity + galaxyO * 0.15, reduced, t, delta, camera });
+  core.group.scale.multiplyScalar(Math.max(0.025, coreReveal));
   coreAccretion.update(t, coreActivity + galaxyO * 0.18, reduced || perfStage >= 2, delta);
-  coreHalo.material.opacity = 0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04);
-  coreHalo.scale.setScalar(4.8 + Math.min(coreActivity, 1) * 0.8);
+  coreHalo.material.opacity = (0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04)) * coreReveal;
+  coreHalo.scale.setScalar((4.8 + Math.min(coreActivity, 1) * 0.8) * Math.max(0.08, coreReveal));
 
   for (const id of ids) {
     const nd = nodes[id];
@@ -2025,7 +2134,7 @@ const clock = new THREE.Clock();
     const u = fb.b.uniforms;
     u.uEnd.value.copy(nd.grp.position);
     u.uTime.value = t;
-    u.uShow.value = (0.18 + (show8 / 8) * 0.82) * fiberCap; // 最低2割は常時見える（全結合の気配）
+    u.uShow.value = (0.18 + (show8 / 8) * 0.82) * fiberCap * coreReveal;
     u.uActive.value = THREE.MathUtils.damp(u.uActive.value, active, 6, delta);
     u.uSympathy.value = THREE.MathUtils.damp(u.uSympathy.value, 0, 4.5, delta);
     u.uGlow.value = 0.035 + 0.012 * show8;  // 束が濃いほど1本1本も明るい
@@ -2034,7 +2143,7 @@ const clock = new THREE.Clock();
   for (const fp of fiberPulses) {
     const nd = nodes[fp.id];
     const active = streams[fp.id] && streams[fp.id].until > now;
-    const pulseOpacity = active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0);
+    const pulseOpacity = (active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0)) * coreReveal;
     for (const part of fp.parts) {
       const s = (t * part.speed + part.phase) % 1;
       const source = fileClouds[fp.id]?.grp.position || nd.grp.position;

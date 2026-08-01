@@ -6,6 +6,12 @@
   "main": "src/core/main.js",
   "private": true,
   "license": "Apache-2.0",
+  "bin": {
+    "bigkiji": "./tools/bigkiji",
+    "Bigkiji": "./tools/bigkiji",
+    "kiji": "./tools/bigkiji",
+    "Kiji": "./tools/bigkiji"
+  },
   "engines": {
     "node": ">=24 <27"
   },
@@ -36,7 +42,8 @@
     "test:context": "node tools/context-routing-selftest.js",
     "test:pi-core": "node scripts/test-pi-core.js",
     "test:preview": "node tools/preview-server-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:pi-core && npm run test:preview && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
+    "test:daemon": "node tools/daemon-selftest.js",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "node tools/postinstall.js"
   },
@@ -61,7 +68,10 @@
       }
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
@@ -74,11 +84,17 @@
       }
     },
     "win": {
-      "target": ["nsis", "zip"],
+      "target": [
+        "nsis",
+        "zip"
+      ],
       "icon": "build/icon.iconset/icon_512x512.png"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Development",
       "icon": "build/icon.iconset"
     }
@@ -89,7 +105,9 @@
     "dotenv": "^16.6.1",
     "dotenv-expand": "^11.0.7",
     "node-pty": "^1.0.0",
-    "three": "^0.172.0"
+    "qrcode": "^1.5.4",
+    "three": "^0.172.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",

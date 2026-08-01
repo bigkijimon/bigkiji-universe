@@ -34,6 +34,8 @@
           <div class="settings-grid">
             <div class="settings-card"><h3>ATTENTION & PACING</h3>
               <div class="setting-row"><label>Attention chime</label><input data-setting="audio.attentionChime" type="checkbox" ${state.audio.attentionChime ? 'checked' : ''}><span></span></div>
+              <div class="setting-row"><label>Vintage telephone filter</label><input data-setting="audio.telephonyEnabled" type="checkbox" ${state.audio.telephonyEnabled ? 'checked' : ''}><span>300–3,400 Hz</span></div>
+              <div class="setting-row"><label>Handset pickup cue</label><input data-setting="audio.handsetCue" type="checkbox" ${state.audio.handsetCue ? 'checked' : ''}><span></span></div>
               <div class="setting-row"><label>Chime tone</label><select data-setting="audio.chimeTone"><option>arrival</option><option>soft</option><option>pulse</option></select><span></span></div>
               <div class="setting-row"><label>English speed</label><input data-setting="audio.ownerSpeedEnglish" type="range" min="0.85" max="1.4" step="0.01" value="${state.audio.ownerSpeedEnglish}"><output>${state.audio.ownerSpeedEnglish.toFixed(2)}×</output></div>
               <div class="setting-row"><label>Japanese speed</label><input data-setting="audio.ownerSpeedJapanese" type="range" min="0.85" max="1.4" step="0.01" value="${state.audio.ownerSpeedJapanese}"><output>${state.audio.ownerSpeedJapanese.toFixed(2)}×</output></div>

@@ -33,6 +33,8 @@ const { SettingsStore } = require('./settings-store');
 const { NaturalTTSService } = require('./natural-tts-service');
 const { CmuxBridge } = require('./cmux-bridge');
 const { PreviewServer } = require('./preview-server');
+const { DaemonClient } = require('../domain/server/daemon-client');
+const { TailscaleRemoteAccess } = require('./tailscale-remote-access');
 const facilitator = new fastRouter.FastFacilitatorRouter();
 const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'voice-cmux-local-qwen-v8';
 
@@ -59,6 +61,9 @@ let ttsService = null;
 let cmuxBridge = null;
 let coordinator = null;
 let previewServer = null;
+let daemonClient = null;
+let daemonState = null;
+let remoteAccess = null;
 
 if (!app.requestSingleInstanceLock()) {
   console.log('BigKiji Universe is already running in the menu bar (❖). Exiting the duplicate instance.');
@@ -278,25 +283,16 @@ function scanDeliverables() {
 // ---------- メニューバーガラス小窓 ----------
 function createTrayWindow() {
   trayWin = new BrowserWindow({
-    width: 324, height: 596, show: false, frame: false, transparent: true,
-    // glass-lab実測(2026-07-30): vibrancyはCSS backdrop-filterと併用すると効果層が壊れて
-    // 「透けるだけ」になる（electron#39529/#44720）。ページ側のbackdrop-filterを全廃し
-    // transparent+vibrancyで本物のすりガラスになることを7構成マトリクスで実証済み。
+    width: 350, height: 680, show: false, frame: false, transparent: true, backgroundColor: '#00000000',
     // Owner requirement: allow the tray dashboard to be resized with the cursor
     // while keeping it a compact, usable control surface.
     resizable: true, minWidth: 324, minHeight: 420,
     movable: false, fullscreenable: false, minimizable: false,
-    skipTaskbar: true, alwaysOnTop: true, hasShadow: true, roundedCorners: true,
-    vibrancy: 'hud', visualEffectState: 'active',
+    skipTaskbar: true, alwaysOnTop: true, hasShadow: false, roundedCorners: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: false }, // 非表示中もメニューバー・ダッシュボード描画を継続
   });
   trayWin.loadFile(path.join(UI_ROOT, 'tray.html'));
-  // show:false生成だとvibrancy層が付かないことがある（glass-lab実測: show:true即時なら効く）
-  // → 表示のたびにmaterialを付け直して確実にすりガラス化
-  trayWin.on('show', () => {
-    try { trayWin.setVibrancy(null); trayWin.setVibrancy('hud'); } catch (_) {}
-  });
   trayWin.on('blur', () => { if (!SMOKE && !SNAP && trayWin.isVisible()) trayWin.hide(); });
   trayWin.on('close', (e) => { if (!quitting) { e.preventDefault(); trayWin.hide(); } });
 }
@@ -304,7 +300,8 @@ function createTrayWindow() {
 function positionTrayWindow() {
   const tb = tray.getBounds();
   const display = screen.getDisplayNearestPoint({ x: tb.x, y: tb.y });
-  const x = Math.min(Math.round(tb.x + tb.width / 2 - 162), display.workArea.x + display.workArea.width - 334);
+  const width = trayWin?.getBounds().width || 350;
+  const x = Math.min(Math.round(tb.x + tb.width / 2 - width / 2), display.workArea.x + display.workArea.width - width - 10);
   trayWin.setPosition(Math.max(x, display.workArea.x + 10), display.workArea.y + 6, false);
 }
 
@@ -874,6 +871,16 @@ function piDispatch(text, opts = {}) { // 実送信（分類済みプロンプ�
 // v12: 送信前にタスク分類（direct/cache/swarm）。raw=true は分類スキップ（内部指示・音声会話）
 function piSendPrompt(text, opts = {}) {
   if (opts.raw) { piDispatch(String(text), opts); return; }
+  if (daemonClient?.connected) {
+    const mode = settingsStore?.get().routing.executionMode || 'plan';
+    daemonClient.prompt(String(text), { mode }).then((result) => {
+      bus.push({ source: 'system', type: 'info', text: `Daemon run ${result.run.id} · ${result.run.assignments.length} on-demand models · ${result.run.status}` });
+    }).catch((error) => {
+      bus.push({ source: 'system', type: 'warn', text: `Daemon route unavailable: ${error.message} · using in-app fallback` });
+      fastDispatch(String(text));
+    });
+    return;
+  }
   const prompt = String(text);
   fastDispatch(prompt);
   // Qwen remains available for raw internal planning/cache work and never delays this answer.
@@ -921,15 +928,18 @@ ipcMain.on('pi:prompt', (_e, text) => piSendPrompt(text));
 
 // Approved parallel execution lanes. Planning is stored locally first; paid
 // lanes cannot be started until an explicit owner approval arrives from UI.
-ipcMain.handle('task:list', () => taskRunner.snapshot());
+ipcMain.handle('task:list', async () => daemonClient?.connected ? (await daemonClient.state()).tasks : taskRunner.snapshot());
 ipcMain.handle('task:plan', (_e, spec) => taskRunner.plan(spec));
 ipcMain.handle('task:prepare', (_e, spec) => taskRunner.prepare(spec));
 ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
 ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
-ipcMain.handle('run:list', () => coordinator?.snapshot() || []);
-ipcMain.handle('run:approve', (_e, id) => coordinator.approve(String(id)));
-ipcMain.handle('run:abort', (_e, id) => coordinator.abort(String(id)));
+ipcMain.handle('run:list', async () => daemonClient?.connected ? (await daemonClient.state()).runs : (coordinator?.snapshot() || []));
+ipcMain.handle('run:approve', (_e, id) => daemonClient?.connected ? daemonClient.approve(String(id)) : coordinator.approve(String(id)));
+ipcMain.handle('run:abort', (_e, id) => daemonClient?.connected ? daemonClient.abort(String(id)) : coordinator.abort(String(id)));
+ipcMain.handle('session:list', async () => daemonClient?.connected ? (await daemonClient.sessions()).sessions : []);
+ipcMain.handle('session:get', async (_e, id) => daemonClient?.connected ? daemonClient.session(String(id)) : null);
+ipcMain.handle('remote:access', async (_e, ensure = false) => remoteAccess?.status({ ensure: !!ensure }) || ({ state: 'unavailable', ready: false }));
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
 ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('model:status:snapshot', () => fleetMetrics.snapshot());
@@ -1025,7 +1035,7 @@ if (process.env.PITEST) {
     setTimeout(() => { console.log('PITEST TIMEOUT'); app.exit(1); }, 600000);
   });
 }
-ipcMain.on('pi:abort', () => pi.abort());
+ipcMain.on('pi:abort', () => { if (daemonClient?.connected) daemonClient.post('/api/abort').catch(() => {}); else pi.abort(); });
 
 ipcMain.on('reveal', (_e, p) => {
   if (typeof p === 'string' && isInside(VAULT, p)) shell.showItemInFolder(p); // Vault内のみ許可
@@ -1063,7 +1073,8 @@ ipcMain.handle('get-info', () => {
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
-    fleet: fleetMetrics.snapshot(), modelStatus: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(), runs: coordinator?.snapshot() || [],
+    fleet: daemonState?.models || fleetMetrics.snapshot(), modelStatus: daemonState?.models || fleetMetrics.snapshot(), relationships: relationshipService.snapshot(), runs: daemonState?.runs || coordinator?.snapshot() || [],
+    sessions: daemonState?.sessions || [], daemon: daemonState ? { connected: true, pid: daemonState.pid, activeSessionId: daemonState.activeSessionId } : { connected: false },
     preview: previewServer?.snapshot() || { running: false },
     buildId: APP_BUILD_ID,
     paths: { appRoot: APP_ROOT, vaultRoot: VAULT, knowledgeRoot: PATHS.knowledgeRoot, graphPath: PATHS.graphPath },
@@ -1072,8 +1083,28 @@ ipcMain.handle('get-info', () => {
 });
 
 // ---------- ライフサイクル ----------
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
+  remoteAccess = new TailscaleRemoteAccess({ port: 8777 });
+  if (!SMOKE) {
+    try {
+      daemonClient = new DaemonClient({ appRoot: APP_ROOT, workspace: PATHS.vaultRoot });
+      const daemon = await daemonClient.ensure({ timeoutMs: 8000 });
+      daemonState = await daemonClient.state();
+      const channelMap = { task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
+        fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats' };
+      daemonClient.on('event', ({ event, data }) => {
+        if (event === 'state') { daemonState = data; broadcast('daemon:state', data); return; }
+        const channel = channelMap[event]; if (channel) broadcast(channel, data);
+        if (event === 'run') daemonState = { ...(daemonState || {}), runs: [...(daemonState?.runs || []).filter((run) => run.id !== data.id), data] };
+      });
+      daemonClient.connect();
+      bus.push({ source: 'system', type: 'info', text: `${daemon.started ? 'Started' : 'Attached to'} standalone BigKiji Core Engine · 127.0.0.1:8777` });
+    } catch (error) {
+      daemonClient = null;
+      bus.push({ source: 'system', type: 'warn', text: `Standalone daemon unavailable: ${error.message} · in-app core remains active` });
+    }
+  }
   const previewRoot = path.join(PATHS.vaultRoot, 'Generated', 'BigKijiShooter');
   const previewTemplate = path.join(APP_ROOT, 'fixtures', 'e2e', 'bigkiji-shooter');
   if (!fs.existsSync(path.join(previewRoot, 'index.html')) && fs.existsSync(previewTemplate)) {
@@ -1122,18 +1153,20 @@ app.whenReady().then(() => {
   createTrayWindow();
   if (SMOKE || SNAP || SHOW_MAIN) createMainWindow(); // --show-main は再起動後のCanvas確認・直接起動用
   spawnShell();
-  // Fast route is ready independently; local Qwen warmup is intentionally background-only.
-  router.ollamaWarmup('qwen3.5:35b-a3b');
+  // Models are intentionally cold. PiAgent/daemon wakes only selected roles after owner approval.
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
-  knowledge.savePhysicalLayout({ version: 4, root: APP_ROOT, domains: {
+  knowledge.savePhysicalLayout({ version: 5, root: APP_ROOT, domains: {
     core: ['src/core/main.js', 'src/core/preload.js', 'src/core/path-config.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js', 'src/core/preview-server.js'],
     '3d-canvas': ['src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js', 'src/domain/3d-canvas/components/relationship-field.js', 'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/synapse-spark-shedder.js'],
-    terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js', 'src/domain/terminal/components/cmux-terminal-mirror.js'],
+    terminal: ['src/domain/terminal/bigkiji-cli.js', 'src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js', 'src/domain/terminal/components/cmux-terminal-mirror.js'],
+    server: ['src/domain/server/daemon.js', 'src/domain/server/daemon-client.js', 'src/domain/server/session-store.js'],
+    cli: ['src/cli/tui/monitor.js', 'src/cli/tui/renderer.js'],
     telemetry: ['src/domain/telemetry/components/right-telemetry-panel.js', 'src/domain/telemetry/components/telemetry-store.js'],
     hud: ['src/domain/hud/model-status-store.js', 'src/domain/hud/components/active-ai-models-fleet.js'],
     'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/core-execution-coordinator.js', 'src/domain/pi-agent/model-capability-registry.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
     ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js', 'src/components/UI/settings-modal.css', 'src/components/UI/remote/mobile.html'],
+    remote: ['src/core/tailscale-remote-access.js'],
   } });
   relationshipService.refresh(true);
   const relationshipTimer = setInterval(() => relationshipService.refresh(false), 300000);
@@ -1155,7 +1188,7 @@ app.whenReady().then(() => {
   }
 
   // v12 リモートサーバ（iPhone PWA / bigkiji CLI の同期エンジン）。SMOKE時は起動しない
-  if (!SMOKE) {
+  if (!SMOKE && !daemonClient?.connected) {
     try {
       remote = require('./remote-server').start({
         appDir: APP_ROOT,
@@ -1212,13 +1245,18 @@ app.whenReady().then(() => {
     // 撮影用の可視化テストイベント（SNAPモード限定・textに明示）
     setTimeout(() => {
       bus.push({ source: 'system', agent: 'claude-code', type: 'task', text: 'SNAP visual test — pulse check' });
-      bus.push({ source: 'system', agent: 'risa', type: 'task', text: 'SNAP visual test — pulse check' });
+      bus.push({ source: 'system', agent: 'codex', type: 'task', text: 'SNAP visual test — interface pulse check' });
     }, 2600);
     setTimeout(() => {
       bus.push({ source: 'system', agent: 'biglama', type: 'task', text: 'SNAP visual test — local planning pulse' });
     }, 4700);
     if (process.env.SNAP_SETTINGS) {
       setTimeout(() => mainWin?.webContents.executeJavaScript('window.BKSettings?.open()').catch(() => {}), 3200);
+    }
+    if (process.env.SNAP_WAKE) {
+      setTimeout(() => {
+        for (const window of [trayWin, mainWin]) window?.webContents.executeJavaScript("window.dispatchEvent(new CustomEvent('bk:wake-core'))").catch(() => {});
+      }, 2600);
     }
     setTimeout(async () => {
       try {
@@ -1262,4 +1300,4 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); taskRunner.shutdown(); ttsService?.stop(); cmuxBridge?.stop(); previewServer?.close(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); taskRunner.shutdown(); daemonClient?.disconnect(); ttsService?.stop(); cmuxBridge?.stop(); previewServer?.close(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
