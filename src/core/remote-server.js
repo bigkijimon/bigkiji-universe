@@ -28,6 +28,8 @@ function loadConfig() {
 const SSE_MAP = {
   'bus:event': 'bus', 'pi:event': 'pi', 'pi:stats': 'stats', 'bk:commentary': 'commentary',
   'voice:live-state': 'voice', 'bk:swarm': 'swarm', 'vault:touch': 'touch',
+  'task:event': 'task', 'task:log': 'tasklog', 'pi:fleet': 'fleet', 'model:status:update': 'models', 'run:event': 'run',
+  'preview:status': 'preview', 'preview:reload': 'preview', 'preview:error': 'preview-error',
 };
 
 function start(deps) {
@@ -142,6 +144,12 @@ function start(deps) {
             deps.piAbort();
             res.writeHead(202, { 'content-type': 'application/json' });
             res.end('{"accepted":true}');
+          } else if (p === '/api/run/approve') {
+            const { id } = JSON.parse(body.toString('utf8') || '{}'); const result = deps.approveRun(String(id || ''));
+            res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
+          } else if (p === '/api/run/abort') {
+            const { id } = JSON.parse(body.toString('utf8') || '{}'); const result = deps.abortRun(String(id || ''));
+            res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
           } else if (p === '/api/voice') {
             // body = WAV(16k mono PCM16)そのもの → 二段STT → Pi（返答はSSEのdeltaで届く）
             const r = await deps.handleUtterance(body, 'mobile');

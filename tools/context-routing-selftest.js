@@ -30,7 +30,10 @@ assert.strictEqual(pruned.metrics.tokensSaved, Math.max(0, pruned.metrics.fullCo
 assert(estimateTokens('hello') > 0);
 
 const runner = new TaskRunner({ cwd: project, vaultRoot: tmp });
-assert.deepStrictEqual(runner.adapter('codex', 'prompt', project, policy).args.slice(0, 3), ['exec', '--json', '--sandbox']);
+const codexArgs = runner.adapter('codex', 'prompt', project, policy).args;
+assert.deepStrictEqual(codexArgs.slice(0, 2), ['exec', '--json']);
+assert(codexArgs.includes('--skip-git-repo-check'));
+assert(codexArgs.includes('--sandbox'));
 assert.match(runner.adapter('gemini', 'prompt', project, policy).command, /gemini/);
 const fleet = new FleetMetricsStore();
 fleet.ingestTask({ id: 'task-1', status: 'running', context: pruned.metrics, tokens: { output: 7 }, updatedAt: new Date().toISOString() });

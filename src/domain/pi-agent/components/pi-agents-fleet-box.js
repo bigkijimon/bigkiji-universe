@@ -30,7 +30,7 @@ export class PiAgentsFleetBox {
         <span>TOTAL TOKENS SAVED</span><strong>${fmtTokens(totals.tokensSaved)}</strong><em>${fmtTokens((totals.promptTokens || 0) + (totals.completionTokens || 0))} measured</em>
       </section>
       <div class="fleet-compact">${agents.map((agent) => `<span title="${esc(agent.status)} · saved ${agent.tokensSaved} · ${agent.durationMs}ms · prompt ${agent.promptTokens} / completion ${agent.completionTokens}"><b>${esc(agent.label)}</b><i>${esc(agent.status === 'IDLE' ? 'IDLE' : agent.status)}</i><em>${fmtTokens(agent.tokensSaved)}</em></span>`).join('')}</div>
-      <div class="fleet-grid">${agents.map((agent) => `
+      <div class="fleet-grid ${agents.length > 8 ? 'many' : ''}">${agents.map((agent) => `
         <article class="fleet-agent" data-state="${esc(agent.status)}">
           <header><b>${esc(agent.label)}</b><i>${esc(agent.status)}</i></header>
           <span>${esc(agent.role)}</span>

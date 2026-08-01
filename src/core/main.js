@@ -23,23 +23,26 @@ const taskCache = require('../domain/pi-agent/task-cache'); // v12: Swarm合意�
 const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Checker検収
 const knowledge = require('../domain/pi-agent/pi-knowledge-orchestrator');
 const { TaskRunner } = require('../domain/pi-agent/task-runner');
+const { CoreExecutionCoordinator } = require('../domain/pi-agent/core-execution-coordinator');
 const fastRouter = require('../domain/pi-agent/fast-api-router');
 const { ComfyUIMediaBridge } = require('../domain/telemetry/components/comfyui-media-bridge');
-const { FleetMetricsStore } = require('./fleet-metrics-store');
+const { ModelStatusStore } = require('../domain/hud/model-status-store');
 const { RelationshipSnapshotService } = require('./relationship-snapshot-service');
 const { sanitizeOwnerSpeech, detectSpeechLanguage, StreamingSpeechFilter } = require('./tts-policy');
 const { SettingsStore } = require('./settings-store');
 const { NaturalTTSService } = require('./natural-tts-service');
 const { CmuxBridge } = require('./cmux-bridge');
+const { PreviewServer } = require('./preview-server');
 const facilitator = new fastRouter.FastFacilitatorRouter();
 const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'voice-cmux-local-qwen-v8';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
 const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
+const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
-const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 2 });
-const fleetMetrics = new FleetMetricsStore({ knowledge });
+const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
+const fleetMetrics = new ModelStatusStore({ knowledge });
 const relationshipService = new RelationshipSnapshotService({
   graphPath: PATHS.graphPath,
 });
@@ -54,6 +57,8 @@ let comfy = null;
 let settingsStore = null;
 let ttsService = null;
 let cmuxBridge = null;
+let coordinator = null;
+let previewServer = null;
 
 if (!app.requestSingleInstanceLock()) {
   console.log('BigKiji Universe is already running in the menu bar (❖). Exiting the duplicate instance.');
@@ -111,7 +116,7 @@ taskRunner.on('task', (task) => {
   }
 });
 taskRunner.on('log', (log) => broadcast('task:log', log));
-fleetMetrics.on('update', (snapshot) => broadcast('pi:fleet', snapshot));
+fleetMetrics.on('update', (snapshot) => { broadcast('model:status:update', snapshot); broadcast('pi:fleet', snapshot); });
 relationshipService.on('update', (snapshot) => {
   broadcast('relationship:snapshot', snapshot);
   if (snapshot.state === 'ready') fleetMetrics.ingestSync({ text: `Graphify ${snapshot.nodes.length} nodes`, ms: snapshot.loadMs });
@@ -892,6 +897,11 @@ async function fastDispatch(text) {
     broadcast('pi:stats', { turn: { input: 0, output: 0 }, total: null, touched: [], ms: result.latencyMs, provider: result.provider });
     broadcast('pi:event', { kind: 'agent_end', provider: result.provider, latencyMs: result.latencyMs,
       status: result.status, planHash: result.planHash, cached: !!result.cached });
+    if (result.status === 'ready' && coordinator) {
+      const run = coordinator.submit({ prompt: ownerText, promptSpec: result.promptSpec, planHash: result.planHash,
+        mode: settingsStore?.get().routing.executionMode || 'plan' });
+      bus.push({ source: 'system', type: 'info', text: `Run ${run.id} ${run.status.toLowerCase()} · ${run.assignments.length} specialists` });
+    }
     if (answer) speak(answer);
   } catch (err) {
     bus.push({ source: 'pi', type: 'warn', text: `Fast route unavailable: ${String(err.message).slice(0, 180)} — local Pi fallback` });
@@ -917,15 +927,31 @@ ipcMain.handle('task:prepare', (_e, spec) => taskRunner.prepare(spec));
 ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
 ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
+ipcMain.handle('run:list', () => coordinator?.snapshot() || []);
+ipcMain.handle('run:approve', (_e, id) => coordinator.approve(String(id)));
+ipcMain.handle('run:abort', (_e, id) => coordinator.abort(String(id)));
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
 ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
+ipcMain.handle('model:status:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('relationship:snapshot', () => relationshipService.snapshot());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
+ipcMain.handle('preview:status', () => previewServer?.snapshot() || ({ running: false }));
+ipcMain.handle('preview:start', () => previewServer?.start() || ({ running: false }));
+ipcMain.handle('preview:stop', () => { previewServer?.close(); const state = previewServer?.snapshot() || ({ running: false }); broadcast('preview:status', state); return state; });
 ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});
   if (ttsService && (before.audio.ttsEndpoint !== next.audio.ttsEndpoint || before.audio.ttsModel !== next.audio.ttsModel)) {
     ttsService.stop(); ttsService.start();
+  }
+  if (previewServer && (before.preview.preferredPort !== next.preview.preferredPort || before.preview.enabled !== next.preview.enabled)) {
+    const root = previewServer.root; previewServer.close();
+    previewServer = new PreviewServer({ root, preferredPort: next.preview.preferredPort });
+    previewServer.on('status', (status) => broadcast('preview:status', status));
+    previewServer.on('reload', (status) => broadcast('preview:reload', status));
+    previewServer.on('error', (error) => broadcast('preview:error', { message: String(error.message || error) }));
+    if (coordinator) coordinator.preview = previewServer;
+    if (next.preview.enabled) previewServer.start().catch((error) => broadcast('preview:error', { message: error.message }));
   }
   broadcast('settings:changed', next);
   return next;
@@ -1037,7 +1063,8 @@ ipcMain.handle('get-info', () => {
   } catch (_) {}
   return { ptyMode, electron: process.versions.electron, loops, deliverables: latestDeliverables,
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
-    fleet: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(),
+    fleet: fleetMetrics.snapshot(), modelStatus: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(), runs: coordinator?.snapshot() || [],
+    preview: previewServer?.snapshot() || { running: false },
     buildId: APP_BUILD_ID,
     paths: { appRoot: APP_ROOT, vaultRoot: VAULT, knowledgeRoot: PATHS.knowledgeRoot, graphPath: PATHS.graphPath },
     costPolicy: { planning: ['qwen-local'], paid: ['claude', 'codex', 'gemini', 'glm'], localOperators: ['qwen'], blocked: ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'] },
@@ -1047,6 +1074,39 @@ ipcMain.handle('get-info', () => {
 // ---------- ライフサイクル ----------
 app.whenReady().then(() => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
+  const previewRoot = path.join(PATHS.vaultRoot, 'Generated', 'BigKijiShooter');
+  const previewTemplate = path.join(APP_ROOT, 'fixtures', 'e2e', 'bigkiji-shooter');
+  if (!fs.existsSync(path.join(previewRoot, 'index.html')) && fs.existsSync(previewTemplate)) {
+    fs.mkdirSync(path.dirname(previewRoot), { recursive: true });
+    fs.cpSync(previewTemplate, previewRoot, { recursive: true, errorOnExist: false });
+  }
+  const previewVendor = path.join(previewRoot, 'vendor');
+  const threeBuild = path.join(APP_ROOT, 'node_modules', 'three', 'build');
+  if (fs.existsSync(threeBuild)) {
+    fs.mkdirSync(previewVendor, { recursive: true });
+    for (const name of ['three.module.js', 'three.core.js']) {
+      const source = path.join(threeBuild, name); const target = path.join(previewVendor, name);
+      if (fs.existsSync(source) && !fs.existsSync(target)) fs.copyFileSync(source, target);
+    }
+  }
+  previewServer = new PreviewServer({ root: previewRoot, preferredPort: settingsStore.get().preview.preferredPort });
+  previewServer.on('status', (status) => broadcast('preview:status', status));
+  previewServer.on('reload', (status) => broadcast('preview:reload', status));
+  previewServer.on('error', (error) => broadcast('preview:error', { message: String(error.message || error) }));
+  coordinator = new CoreExecutionCoordinator({ taskRunner, settingsProvider: () => settingsStore.get(), preview: previewServer });
+  coordinator.on('run', (event) => { fleetMetrics.ingestRun(event); broadcast('run:event', event); });
+  fastRouter.detect().then((availability) => fleetMetrics.setAvailability(availability)).catch(() => {});
+  if (settingsStore.get().preview.enabled) previewServer.start()
+    .catch((error) => bus.push({ source: 'system', type: 'warn', text: `Preview unavailable: ${error.message}` }));
+  if (E2E_FIXTURE) setTimeout(() => {
+    try {
+      const fixture = JSON.parse(fs.readFileSync(path.resolve(E2E_FIXTURE), 'utf8'));
+      const run = coordinator.submit({ prompt: fixture.ownerPrompt, promptSpec: { goal: fixture.ownerPrompt,
+        acceptance: fixture.acceptance || [], decisions: fixture.ownerAnswers || [] }, mode: 'auto', cwd: previewRoot });
+      bus.push({ source: 'system', type: 'task', text: `E2E fixture dispatched: ${run.id} · ${run.assignments.length} specialists` });
+      broadcast('pi:event', { kind: 'turn_start', text: fixture.ownerPrompt, model: 'fixture-json', runId: run.id });
+    } catch (error) { bus.push({ source: 'system', type: 'error', text: `E2E fixture failed: ${String(error.message).slice(0, 220)}` }); }
+  }, 1800);
   taskRunner.setSecretProvider((provider) => settingsStore.getSecret(provider === 'claude-code' ? 'claude' : provider));
   ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore });
   ttsService.on('status', (status) => broadcast('voice:engine-status', status));
@@ -1067,11 +1127,12 @@ app.whenReady().then(() => {
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
   knowledge.savePhysicalLayout({ version: 4, root: APP_ROOT, domains: {
-    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/path-config.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js'],
+    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/path-config.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js', 'src/core/preview-server.js'],
     '3d-canvas': ['src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js', 'src/domain/3d-canvas/components/relationship-field.js', 'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/synapse-spark-shedder.js'],
     terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js', 'src/domain/terminal/components/cmux-terminal-mirror.js'],
     telemetry: ['src/domain/telemetry/components/right-telemetry-panel.js', 'src/domain/telemetry/components/telemetry-store.js'],
-    'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
+    hud: ['src/domain/hud/model-status-store.js', 'src/domain/hud/components/active-ai-models-fleet.js'],
+    'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/core-execution-coordinator.js', 'src/domain/pi-agent/model-capability-registry.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
     ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js', 'src/components/UI/settings-modal.css', 'src/components/UI/remote/mobile.html'],
   } });
   relationshipService.refresh(true);
@@ -1100,6 +1161,8 @@ app.whenReady().then(() => {
         appDir: APP_ROOT,
         piSendPrompt: (text) => piSendPrompt(text),
         piAbort: () => pi.abort(),
+        approveRun: (id) => coordinator.approve(id),
+        abortRun: (id) => coordinator.abort(id),
         handleUtterance,
         getState: () => ({
           ...bus.snapshot(), piRunning: pi.running, model: pi.model, voiceOn,
@@ -1199,4 +1262,4 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); ttsService?.stop(); cmuxBridge?.stop(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); taskRunner.shutdown(); ttsService?.stop(); cmuxBridge?.stop(); previewServer?.close(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });

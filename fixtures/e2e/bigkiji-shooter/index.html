@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>BigKiji · Garden Patrol</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <main id="game" aria-label="BigKiji 3D shooter game">
+    <canvas id="canvas"></canvas>
+    <header class="hud">
+      <div><small>GARDEN PATROL</small><strong>BigKiji</strong></div>
+      <dl><div><dt>Score</dt><dd id="score">0</dd></div><div><dt>Health</dt><dd id="health">100</dd></div></dl>
+    </header>
+    <section class="intro" id="intro">
+      <p>Keep the quiet garden clear.</p>
+      <span>WASD / arrows to move · point and click to shoot</span>
+      <button id="start">Start patrol</button>
+    </section>
+    <section class="touch" aria-label="Touch controls">
+      <div class="pad" id="pad"><i></i></div><button id="fire" aria-label="Fire">●</button>
+    </section>
+    <button id="restart" hidden>Patrol again</button>
+  </main>
+  <script type="module" src="./game.js"></script>
+</body>
+</html>

@@ -34,6 +34,7 @@ export class TelemetryStore {
     this.phase = { name: 'PREFLIGHT', progress: 0, state: 'idle', detail: 'Awaiting directive' };
     this.comfy = { state: 'offline', progress: 0, node: '', message: 'Local media engine is sleeping', jobId: null, assetUrl: null };
     this.tasks = new Map();
+    this.runs = new Map();
     this.ids = new Set();
   }
 
@@ -49,7 +50,7 @@ export class TelemetryStore {
   }
 
   snapshot() {
-    return { events: this.events.slice(), phase: { ...this.phase }, comfy: { ...this.comfy }, tasks: [...this.tasks.values()] };
+    return { events: this.events.slice(), phase: { ...this.phase }, comfy: { ...this.comfy }, tasks: [...this.tasks.values()], runs: [...this.runs.values()] };
   }
 
   ingest(raw = {}, channel = '') {
@@ -87,5 +88,12 @@ export class TelemetryStore {
     if (!task.id) return;
     this.tasks.set(String(task.id), { ...task });
     this.ingest({ ...task, source: task.provider || task.agent || 'task', text: `${task.name || task.id} · ${task.state || 'updated'}` }, 'task');
+  }
+
+  upsertRun(run = {}) {
+    if (!run.id) return;
+    this.runs.set(String(run.id), { ...(this.runs.get(String(run.id)) || {}), ...run });
+    this.ingest({ id: `run:${run.id}:${run.updatedAt || run.status}`, source: 'piagent', kind: 'run',
+      text: `${run.promptPreview || run.id} · ${run.status}`, ts: Date.parse(run.updatedAt || '') || Date.now() }, 'run');
   }
 }

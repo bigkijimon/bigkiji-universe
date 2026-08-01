@@ -2,13 +2,17 @@
 
 (() => {
   class CmuxTerminalMirror {
-    constructor({ terminal, fallbackInput, tabHost, controls }) {
+    constructor({ terminal, fallbackInput, tabHost, controls, addButton, pinnedButton }) {
       this.terminal = terminal; this.fallbackInput = fallbackInput; this.tabHost = tabHost; this.controls = controls;
+      this.addButton = addButton; this.pinnedButton = pinnedButton; this.pinnedSurface = null;
       this.snapshot = { connected: false, surfaces: [] }; this.lastScreen = ''; this.pending = ''; this.pendingTimer = null;
       window.bigkiji.onCmuxSnapshot((snapshot) => this.update(snapshot));
       controls?.querySelector('[data-cmux-native]')?.addEventListener('click', () => window.bigkiji.cmuxOpenNative(this.snapshot.currentSurface));
       controls?.querySelector('[data-cmux-split]')?.addEventListener('click', () => window.bigkiji.cmuxAction('split', { direction: 'right', surface: this.snapshot.currentSurface }));
-      controls?.querySelector('[data-cmux-new]')?.addEventListener('click', () => window.bigkiji.cmuxAction('new-terminal', { surface: this.snapshot.currentSurface }));
+      const add = async () => { await window.bigkiji.cmuxAction('new-terminal', { surface: this.snapshot.currentSurface }); await window.bigkiji.cmuxRefresh(); };
+      controls?.querySelector('[data-cmux-new]')?.addEventListener('click', add);
+      addButton?.addEventListener('click', add);
+      pinnedButton?.addEventListener('click', () => { if (this.pinnedSurface && this.connected) window.bigkiji.cmuxSelect(this.pinnedSurface); });
       controls?.querySelector('[data-cmux-palette]')?.addEventListener('click', () => this.openPalette());
       controls?.querySelector('[data-cmux-refresh]')?.addEventListener('click', () => window.bigkiji.cmuxRefresh());
       window.bigkiji.cmuxSnapshot().then((snapshot) => this.update(snapshot));
@@ -17,6 +21,7 @@
     get connected() { return !!this.snapshot.connected; }
     update(snapshot) {
       this.snapshot = snapshot || { connected: false, surfaces: [] };
+      if (!this.pinnedSurface && this.snapshot.currentSurface) this.pinnedSurface = this.snapshot.currentSurface;
       this.controls?.classList.toggle('connected', this.connected);
       const badge = this.controls?.querySelector('[data-cmux-state]');
       if (badge) badge.textContent = this.connected ? `CMUX · ${this.snapshot.surfaces?.length || 0}` : 'PTY FALLBACK';
@@ -25,13 +30,18 @@
     renderTabs() {
       if (!this.tabHost) return;
       this.tabHost.innerHTML = '';
-      for (const surface of (this.snapshot.surfaces || []).slice(0, 8)) {
+      for (const surface of (this.snapshot.surfaces || []).filter((surface) => (surface.ref || surface.id) !== this.pinnedSurface).slice(0, 8)) {
         const id = surface.ref || surface.id; const button = document.createElement('button');
         button.className = `cmux-surface-tab ${id === this.snapshot.currentSurface ? 'on' : ''}`;
         const workspace = (this.snapshot.workspaces || []).find((row) => row.ref === surface.workspace || row.id === surface.workspace);
         button.style.setProperty('--workspace', workspace?.color || '#00f3ff');
         button.textContent = String(surface.title || surface.type || id).slice(0, 18); button.title = `${workspace?.title || 'workspace'} · ${id} · double-click to open in cmux`;
         button.onclick = () => window.bigkiji.cmuxSelect(id); button.ondblclick = () => window.bigkiji.cmuxOpenNative(id);
+        button.oncontextmenu = async (event) => {
+          event.preventDefault();
+          if (!window.confirm(`Close terminal “${button.textContent}”?`)) return;
+          await window.bigkiji.cmuxAction('close-surface', { surface: id }); await window.bigkiji.cmuxRefresh();
+        };
         this.tabHost.appendChild(button);
       }
     }

@@ -1,11 +1,12 @@
 'use strict';
 const assert = require('assert');
 const router = require('../src/domain/pi-agent/fast-api-router');
-assert.deepStrictEqual(router.PRIORITY, ['ollama']);
+assert.deepStrictEqual(router.PRIORITY, ['gemini', 'ollama', 'glm']);
 assert.deepStrictEqual(router.PAID_EXECUTORS, ['claude', 'codex', 'gemini', 'glm']);
-assert.deepStrictEqual(router.availableOrder({ ollama: true, glm: false, codex: true, kimi: true }), ['ollama']);
+assert.deepStrictEqual(router.availableOrder({ gemini: true, ollama: true, glm: false, codex: true, kimi: true }), ['gemini', 'ollama']);
 for (const blocked of ['kimi', 'openrouter', 'openai-tts', 'elevenlabs']) assert(router.BLOCKED_PAID.includes(blocked));
 assert.deepStrictEqual(router.availableOrder({}), []);
 const fallback = router.fallbackSpec('Implement a safe test');
 assert.equal(fallback.status, 'ready');
+assert.match(router.facilitatorPrompt('task', '["answer"]'), /Do not ask another question/);
 console.log('fast router selftest: PASS');

@@ -470,6 +470,12 @@
     min-height:10px; padding:0; -webkit-app-region:no-drag;
     color:rgba(205,255,237,.8); font:800 7.5px "SF Mono",Menlo,monospace; letter-spacing:.14em; }
   .thud-relay header b, .thud-roadmap header b, .thud-comfy header b { color:rgba(159,216,194,.5); font-size:7px; }
+  .thud-session{flex:none;margin:8px 0 7px;padding:9px 10px;border:1px solid rgba(184,202,191,.10);border-radius:10px;background:rgba(255,255,255,.018)}
+  .thud-session-top{display:flex;justify-content:space-between;color:#8fa098;font:700 6.5px "SF Mono",Menlo,monospace;letter-spacing:.1em}.thud-session-top b{color:#d6a179!important}
+  .thud-session>strong{display:block;margin-top:5px;color:#e6ece8;font:600 8px/1.35 -apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thud-session-track{height:2px;margin:7px 0;background:rgba(255,255,255,.05);border-radius:99px;overflow:hidden}.thud-session-track i{display:block;height:100%;background:linear-gradient(90deg,#86a995,#d6a179)}
+  .thud-session-models{display:flex;gap:4px;overflow:hidden}.thud-session-models span{display:flex;align-items:center;gap:4px;min-width:0;padding:3px 5px;border-radius:99px;background:rgba(255,255,255,.025);color:#88978f;font:5.5px "SF Mono",Menlo,monospace;white-space:nowrap}.thud-session-models i{width:4px;height:4px;border-radius:50%;background:#66736c}.thud-session-models [data-state="running"] i{background:#86a995;box-shadow:0 0 5px #86a995}.thud-session-models [data-state="failed"] i,.thud-session-models [data-state="blocked"] i{background:#ef7f74}
+  .thud-session-idle{display:flex;justify-content:space-between;gap:8px}.thud-session-idle b{color:#9ca9a2;font:700 7px "SF Mono",Menlo,monospace}.thud-session-idle span{color:#69766f;font:7px -apple-system,BlinkMacSystemFont,sans-serif}
   .thud-live-dot { display:inline-block; width:5px; height:5px; margin-right:6px; border-radius:50%; background:var(--thud-emerald); box-shadow:0 0 8px var(--thud-emerald); animation:linkPulse 1.2s ease-in-out infinite; }
   .thud-feed { flex:1; min-height:0; margin-top:5px; overflow-y:auto; scrollbar-width:none; }
   .thud-feed::-webkit-scrollbar{display:none}.thud-event{display:grid;grid-template-columns:54px minmax(74px,auto) 55px minmax(0,1fr);gap:7px;align-items:baseline;padding:2px 3px;border-left:1px solid transparent;font:8.5px/1.45 "SF Mono",Menlo,monospace}
@@ -492,6 +498,9 @@
   .fleet-total{display:grid;grid-template-columns:1fr auto;align-items:end;margin:7px 0;padding:6px 8px;border-left:2px solid #FFE81F;background:linear-gradient(90deg,rgba(255,232,31,.08),transparent);font-family:"SF Mono",Menlo,monospace}.fleet-total span{color:rgba(255,244,166,.55);font-size:6.5px;letter-spacing:.12em}.fleet-total strong{grid-row:1/3;grid-column:2;color:#fff6a8;font-size:17px;line-height:1}.fleet-total em{font-style:normal;color:rgba(213,224,220,.35);font-size:6.5px}
   .fleet-compact{display:none}.fleet-compact span{min-width:0;border-left:1px solid rgba(167,139,250,.35);padding-left:4px;font:5px "SF Mono",Menlo,monospace}.fleet-compact b,.fleet-compact i,.fleet-compact em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fleet-compact b{color:#e9fff7}.fleet-compact i{font-style:normal;color:rgba(52,211,153,.58)}.fleet-compact em{font-style:normal;color:#fff6a8}
   .fleet-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.fleet-agent{min-width:0;padding:6px 7px;border:1px solid rgba(255,255,255,.07);border-radius:6px;background:rgba(255,255,255,.025);font-family:"SF Mono",Menlo,monospace}.fleet-agent>header{display:flex;justify-content:space-between;gap:5px}.fleet-agent>header b{color:#e9fff7;font-size:8px}.fleet-agent>header i{font-style:normal;color:rgba(159,216,194,.35);font-size:5.5px;overflow:hidden;text-overflow:ellipsis}.fleet-agent[data-state="EXECUTING"]{border-color:rgba(0,243,255,.35);box-shadow:inset 0 0 12px rgba(0,243,255,.05)}.fleet-agent[data-state="ORCHESTRATING"]{border-color:rgba(255,232,31,.3)}.fleet-agent[data-state="BYPASSED_QWEN_TIMEOUT"]{border-color:rgba(251,113,133,.42)}.fleet-agent>span{display:block;margin-top:2px;color:rgba(159,216,194,.36);font-size:5.8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fleet-task{margin:5px 0 4px;color:rgba(226,240,234,.64);font-size:6.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fleet-agent dl{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin:0}.fleet-agent dl div{min-width:0}.fleet-agent dt{color:rgba(167,139,250,.44);font-size:5.5px}.fleet-agent dd{margin:1px 0 0;color:rgba(232,245,239,.74);font-size:6.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fleet-grid.many{grid-template-columns:repeat(3,minmax(0,1fr));max-height:calc(100% - 58px);overflow:auto;scrollbar-width:thin}.fleet-grid.many .fleet-agent{padding:4px 5px}.fleet-grid.many .fleet-agent>span{display:none}.fleet-grid.many .fleet-task{margin:3px 0;font-size:5.7px}.fleet-grid.many .fleet-agent dl{display:none}
+  .model-grid{grid-template-columns:repeat(2,minmax(0,1fr));max-height:calc(100% - 56px);overflow:auto;scrollbar-width:thin}.model-card small{display:block;margin-top:4px;color:#87988f;font:5.8px "SF Mono",Menlo,monospace}.model-card[data-state="OFFLINE"],.model-card[data-state="ERROR"]{opacity:.58}.model-card[data-state="THINKING"],.model-card[data-state="EXECUTING"],.model-card[data-state="PRUNING"]{border-color:rgba(134,169,149,.42);background:rgba(134,169,149,.06)}
+  .model-card[data-state="SLEEPING"]{opacity:.72}.model-progress{height:2px;margin:3px 0 5px;overflow:hidden;border-radius:99px;background:rgba(255,255,255,.045)}.model-progress i{display:block;height:100%;background:linear-gradient(90deg,#86a995,#d6a179);transition:width .25s ease}.model-card[data-state="SLEEPING"] .model-progress i,.model-card[data-state="OFFLINE"] .model-progress i{width:0!important}
   @container (max-height: 150px) {
     .thud-lower{display:none}.thud-relay{grid-row:1/-1;padding:5px 8px}.thud-event{grid-template-columns:45px 64px 45px minmax(0,1fr);font-size:7px}
     .fleet-head{font-size:6.5px}.fleet-total{margin:3px 0;padding:3px 5px}.fleet-total strong{font-size:11px}.fleet-total em{display:none}
@@ -522,6 +531,49 @@
   #terminal { flex: 1; padding: 6px 10px; min-height: 0; }
   #terminal .xterm-viewport { background: transparent !important; }
   #terminal .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+  /* Studio theme: quiet, editorial controls around the expressive 3D canvas. */
+  body { --em:#86a995; --ink:rgba(239,242,238,.95); --dim:rgba(218,225,220,.62); --label:rgba(205,214,208,.48); --hairline:rgba(220,230,223,.10); background:#0d1211; }
+  #bgNebula { opacity:.24; filter:saturate(.65); }
+  #bgAnim { opacity:.52; filter:saturate(.62); }
+  .grain { opacity:.025; }
+  .term { background:rgba(16,22,20,.90)!important; border-color:rgba(184,202,191,.15)!important; box-shadow:0 18px 48px rgba(0,0,0,.22)!important; }
+  .term .tab { font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif; letter-spacing:.035em; font-weight:600; text-transform:none; color:rgba(220,227,222,.55); background:transparent; }
+  .term .tab.on { color:#edf2ee; background:rgba(134,169,149,.12); border-color:rgba(134,169,149,.28); }
+  .term .tab.pinned { border-left:2px solid #86a995; }
+  .term .tab.add-terminal { min-width:27px; padding-inline:7px; border-color:rgba(134,169,149,.18); font-size:14px; }
+  .cmux-surface-tabs:after { background:#86a995; opacity:.18; }
+  .cmux-surface-tab { font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif; color:rgba(218,225,220,.5); background:rgba(16,22,20,.68); }
+  #stageLine { color:rgba(166,194,178,.78); text-shadow:none; }
+  #stageBar { background:linear-gradient(90deg,#86a995,#d6a179); box-shadow:none; }
+  #previewPane { flex:1; min-height:0; display:flex; flex-direction:column; padding:9px 12px 12px; background:#101614; }
+  #previewPane>header { flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 2px 8px; -webkit-app-region:no-drag; }
+  #previewPane>header b { display:block; color:#e9eeea; font:600 10px -apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif; letter-spacing:.06em; }
+  #previewPane>header span { display:block; margin-top:2px; color:#829188; font:9px "SF Mono",Menlo,monospace; }
+  #previewPane nav { display:flex; gap:4px; }
+  #previewPane button { padding:5px 8px; border:1px solid rgba(170,190,178,.16); border-radius:7px; color:#aebbb3; background:rgba(255,255,255,.025); cursor:pointer; font:9px -apple-system,BlinkMacSystemFont,sans-serif; }
+  #previewFrameWrap { flex:1; min-height:0; display:grid; place-items:center; overflow:hidden; border:1px solid rgba(184,202,191,.14); border-radius:12px; background:#0a0e0d; }
+  #previewFrame { width:100%; height:100%; border:0; background:#111715; transition:width .2s var(--ease-out),height .2s var(--ease-out); }
+  #previewFrameWrap[data-viewport="tablet"] #previewFrame { width:min(760px,100%); height:100%; }
+  #previewFrameWrap[data-viewport="mobile"] #previewFrame { width:min(390px,100%); height:100%; }
+  /* Pop Studio dock: one calm navigation surface replaces stacked HUD controls. */
+  .app::before{content:"";position:fixed;inset:auto -8vw -22vh auto;width:54vw;height:50vh;pointer-events:none;background:radial-gradient(circle at 32% 35%,rgba(242,200,75,.13),transparent 34%),radial-gradient(circle at 66% 52%,rgba(239,127,116,.10),transparent 31%),radial-gradient(circle at 48% 80%,rgba(135,147,245,.09),transparent 34%);filter:blur(18px);z-index:-1}
+  #meters{display:none!important}
+  #neuralRow{border:1px solid rgba(184,202,191,.12);border-radius:16px;overflow:hidden;gap:0;background:rgba(17,23,21,.72)}
+  #telemetryHud,#fleetHud{border:0!important;border-radius:0!important;box-shadow:none!important;background-color:transparent!important;background-image:none!important}
+  #fleetHud{border-left:1px solid rgba(184,202,191,.11)!important}
+  .term{padding:7px 9px 9px!important}
+  .term .bar{order:20;margin-top:7px;padding:7px 9px;border:1px solid rgba(203,214,207,.14)!important;border-radius:15px;background:rgba(29,35,32,.94);box-shadow:0 12px 34px rgba(0,0,0,.24);cursor:default}
+  .term .tabs{gap:5px}
+  .term .tab{min-height:29px;padding:6px 10px;border-radius:10px;font-family:"Arial Rounded MT Bold",-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;font-size:9px}
+  .term .tab:nth-child(1).on{background:rgba(139,198,166,.18);border-color:rgba(139,198,166,.34)}
+  .term .tab:nth-child(2).on{background:rgba(242,200,75,.18);border-color:rgba(242,200,75,.34);color:#f6dda0}
+  .term .tab.pinned.on{background:rgba(135,147,245,.17);border-color:rgba(135,147,245,.34);color:#d9ddff}
+  .term .tab.add-terminal{background:rgba(239,127,116,.14);border-color:rgba(239,127,116,.28);color:#f3bbb5}
+  #tabPreview.on{background:rgba(222,155,195,.16);border-color:rgba(222,155,195,.32);color:#f0c9e0}
+  #stageWrap{max-width:260px}
+  .term .bar>em{display:none}
+  .cmux-controls [data-cmux-state]{border-radius:999px;padding-inline:8px}
+  body.reduce-motion *,body.reduce-motion *::before,body.reduce-motion *::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
   #taskStreams { flex: 1; min-height: 0; overflow: auto; padding: 10px 13px 14px;
     color: #e7fff4; font: 12px/1.55 "JetBrains Mono", "SF Mono", Menlo, monospace;
     background: linear-gradient(180deg, rgba(2,8,15,.22), rgba(2,8,15,.5)); }
@@ -531,6 +583,38 @@
     color: var(--task-color); background: rgba(8,12,20,.96); border-bottom: 1px solid color-mix(in srgb, var(--task-color) 25%, transparent); }
   .task-stream-head span { font-weight: 800; letter-spacing: .12em; } .task-stream-head b { font-size: 9px; text-transform: uppercase; }
   .task-stream-head code { margin-left: auto; color: var(--label); font-size: 9px; }
+
+  /* One-window workspace: the upper region is reserved for the relationship canvas. */
+  .stage aside, #flow { display:none!important; }
+  #canvasWrap { width:100%; }
+  #taskPanel { position:static; inset:auto; width:auto; z-index:auto; flex:1; min-height:0; display:flex; flex-direction:column;
+    padding:0; overflow:hidden; border:0; border-radius:0; background:linear-gradient(180deg,rgba(18,25,22,.84),rgba(11,16,14,.92)); box-shadow:none; }
+  #taskPanel.on { display:flex; animation:none; }
+  .session-panel-head { flex:none; display:flex; justify-content:space-between; align-items:center; padding:15px 18px 11px; border-bottom:1px solid rgba(184,202,191,.12); }
+  .session-panel-head h2 { margin:0!important; color:#edf2ee!important; font:700 13px "Arial Rounded MT Bold",-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif!important; letter-spacing:.04em!important; }
+  .session-panel-head span { display:block; margin-top:3px; color:#829188; font:9px -apple-system,BlinkMacSystemFont,sans-serif; }
+  .session-panel-head button,.task-dismiss { display:grid; place-items:center; width:27px; height:27px; padding:0; border:1px solid rgba(184,202,191,.16); border-radius:50%; color:#9caaa2; background:rgba(255,255,255,.025); cursor:pointer; font:17px/1 -apple-system,BlinkMacSystemFont,sans-serif; }
+  #taskList { flex:1; min-height:0; overflow:auto; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-content:start; gap:10px; padding:12px 16px 18px; scrollbar-width:thin; }
+  #taskList .run-card { grid-column:1/-1; }
+  .task-card { margin:0; padding:12px 13px; border:1px solid rgba(184,202,191,.13); border-left:3px solid var(--task-color,#86a995); border-radius:14px; background:rgba(255,255,255,.027); box-shadow:0 8px 22px rgba(0,0,0,.09); }
+  .task-card .task-head { display:grid; grid-template-columns:minmax(0,1fr) auto 27px; gap:9px; }
+  .task-card .task-name { font:650 12px/1.35 -apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif; }
+  .task-card .task-state { align-self:center; padding:3px 7px; border-radius:999px; background:color-mix(in srgb,var(--task-color,#86a995) 11%,transparent); font-size:7px; letter-spacing:.06em; }
+  .task-card .task-meta { margin-top:5px; color:#829188; font-size:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .task-progress { height:3px; margin:10px 0 8px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.055); }
+  .task-progress i { display:block; height:100%; border-radius:inherit; background:var(--task-color,#86a995); transition:width .28s ease; }
+  .assignment-chips { display:flex; flex-wrap:wrap; gap:5px; }
+  .assignment-chips span { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; background:rgba(255,255,255,.035); color:#aab5ae; font:7.5px "SF Mono",Menlo,monospace; }
+  .assignment-chips i { width:5px; height:5px; border-radius:50%; background:#718078; }
+  .assignment-chips [data-state="running"] i { background:#86a995; box-shadow:0 0 7px #86a995; }
+  .assignment-chips [data-state="failed"] i,.assignment-chips [data-state="blocked"] i { background:#ef7f74; }
+  .task-card .task-log { max-height:none; margin:7px 0 0; color:#9eaaa3; font:8px/1.45 "SF Mono",Menlo,monospace; }
+  .task-card .task-log summary { cursor:pointer; color:#d39a8c; }
+  .task-card .task-actions { margin-top:9px; }
+  .task-card .task-actions button { padding:6px 9px; border-color:rgba(134,169,149,.24); border-radius:8px; color:#dce5df; background:rgba(134,169,149,.09); font-family:-apple-system,BlinkMacSystemFont,sans-serif; }
+  .task-card .task-actions .quiet { color:#b38f87; background:transparent; border-color:rgba(239,127,116,.18); }
+  .session-empty { grid-column:1/-1; align-self:center; justify-self:center; padding:30px; color:#829188; font:11px -apple-system,BlinkMacSystemFont,sans-serif; text-align:center; }
+  @media(max-width:760px){#taskList{grid-template-columns:1fr}.task-card,#taskList .run-card{grid-column:1}}
 
   /* The dashboard keeps its information hierarchy on compact windows: metrics
      become a 3×2 grid and traversal/code stay side by side until the terminal
@@ -615,14 +699,9 @@
     <div class="cmdbar">
       <span class="ci">❖</span>
       <input id="ccmd" type="text" spellcheck="false" placeholder="Plan locally with Pi…" />
-      <div class="mode" role="group" aria-label="Task display mode">
-        <button id="streamMode" class="on" type="button">STREAM</button>
-        <button id="actionMode" type="button">ACTION CARD</button>
-      </div>
       <button id="piBtn" class="fchip on" style="--c:#FFE81F" title="Toggle destination: AI or shell">π AI</button>
       <button id="liveBtn" class="fchip" style="--c:#00f3ff" title="Live voice">🎙 LIVE</button>
     </div>
-    <div id="taskPanel" aria-live="polite"><h2>APPROVAL QUEUE</h2><div id="taskList"></div></div>
     <div id="fileDetailPopup" role="dialog" aria-live="polite"></div>
     <div class="main-content">
       <div class="term-container">
@@ -632,16 +711,19 @@
           <div class="bar">
         <div class="tabs">
           <button id="tabNeural" class="tab on">⧉ NEURAL</button>
-          <button id="tabLive" class="tab">◉ MISSION RELAY</button>
-          <button id="tabTerm" class="tab">❯ TERMINALS</button>
+          <button id="tabLive" class="tab">MISSION RELAY</button>
+          <button id="tabSessions" class="tab">SESSIONS</button>
+          <button id="tabTerm" class="tab pinned" title="Pinned BigKiji operating session">● BIGKIJI SESSION</button>
           <span id="cmuxTabs" class="cmux-surface-tabs" aria-label="cmux surfaces"></span>
+          <button id="tabAddTerm" class="tab add-terminal" type="button" title="Add terminal">＋</button>
+          <button id="tabPreview" class="tab">PREVIEW</button>
           <span id="taskStreamTabs" class="task-stream-tabs" aria-label="Task terminal tabs"></span>
         </div>
         <div id="stageWrap">
           <span id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</span>
           <span id="stageTrack"><span id="stageBar"></span></span>
         </div>
-        <div id="cmuxControls" class="cmux-controls"><button data-cmux-state>PTY FALLBACK</button><button data-cmux-new title="New terminal tab">＋</button><button data-cmux-split title="Split right">⊞</button><button data-cmux-palette title="All cmux commands">⌘</button><button data-cmux-refresh title="Refresh cmux">↻</button><button data-cmux-native title="Open the same surface in cmux">↗</button></div>
+        <div id="cmuxControls" class="cmux-controls"><button data-cmux-state>PTY FALLBACK</button><button data-cmux-split title="Split right">⊞</button><button data-cmux-palette title="All cmux commands">⌘</button><button data-cmux-refresh title="Refresh cmux">↻</button><button data-cmux-native title="Open the same surface in cmux">↗</button></div>
         <em data-i18n="syncNote">…</em>
       </div>
       <div id="dashBody">
@@ -661,11 +743,16 @@
         </div>
         <div id="neuralRow">
           <section id="telemetryHud" aria-label="Agent telemetry and media engine"></section>
-          <section id="fleetHud" aria-label="Pi agents fleet operations"></section>
+          <section id="fleetHud" aria-label="Active AI models fleet"></section>
         </div>
       </div>
       <div id="terminal" class="paneOff"></div>
       <div id="liveRelay" class="paneOff" aria-live="polite"></div>
+      <section id="taskPanel" class="paneOff" aria-live="polite"><header class="session-panel-head"><div><h2>SESSIONS</h2><span>PiAgent-selected models and owner actions</span></div><button id="taskPanelClose" type="button" aria-label="Close sessions">×</button></header><div id="taskList"></div></section>
+      <section id="previewPane" class="paneOff" aria-label="Live game preview">
+        <header><div><b>LIVE PREVIEW</b><span id="previewState">Starting local workspace…</span></div><nav><button data-preview-viewport="desktop">Desktop</button><button data-preview-viewport="tablet">Tablet</button><button data-preview-viewport="mobile">Mobile</button><button id="previewReload">Reload</button></nav></header>
+        <div id="previewFrameWrap" data-viewport="desktop"><iframe id="previewFrame" title="BigKiji game live preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
+      </section>
       <div id="taskStreams" class="paneOff" aria-live="polite"></div>
     </div>
   </div>
@@ -746,7 +833,8 @@
     doFit();
     window.addEventListener('resize', doFit);
     const cmuxMirror = new window.CmuxTerminalMirror({ terminal: term, fallbackInput: (d) => window.bigkiji.ptyInput(d),
-      tabHost: document.getElementById('cmuxTabs'), controls: document.getElementById('cmuxControls') });
+      tabHost: document.getElementById('cmuxTabs'), controls: document.getElementById('cmuxControls'),
+      addButton: document.getElementById('tabAddTerm'), pinnedButton: document.getElementById('tabTerm') });
     term.onData((d) => cmuxMirror.input(d));
     window.bigkiji.onPtyData((d) => { if (!cmuxMirror.connected) term.write(d); });
     setTimeout(doFit, 250); // 起動アニメ完了後に再フィット
@@ -754,23 +842,33 @@
     // PTYはSHELL入力と許可済みClaude Code/GLM CLIの惑星発光の源泉。
     const dashBody = document.getElementById('dashBody');
     const termPane = document.getElementById('terminal');
-    const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm'), tabL = document.getElementById('tabLive');
+    const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm'), tabL = document.getElementById('tabLive'), tabS = document.getElementById('tabSessions'), tabP = document.getElementById('tabPreview');
     const multiTerm = new window.MultiTerminalManager({
       dashboard: dashBody, shell: termPane, livePane: document.getElementById('liveRelay'), streamPane: document.getElementById('taskStreams'),
-      streamTabs: document.getElementById('taskStreamTabs'), neuralTab: tabN, shellTab: tabT, liveTab: tabL,
+      previewPane: document.getElementById('previewPane'), streamTabs: document.getElementById('taskStreamTabs'), neuralTab: tabN, shellTab: tabT, liveTab: tabL, sessionsTab: tabS, previewTab: tabP,
       actionPanel: document.getElementById('taskPanel'), actionList: document.getElementById('taskList'), fitShell: doFit,
     });
     tabN.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('neural'); });
     tabT.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('shell'); });
     tabL.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('live'); });
+    tabS.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('sessions'); });
+    tabP.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('preview'); });
     window.bkShowTerm = () => multiTerm.showBase('shell');
-    document.getElementById('streamMode').addEventListener('click', () => multiTerm.setMode('stream'));
-    document.getElementById('actionMode').addEventListener('click', () => multiTerm.setMode('card'));
+    document.getElementById('taskPanelClose').addEventListener('click', () => multiTerm.showBase('neural'));
     window.bigkiji.onTaskEvent((task) => multiTerm.upsert(task));
     window.bigkiji.onTaskLog((log) => multiTerm.append(log));
+    window.bigkiji.onRunEvent((run) => multiTerm.upsertRun(run));
     window.bigkiji.onCommentary((event) => multiTerm.appendRelay(event));
     window.bigkiji.onBusEvent((event) => multiTerm.appendRelay(event));
     window.bigkiji.listTasks().then((tasks) => tasks.forEach((task) => multiTerm.upsert(task))).catch(() => {});
+    window.bigkiji.listRuns().then((runs) => runs.forEach((run) => multiTerm.upsertRun(run))).catch(() => {});
+    const previewFrame = document.getElementById('previewFrame'), previewState = document.getElementById('previewState');
+    const applyPreview = (status) => { previewState.textContent = status.running ? `${status.url} · live reload` : 'Preview stopped'; if (status.url && previewFrame.src !== status.url) previewFrame.src = status.url; };
+    window.bigkiji.previewStatus().then(applyPreview).catch(() => {}); window.bigkiji.onPreviewStatus(applyPreview);
+    window.bigkiji.onPreviewReload((status) => { previewState.textContent = `Updated ${new Date(status.at).toLocaleTimeString()}`; });
+    window.bigkiji.onPreviewError((status) => { previewState.textContent = `Preview error: ${status.message}`; });
+    document.getElementById('previewReload').onclick = () => previewFrame.contentWindow?.location.reload();
+    document.querySelectorAll('[data-preview-viewport]').forEach((button) => button.onclick = () => document.getElementById('previewFrameWrap').dataset.viewport = button.dataset.previewViewport);
     window.prepareParallelTasks = async (prompt) => {
       await window.bigkiji.prepareTasks({ prompt, planHash: 'owner-confirmed-' + Date.now().toString(36) });
       multiTerm.setMode('card');

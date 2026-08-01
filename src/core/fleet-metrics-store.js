@@ -8,6 +8,21 @@ const AGENTS = Object.freeze({
   context: { id: 'context', label: 'Context-Pi', role: 'Token & Sandbox Memory' },
   sync: { id: 'sync', label: 'Sync-Pi', role: 'Obsidian / Graphify Sync' },
   voice: { id: 'voice', label: 'Voice-Pi', role: 'TTS & Audio Orchestration' },
+  facilitator: { id: 'facilitator', label: 'Facilitator-Pi', role: 'Owner Requirements' },
+  lead: { id: 'lead', label: 'Lead-Pi', role: 'Session Leadership' },
+  design: { id: 'design', label: 'Design-Pi', role: 'UI / UX Implementation' },
+  qa: { id: 'qa', label: 'QA-Pi', role: 'Independent Quality Gate' },
+  debug: { id: 'debug', label: 'Debug-Pi', role: 'Diagnostics & Regression' },
+  research: { id: 'research', label: 'Research-Pi', role: 'Technical Research' },
+  learning: { id: 'learning', label: 'Learning-Pi', role: 'Performance Learning' },
+  repair: { id: 'repair', label: 'Repair-Pi', role: 'Self Repair & Rollback' },
+  improve: { id: 'improve', label: 'Improve-Pi', role: 'Continuous Improvement' },
+});
+
+const AGENT_KEY = Object.freeze({
+  'Arch-Pi': 'arch', 'Context-Pi': 'context', 'Sync-Pi': 'sync', 'Voice-Pi': 'voice',
+  'Facilitator-Pi': 'facilitator', 'Lead-Pi': 'lead', 'Design-Pi': 'design', 'QA-Pi': 'qa',
+  'Debug-Pi': 'debug', 'Research-Pi': 'research', 'Learning-Pi': 'learning', 'Repair-Pi': 'repair', 'Improve-Pi': 'improve',
 });
 
 const emptyAgent = (meta) => ({ ...meta, status: FLEET_STATUS.IDLE, promptTokens: 0,
@@ -36,11 +51,16 @@ class FleetMetricsStore extends EventEmitter {
     const running = ['running', 'queued', 'awaiting_approval'].includes(task.status);
     const durationMs = task.startedAt
       ? Math.max(0, new Date(task.finishedAt || task.updatedAt || Date.now()).getTime() - new Date(task.startedAt).getTime()) : 0;
-    this.touch('arch', {
-      status: running ? FLEET_STATUS.EXECUTING : FLEET_STATUS.IDLE,
+    const key = AGENT_KEY[task.metadata?.agent] || (task.metadata?.role === 'ui' ? 'design'
+      : task.metadata?.role === 'debug' ? 'debug' : task.metadata?.role === 'facilitator' ? 'facilitator'
+        : task.metadata?.role === 'context' ? 'context' : 'arch');
+    const state = task.status === 'failed' || task.status === 'blocked' ? FLEET_STATUS.FAILED
+      : task.status === 'completed' ? FLEET_STATUS.COMPLETED : running ? FLEET_STATUS.EXECUTING : FLEET_STATUS.IDLE;
+    this.touch(key, {
+      status: state,
       activeTask: running ? (task.promptPreview || task.id || '') : '', durationMs,
       promptTokens: Number(task.tokens?.input) || 0, completionTokens: Number(task.tokens?.output) || 0,
-      taskCount: this.agents.arch.taskCount + (task.status === 'completed' ? 1 : 0),
+      taskCount: this.agents[key].taskCount + (task.status === 'completed' ? 1 : 0),
     });
     if (task.id && task.context) {
       this.contextRecords.set(task.id, {
@@ -54,6 +74,21 @@ class FleetMetricsStore extends EventEmitter {
         promptTokens: records.reduce((sum, row) => sum + row.prompt, 0),
         completionTokens: records.reduce((sum, row) => sum + row.completion, 0),
         activeTask: running ? `${task.context.includedFiles?.length || 0} relevant files` : '' });
+    }
+  }
+
+  ingestRun(event = {}) {
+    const status = String(event.status || 'IDLE');
+    const mapped = status === 'REPAIRING' ? FLEET_STATUS.REPAIRING : status === 'VERIFYING' ? FLEET_STATUS.VERIFYING
+      : status === 'FAILED' ? FLEET_STATUS.FAILED : status === 'COMPLETED' ? FLEET_STATUS.COMPLETED : FLEET_STATUS.EXECUTING;
+    this.touch(status === 'REPAIRING' ? 'repair' : status === 'VERIFYING' ? 'qa' : 'lead', {
+      status: mapped, activeTask: event.promptPreview || event.id || '', durationMs: event.startedAt
+        ? Math.max(0, Date.now() - new Date(event.startedAt).getTime()) : 0,
+    });
+    if (status === 'COMPLETED' || status === 'FAILED') {
+      this.touch('learning', { status: FLEET_STATUS.ORCHESTRATING, activeTask: `Learning from ${event.id || 'run'}`,
+        taskCount: this.agents.learning.taskCount + 1 });
+      setTimeout(() => this.touch('learning', { status: FLEET_STATUS.IDLE, activeTask: '' }), 1800).unref?.();
     }
   }
 

@@ -18,7 +18,8 @@ function hash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
 function cleanText(value, max = 1200) {
-  return String(value || '').replace(/sk-[A-Za-z0-9_-]+/g, '[REDACTED_KEY]')
+  return String(value || '').replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '')
+    .replace(/sk-[A-Za-z0-9_-]+/g, '[REDACTED_KEY]')
     .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,}]+/ig, '$1=[REDACTED]')
     .replace(/\s+/g, ' ').trim().slice(0, max);
 }

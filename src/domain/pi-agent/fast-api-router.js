@@ -3,10 +3,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 const knowledge = require('./pi-knowledge-orchestrator');
 
-// Front desk only. Heavy paid execution remains in TaskRunner (Claude Code/GLM).
-const PRIORITY = ['ollama'];
+// Front desk only. Gemini owns owner facilitation; local Qwen is the zero-cost
+// fallback and GLM is used only if both are unavailable.
+const PRIORITY = ['gemini', 'ollama', 'glm'];
 const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
 const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
 const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: 'glm-4.7-flash' };
@@ -28,7 +30,7 @@ async function ollamaReady(timeoutMs = 850) {
   catch (_) { return false; } finally { clearTimeout(timer); }
 }
 async function detect() { return { ollama: await ollamaReady(), glm: !!glmConfig(), claude: true, codex: true,
-  gemini: usableKey(process.env.GEMINI_API_KEY), kimi: false, openrouter: false }; }
+  gemini: usableKey(process.env.GEMINI_API_KEY) || executableExists(process.env.GEMINI_BIN || 'gemini'), kimi: false, openrouter: false }; }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
 
 function safeJson(text) {
@@ -39,7 +41,8 @@ function facilitatorPrompt(ownerText, prior = '') {
   return `You are BigKiji's concise requirements facilitator. Never execute tools or edit files.\n` +
     `Owner request: """${knowledge.cleanText(ownerText, 5000)}"""\n` +
     (prior ? `Previous facilitation context: """${knowledge.cleanText(prior, 2600)}"""\n` : '') +
-    `If a materially important decision is missing, ask 1-3 short questions. Otherwise produce a decision-complete Prompt Spec.\n` +
+    (prior ? `The owner has answered the clarification. Do not ask another question; choose safe reasonable defaults and produce a decision-complete Prompt Spec.\n`
+      : `If a materially important decision is missing, ask 1-3 short questions. Otherwise produce a decision-complete Prompt Spec.\n`) +
     `Return JSON only: {"status":"needs_clarification|ready","questions":["..."],"promptSpec":{"goal":"...","constraints":["..."],"steps":["..."],"acceptance":["..."]}}`;
 }
 async function runOllama(prompt) {
@@ -49,6 +52,22 @@ async function runOllama(prompt) {
   });
   const body = await response.json(); if (!response.ok || body.error) throw new Error(body.error || `ollama ${response.status}`);
   return String(body.response || '');
+}
+function executableExists(command) {
+  if (path.isAbsolute(command)) { try { fs.accessSync(command, fs.constants.X_OK); return true; } catch (_) { return false; } }
+  return String(process.env.PATH || '').split(path.delimiter).some((dir) => {
+    try { fs.accessSync(path.join(dir, command), fs.constants.X_OK); return true; } catch (_) { return false; }
+  });
+}
+function runGemini(prompt) {
+  return new Promise((resolve, reject) => {
+    execFile(process.env.GEMINI_BIN || 'gemini', ['--prompt', prompt, '--output-format', 'json', '--approval-mode', 'plan', '--sandbox', '--skip-trust'],
+      { timeout: 45000, maxBuffer: 2 * 1024 * 1024, env: process.env }, (error, stdout, stderr) => {
+        if (error) { reject(new Error(String(stderr || error.message).slice(0, 500))); return; }
+        const raw = String(stdout || '').trim(); const wrapped = safeJson(raw);
+        resolve(typeof wrapped?.response === 'string' ? wrapped.response : typeof wrapped?.text === 'string' ? wrapped.text : raw);
+      });
+  });
 }
 async function runGlm(prompt) {
   const conf = glmConfig(); if (!conf) throw new Error('GLM is not configured');
@@ -86,18 +105,20 @@ class FastFacilitatorRouter {
     for (const candidate of candidates) {
       onStart?.(candidate);
       try {
-        const raw = candidate === 'ollama' ? await runOllama(facilitatorPrompt(combined, prior)) : await runGlm(facilitatorPrompt(combined, prior));
+        const request = facilitatorPrompt(combined, prior);
+        const raw = candidate === 'gemini' ? await runGemini(request) : candidate === 'ollama' ? await runOllama(request) : await runGlm(request);
         parsed = safeJson(raw); if (!parsed) throw new Error(`${candidate} returned invalid facilitator JSON`);
         provider = candidate; break;
       } catch (err) { lastError = err; }
     }
     if (!parsed) parsed = fallbackSpec(combined);
     const questions = Array.isArray(parsed.questions) ? parsed.questions.slice(0, 3).map((q) => knowledge.cleanText(q, 240)) : [];
-    if (parsed.status === 'needs_clarification' && questions.length) {
+    if (parsed.status === 'needs_clarification' && questions.length && !this.pending) {
       this.pending = { ownerText: combined, questions, provider, at: new Date().toISOString() };
       const message = questions.map((q, i) => `${i + 1}. ${q}`).join('\n'); onDelta?.(message);
       return { status: 'needs_clarification', provider, questions, latencyMs: Date.now() - started, availability };
     }
+    if (parsed.status === 'needs_clarification') parsed = fallbackSpec(combined);
     this.pending = null;
     const final = parsed.promptSpec ? parsed : fallbackSpec(combined);
     const textSpec = specText(final); const task = knowledge.createTask(combined, 'facilitated');
@@ -109,4 +130,4 @@ class FastFacilitatorRouter {
   reset() { this.pending = null; }
 }
 
-module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec };
+module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, executableExists };

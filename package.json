@@ -34,7 +34,9 @@
     "test:voice-engine": "node tools/voice-engine-selftest.js",
     "test:cmux": "node tools/cmux-bridge-selftest.js",
     "test:context": "node tools/context-routing-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
+    "test:pi-core": "node scripts/test-pi-core.js",
+    "test:preview": "node tools/preview-server-selftest.js",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:pi-core && npm run test:preview && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "node tools/postinstall.js"
   },

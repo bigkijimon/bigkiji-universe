@@ -1,0 +1,24 @@
+{
+  "id": "bigkiji-3d-shooter",
+  "ownerPrompt": "BigKijiが主役の簡単な3Dシューティングゲームをつくって。",
+  "mode": "auto",
+  "ownerAnswers": [
+    "固定斜め視点の三人称",
+    "落ち着いた庭を舞台にする",
+    "敵は抽象的な脅威として表現する"
+  ],
+  "preview": {
+    "enabled": true,
+    "preferredPort": 4317,
+    "liveReload": true,
+    "openInOwnerWindow": true
+  },
+  "acceptance": [
+    "BigKijiを操作できる",
+    "移動、照準、射撃が動作する",
+    "敵、スコア、体力、再スタートがある",
+    "デスクトップとタッチ入力に対応する",
+    "保存した変更がオーナー画面へ反映される",
+    "実行時JavaScriptエラーがない"
+  ]
+}

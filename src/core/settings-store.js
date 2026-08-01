@@ -32,6 +32,40 @@ const DEFAULTS = Object.freeze({
     paidAllowlist: ['claude', 'codex', 'gemini', 'glm'],
     localDefault: 'qwen',
     qwenBypassTimeoutMs: 1000,
+    executionMode: 'plan',
+    maxAgents: 3,
+    activationMode: 'on-demand',
+    allSpecialists: false,
+    sessionLeader: 'auto',
+  },
+  quality: {
+    gate: 'strict',
+    repairScope: 'broad',
+    maxRepairCycles: 3,
+    rollbackOnRegression: true,
+    smokeAfterRestart: true,
+    testTimeoutMs: 300000,
+    researchCacheDays: 30,
+    officialSourcesFirst: true,
+  },
+  preview: {
+    enabled: true,
+    preferredPort: 4317,
+    liveReload: true,
+    autoOpen: true,
+    viewport: 'desktop',
+  },
+  appearance: {
+    theme: 'studio',
+    density: 'comfortable',
+    textScale: 1,
+    reducedGlow: true,
+    reduceMotion: false,
+  },
+  terminal: {
+    pinnedSession: true,
+    maxTabs: 8,
+    restoreSelection: true,
   },
   paths: {
     vaultRoot: '',
@@ -87,6 +121,23 @@ class SettingsStore {
       clamp(next.audio.systemFallbackAtMs, 5000, 50000, 22000));
     next.routing.paidAllowlist = ['claude', 'codex', 'gemini', 'glm'];
     next.routing.localDefault = 'qwen';
+    next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
+    next.routing.maxAgents = clamp(next.routing.maxAgents, 1, 5, 3);
+    next.routing.activationMode = 'on-demand';
+    next.routing.allSpecialists = false;
+    next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)
+      ? next.routing.sessionLeader : 'auto';
+    next.quality.gate = ['standard', 'strict'].includes(next.quality.gate) ? next.quality.gate : 'strict';
+    next.quality.repairScope = ['off', 'low', 'broad'].includes(next.quality.repairScope) ? next.quality.repairScope : 'broad';
+    next.quality.maxRepairCycles = clamp(next.quality.maxRepairCycles, 0, 5, 3);
+    next.quality.testTimeoutMs = clamp(next.quality.testTimeoutMs, 30000, 900000, 300000);
+    next.quality.researchCacheDays = clamp(next.quality.researchCacheDays, 1, 180, 30);
+    next.preview.preferredPort = clamp(next.preview.preferredPort, 1024, 65500, 4317);
+    next.preview.enabled = next.preview.enabled !== false; next.preview.liveReload = next.preview.liveReload !== false;
+    next.preview.viewport = ['desktop', 'tablet', 'mobile'].includes(next.preview.viewport) ? next.preview.viewport : 'desktop';
+    next.appearance.theme = 'studio';
+    next.appearance.textScale = clamp(next.appearance.textScale, 0.85, 1.25, 1);
+    next.terminal.maxTabs = clamp(next.terminal.maxTabs, 2, 16, 8); next.terminal.pinnedSession = true;
     next.cmux.enabled = process.platform === 'darwin' && next.cmux.enabled !== false;
     next.cmux.cliPath = String(next.cmux.cliPath || 'cmux');
     next.cmux.pollMs = clamp(next.cmux.pollMs, 350, 5000, 700);

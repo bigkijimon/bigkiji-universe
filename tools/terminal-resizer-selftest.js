@@ -34,6 +34,7 @@ const context = {
 };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'components', 'terminal-resizer.js'), 'utf8'), context);
 const resizer = new context.window.TerminalResizer({ handle, container, onResize: () => { fitCalls++; }, storage: context.window.localStorage });
+const mainHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'UI', 'main.html'), 'utf8');
 
 assert.equal(cssHeight, '460px', 'saved height must be restored');
 assert.equal(resizer.apply(20), 180, 'minimum height must preserve a usable terminal');
@@ -44,5 +45,8 @@ assert.equal(typeof listeners.pointermove, 'function');
 assert.equal(typeof listeners.keydown, 'function');
 while (frameQueue.length) frameQueue.shift()();
 assert(fitCalls > 0, 'xterm fit callback must be requested after resize');
+assert.match(mainHtml, /BIGKIJI SESSION/);
+assert.match(mainHtml, /id="tabAddTerm"/);
+assert.match(mainHtml, /id="tabPreview"/);
 
 console.log('terminal resizer selftest: PASS');

@@ -1,0 +1,25 @@
+:root { color-scheme: dark; font-family: Inter, -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  --ink:#eef1ec; --sage:#86a995; --apricot:#d6a179; --slate:#121816; }
+* { box-sizing:border-box; }
+html,body,#game { width:100%; height:100%; margin:0; overflow:hidden; background:#111715; color:var(--ink); }
+#canvas { display:block; width:100%; height:100%; touch-action:none; }
+.hud { position:absolute; inset:18px 20px auto; display:flex; align-items:flex-start; justify-content:space-between; pointer-events:none; }
+.hud small { display:block; color:#aab9b0; font-size:10px; letter-spacing:.18em; }
+.hud strong { display:block; margin-top:3px; font:600 24px/1.1 Georgia, "Yu Mincho", serif; letter-spacing:.02em; }
+.hud dl { display:flex; gap:8px; margin:0; }
+.hud dl div { min-width:76px; padding:8px 11px; border:1px solid rgba(215,228,219,.16); border-radius:12px; background:rgba(18,24,22,.66); backdrop-filter:blur(12px); }
+.hud dt { color:#aab9b0; font-size:9px; text-transform:uppercase; letter-spacing:.12em; }
+.hud dd { margin:2px 0 0; font-variant-numeric:tabular-nums; font-size:17px; }
+.intro { position:absolute; left:50%; top:50%; width:min(380px,calc(100% - 38px)); padding:24px; transform:translate(-50%,-50%); text-align:center;
+  border:1px solid rgba(215,228,219,.18); border-radius:20px; background:rgba(24,30,27,.78); backdrop-filter:blur(18px); box-shadow:0 24px 70px rgba(0,0,0,.32); }
+.intro p { margin:0 0 7px; font:500 25px/1.2 Georgia, "Yu Mincho", serif; }
+.intro span { display:block; color:#aebbb4; font-size:12px; line-height:1.5; }
+button { border:1px solid rgba(134,169,149,.42); border-radius:999px; color:#f3f5f1; background:#5f7f6c; padding:10px 17px; cursor:pointer; font:600 12px inherit; }
+.intro button { margin-top:18px; }
+#restart { position:absolute; left:50%; bottom:25%; transform:translateX(-50%); }
+.touch { display:none; position:absolute; inset:auto 18px 20px; justify-content:space-between; align-items:end; pointer-events:none; }
+.pad { position:relative; width:92px; height:92px; border:1px solid rgba(255,255,255,.17); border-radius:50%; background:rgba(17,23,21,.36); pointer-events:auto; touch-action:none; }
+.pad i { position:absolute; left:31px; top:31px; width:30px; height:30px; border-radius:50%; background:rgba(134,169,149,.72); transform:translate(var(--x,0),var(--y,0)); }
+#fire { width:68px; height:68px; padding:0; font-size:24px; background:rgba(185,119,90,.72); border-color:rgba(214,161,121,.5); pointer-events:auto; }
+@media (pointer:coarse) { .touch { display:flex; } }
+@media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; } }

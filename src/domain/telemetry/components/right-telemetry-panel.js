@@ -23,6 +23,7 @@ export class RightTelemetryPanel {
         <div class="thud-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
         <section class="thud-relay" aria-label="Live agent commentary">
           <header><span><i class="thud-live-dot"></i> LIVE AGENT RELAY</span><b id="thudCount">0 SIGNALS</b></header>
+          <div id="thudSession" class="thud-session"></div>
           <div id="thudFeed" class="thud-feed" role="log" aria-live="polite"></div>
         </section>
         <section class="thud-lower">
@@ -53,6 +54,9 @@ export class RightTelemetryPanel {
     if (!this.root || !state) return;
     const feed = this.root.querySelector('#thudFeed');
     const events = state.events.slice(-36);
+    const run = (state.runs || []).at(-1);
+    const runProgress = run ? (({ PLANNING:8, AWAITING_APPROVAL:18, DISPATCHING:28, EXECUTING:58, REPAIRING:72, VERIFYING:88, COMPLETED:100, FAILED:100 })[run.status] || 0) : 0;
+    this.root.querySelector('#thudSession').innerHTML = run ? `<div class="thud-session-top"><span>MAIN SESSION</span><b>${esc(run.status)}</b></div><strong>${esc(run.promptPreview || run.id)}</strong><div class="thud-session-track"><i style="width:${runProgress}%"></i></div><div class="thud-session-models">${(run.assignments || []).map((item) => `<span data-state="${esc(item.status)}"><i></i>${esc(item.provider)}</span>`).join('')}</div>` : '<div class="thud-session-idle"><b>MAIN SESSION</b><span>Awaiting an owner directive</span></div>';
     feed.innerHTML = events.length ? events.map((event) => `
       <article class="thud-event" data-status="${esc(event.status)}">
         <time>[${clock(event.timestamp)}]</time><b>${esc(event.agent)}</b><em>${esc(event.status)}</em><span>${esc(event.message)}</span>

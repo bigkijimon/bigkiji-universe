@@ -6,10 +6,9 @@ const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
 const { ContextPruner } = require('./context-pruner');
 
-// Two approved execution lanes: Claude Code CLI and GLM through local Pi.
-// Qwen is intentionally reserved for planning/memory and is not started here.
+// Providers are spawned only after PiAgent approval and are never kept resident.
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 2, vaultRoot = cwd, graphPath = '', spawnImpl = spawn } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
@@ -18,6 +17,7 @@ class TaskRunner extends EventEmitter {
     this.secretProvider = null;
     this.policy = new SandboxPolicyResolver({ vaultRoot });
     this.pruner = new ContextPruner({ graphPath });
+    this.completions = new Map();
   }
 
   snapshot() { return [...this.tasks.values()].map(({ child, ...task }) => ({ ...task })); }
@@ -31,12 +31,12 @@ class TaskRunner extends EventEmitter {
     }));
   }
 
-  plan({ id, provider, prompt, cwd = this.cwd, planHash = null }) {
+  plan({ id, provider, prompt, cwd = this.cwd, planHash = null, metadata = {} }) {
     knowledge.assertExecutor(provider);
     if (this.tasks.has(id)) throw new Error(`Task already exists: ${id}`);
     const task = { id, provider, prompt: knowledge.cleanText(prompt, 20000), promptHash: knowledge.hash(prompt),
       planHash, cwd, status: 'awaiting_approval', output: '', error: '', tokens: { input: 0, output: 0 },
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      metadata: { ...metadata }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     this.tasks.set(id, task);
     this.emit('task', this.public(task));
     knowledge.recordEvent(id, { type: 'planned', status: task.status, provider, evidence: 'awaiting owner approval' });
@@ -53,6 +53,22 @@ class TaskRunner extends EventEmitter {
     return this.start(task);
   }
 
+  waitFor(id, timeoutMs = 900000) {
+    const task = this.tasks.get(id);
+    if (!task) return Promise.reject(new Error(`Unknown task: ${id}`));
+    if (['completed', 'failed', 'blocked'].includes(task.status)) return Promise.resolve(this.public(task));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.completions.delete(id); resolve({ ...this.public(task), status: 'failed', error: 'task completion timeout' }); }, timeoutMs);
+      timer.unref?.(); this.completions.set(id, (value) => { clearTimeout(timer); resolve(value); });
+    });
+  }
+
+  async executeTask(spec, { autoApprove = true, timeoutMs } = {}) {
+    const task = this.plan(spec);
+    if (autoApprove) this.approve(task.id);
+    return this.waitFor(task.id, timeoutMs);
+  }
+
   retry(id) {
     const task = this.tasks.get(id);
     if (!task || !['failed', 'blocked'].includes(task.status)) throw new Error('Only failed or blocked tasks can be retried');
@@ -64,7 +80,13 @@ class TaskRunner extends EventEmitter {
   abort(id) {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Unknown task: ${id}`);
-    if (task.child) task.child.kill('SIGTERM');
+    if (task.child) {
+      const child = task.child;
+      child.kill('SIGTERM');
+      const timer = setTimeout(() => { if (child.exitCode == null) child.kill('SIGKILL'); }, 2000);
+      timer.unref?.();
+      delete task.child;
+    }
     task.status = 'blocked'; task.error = 'aborted by owner'; task.updatedAt = new Date().toISOString();
     knowledge.recordEvent(id, { type: 'abort', status: task.status, provider: task.provider, evidence: task.error });
     this.emit('task', this.public(task));
@@ -76,7 +98,7 @@ class TaskRunner extends EventEmitter {
     try {
       knowledge.canSpend(task.provider, true);
       policy = this.policy.resolve(task.cwd);
-      this.policy.assertProvider(policy, task.provider);
+      if (!['qwen', 'ollama'].includes(task.provider)) this.policy.assertProvider(policy, task.provider);
       prepared = this.pruner.prepare({ prompt: task.prompt, policy });
       task.context = { ...prepared.metrics, policySource: policy.source };
       ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy));
@@ -114,12 +136,14 @@ class TaskRunner extends EventEmitter {
 
   finish(task, code, extra = '', error = '') {
     if (task.status !== 'running') return;
-    if (extra) task.error = `${task.error}\n${extra}`.trim();
+    if (extra || error) task.error = `${task.error}\n${extra || error}`.trim();
     task.status = code === 0 ? 'completed' : 'failed'; task.exitCode = code;
     task.finishedAt = new Date().toISOString(); task.updatedAt = task.finishedAt; delete task.child;
     knowledge.recordEvent(task.id, { type: 'finish', status: task.status, provider: task.provider,
       evidence: code === 0 ? 'process exited 0' : (error || task.error || `exit ${code}`) });
     this.emit('task', this.public(task));
+    const complete = this.completions.get(task.id);
+    if (complete) { this.completions.delete(task.id); complete(this.public(task)); }
     this.drain();
   }
 
@@ -130,18 +154,24 @@ class TaskRunner extends EventEmitter {
     if (next) this.start(next);
   }
 
+  shutdown() {
+    for (const task of this.tasks.values()) if (task.status === 'running') this.abort(task.id);
+  }
+
   adapter(provider, prompt, cwd, policy) {
     if (provider === 'claude' || provider === 'claude-code') return {
       command: process.env.CLAUDE_BIN || 'claude',
-      args: ['--print', '--output-format', 'stream-json', '--permission-mode', policy.allowWrite.length ? 'acceptEdits' : 'plan',
-        ...policy.allowRead.flatMap((dir) => ['--add-dir', dir]), prompt],
+      args: ['--print', prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', policy.allowWrite.length ? 'acceptEdits' : 'plan',
+        ...policy.allowRead.flatMap((dir) => ['--add-dir', dir])],
     };
     if (provider === 'codex') return { command: process.env.CODEX_BIN || 'codex',
-      args: ['exec', '--json', '--sandbox', policy.allowWrite.length ? 'workspace-write' : 'read-only', '--cd', cwd, prompt] };
+      args: ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '--sandbox', policy.allowWrite.length ? 'workspace-write' : 'read-only', '--cd', cwd, prompt] };
     if (provider === 'gemini') return { command: process.env.GEMINI_BIN || 'gemini',
-      args: ['--prompt', prompt, '--output-format', 'stream-json', '--approval-mode', policy.allowWrite.length ? 'auto_edit' : 'plan', '--sandbox'] };
+      args: ['--prompt', prompt, '--output-format', 'stream-json', '--approval-mode', policy.allowWrite.length ? 'auto_edit' : 'plan', '--sandbox', '--skip-trust'] };
     if (provider === 'glm') return { command: process.env.PI_BIN || 'pi',
       args: ['--print', '--model', 'zai/glm-4.7-flash', '--no-context-files', '--no-session', prompt] };
+    if (provider === 'qwen' || provider === 'ollama') return { command: process.env.OLLAMA_BIN || 'ollama',
+      args: ['run', process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b', prompt] };
     throw new Error(`No task adapter for provider: ${provider}`);
   }
 

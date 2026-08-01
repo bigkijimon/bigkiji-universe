@@ -14,7 +14,7 @@ import { TelemetryStore } from '../../telemetry/components/telemetry-store.js';
 import { RightTelemetryPanel } from '../../telemetry/components/right-telemetry-panel.js';
 import { SynapseSparkShedder } from '../shaders/synapse-spark-shedder.js';
 import { radialShellPoint, fibonacciLeafPoint } from './radial-folder-geometry.js';
-import { PiAgentsFleetBox } from '../../pi-agent/components/pi-agents-fleet-box.js';
+import { ActiveAIModelsFleet } from '../../hud/components/active-ai-models-fleet.js';
 import { HybridOrbitController } from './hybrid-orbit-controller.js';
 import { RelationshipField } from './relationship-field.js';
 import { CoreAccretionField } from '../shaders/core-accretion-field.js';
@@ -22,10 +22,10 @@ import { CoreAccretionField } from '../shaders/core-accretion-field.js';
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
 const telemetryStore = new TelemetryStore({ limit: 120 });
-const fleetBox = new PiAgentsFleetBox({ root: document.getElementById('fleetHud') });
+const fleetBox = new ActiveAIModelsFleet({ root: document.getElementById('fleetHud') });
 let roadmap3d = null;
-window.bigkiji.onFleet?.((snapshot) => fleetBox.update(snapshot));
-window.bigkiji.fleetSnapshot?.().then((snapshot) => fleetBox.update(snapshot)).catch(() => {});
+window.bigkiji.onModelStatus?.((snapshot) => fleetBox.update(snapshot));
+window.bigkiji.modelStatusSnapshot?.().then((snapshot) => fleetBox.update(snapshot)).catch(() => {});
 let generatedMedia = null;
 function applyGeneratedAsset(assetUrl, mime = '') {
   if (!assetUrl) return;
@@ -59,6 +59,7 @@ window.bigkiji.onComfyEvent?.((event) => {
 });
 window.bigkiji.comfyStatus?.().then((state) => telemetryStore.setComfy(state)).catch(() => {});
 window.bigkiji.onTaskEvent((task) => { telemetryStore.upsertTask(task); roadmap3d?.ingestTask(task); });
+window.bigkiji.onRunEvent((run) => telemetryStore.upsertRun(run));
 window.bigkiji.onTaskLog((log) => telemetryStore.ingest({ ...log, source: log.provider || 'task', kind: 'exec' }, 'task-log'));
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
