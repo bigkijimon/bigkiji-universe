@@ -26,7 +26,25 @@ const WebSocket = require('ws');
     ws.once('message', (raw) => { const value = JSON.parse(String(raw)); ws.close(); resolve(value); }); ws.once('error', reject);
   });
   assert.equal(wsState.event, 'state');
+  const pairing = await fetch(`${base}/api/mobile/pairing`, { method: 'POST', headers: { authorization: 'Bearer selftest-token' } }).then((response) => response.json());
+  assert.ok(pairing.code); assert.equal((await fetch(`${base}/?pair=${pairing.code}`)).status, 200);
+  const pairedResponse = await fetch(`${base}/api/mobile/pair`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: pairing.code, name: 'Test iPhone', platform: 'test' }) });
+  assert.equal(pairedResponse.status, 201); const paired = await pairedResponse.json(); const cookie = pairedResponse.headers.get('set-cookie').split(';')[0];
+  assert.ok(paired.csrf); assert.match(cookie, /^bk_mobile=/);
+  const mobileState = await fetch(`${base}/api/state`, { headers: { cookie } }).then((response) => response.json()); assert.equal(mobileState.source, 'bigkiji-daemon');
+  const stale = await fetch(`${base}/api/directive`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'x-bigkiji-csrf': paired.csrf },
+    body: JSON.stringify({ action: 'accept', runId: planned.run.id, revision: 99, planHash: 'stale' }) });
+  assert.equal(stale.status, 409, 'mobile may not approve a stale plan');
+  const noCsrf = await fetch(`${base}/api/directive`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'reject', runId: planned.run.id, revision: planned.run.revision, planHash: planned.run.planHash }) });
+  assert.equal(noCsrf.status, 403, 'mobile mutation requires CSRF proof');
+  const rejected = await fetch(`${base}/api/directive`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'x-bigkiji-csrf': paired.csrf },
+    body: JSON.stringify({ action: 'reject', runId: planned.run.id, revision: planned.run.revision, planHash: planned.run.planHash, idempotencyKey: 'reject-once' }) }).then((response) => response.json());
+  assert.equal(rejected.status, 'FAILED'); assert.equal(engine.runner.snapshot().filter((task) => task.status === 'running').length, 0);
+  const devices = await fetch(`${base}/api/mobile/devices`, { headers: { authorization: 'Bearer selftest-token' } }).then((response) => response.json());
+  assert.equal(devices.devices.length, 1); assert.equal(devices.devices[0].name, 'Test iPhone'); assert.ok(!('tokenHash' in devices.devices[0]));
   const reload = await fetch(`${base}/api/reload`, { method: 'POST', headers: { authorization: 'Bearer selftest-token' } }).then((response) => response.json()); assert.equal(reload.ok, true);
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · auto-start core · WebSocket/SSE · JSONL session · on-demand fleet · reload');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload');
 })().catch((error) => { console.error(error); process.exit(1); });

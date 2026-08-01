@@ -35,6 +35,9 @@ async function main() {
   const events = []; coordinator.on('run', (event) => events.push(event));
   const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'e2e', 'bigkiji-3d-shooter.json'), 'utf8'));
   const run = coordinator.submit({ prompt: fixture.ownerPrompt, promptSpec: { goal: fixture.ownerPrompt, acceptance: fixture.acceptance }, mode: 'auto', cwd: root });
+  assert.strictEqual(run.status, 'AWAITING_APPROVAL');
+  assert.strictEqual(runner.snapshot().filter((task) => task.status === 'running').length, 0);
+  coordinator.approve(run.id, { revision: run.revision, planHash: run.planHash, idempotencyKey: 'owner-test-approval' });
   const deadline = Date.now() + 3000;
   while (!['COMPLETED', 'FAILED'].includes(coordinator.get(run.id).status) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   const result = coordinator.get(run.id);
@@ -45,7 +48,7 @@ async function main() {
   assert(events.some((event) => event.status === 'COMPLETED'));
   assert(runner.snapshot().every((task) => task.status === 'completed'));
   assert.strictEqual(registry.performance.models.codex.successRate, 1);
-  console.log(`pi core E2E selftest: PASS · ${result.assignments.length} on-demand specialists · ${events.length} lifecycle events`);
+  console.log(`pi core E2E selftest: PASS · explicit owner approval · ${result.assignments.length} on-demand specialists · ${events.length} lifecycle events`);
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

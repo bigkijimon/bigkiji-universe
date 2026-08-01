@@ -34,6 +34,8 @@
     transition: background .2s var(--ease); }
   #conn.on i { background: var(--em); animation: breathe 3s ease-in-out infinite; }
   #conn.on { color: var(--em); }
+  #install { display:none; border:1px solid rgba(230,190,96,.26); border-radius:999px; padding:4px 8px; color:#d9c58f; background:rgba(230,190,96,.06); font:700 8px "SF Mono",Menlo,monospace; }
+  #install.on { display:block; }
   @keyframes breathe { 0%,100% { opacity: .7; } 50% { opacity: 1; } }
 
   /* ── LIVE COMMENTARY BAR ── */
@@ -91,6 +93,34 @@
   #mic.think { --lc: #FFE81F; --lp: 1.1s; }
   #mic.speak { --lc: #f472b6; --lp: .7s; }
 
+  /* ── Owner approval sheet ── */
+  #approval { position: fixed; inset: auto 9px calc(var(--sab) + 10px); z-index: 70; display: none;
+    border: 1px solid rgba(230,190,96,.35); border-radius: 16px; padding: 14px;
+    background: linear-gradient(145deg, rgba(18,25,22,.97), rgba(8,13,12,.98));
+    box-shadow: 0 24px 70px rgba(0,0,0,.72), 0 0 32px rgba(230,190,96,.08); }
+  #approval.on { display: block; animation: approvalIn .24s var(--ease); }
+  @keyframes approvalIn { from { opacity:0; transform:translateY(18px) scale(.985); } }
+  .approval-head { display:flex; align-items:flex-start; gap:9px; }
+  .approval-head i { flex:none; width:8px; height:8px; margin-top:5px; border-radius:50%; background:#e6be60; box-shadow:0 0 12px rgba(230,190,96,.65); }
+  .approval-head div { min-width:0; flex:1; }.approval-head b { display:block; color:#f0e7cf; font-size:13px; }.approval-head span { display:block; margin-top:2px; color:#887f6b; font:8px "SF Mono",Menlo,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #approvalClose { border:0; background:none; color:#768078; font-size:20px; }
+  #approvalGoal { margin:12px 0 9px; max-height:76px; overflow:auto; color:#dce7e1; font-size:12px; line-height:1.55; }
+  #approvalAssignments { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px; }
+  #approvalAssignments span { border:1px solid rgba(148,170,159,.16); border-radius:999px; padding:4px 7px; color:#92a39a; background:rgba(255,255,255,.025); font:8px "SF Mono",Menlo,monospace; }
+  .plan-seal { display:grid; grid-template-columns:1fr auto; gap:8px; padding:8px 9px; border-radius:8px; background:rgba(230,190,96,.055); color:#8f8875; font:8px "SF Mono",Menlo,monospace; }.plan-seal b{color:#d9c58f;font-weight:600}
+  .approval-actions { display:grid; grid-template-columns:1.35fr 1fr 1fr; gap:7px; margin-top:11px; }
+  .approval-actions button { min-height:42px; border:1px solid rgba(159,179,168,.18); border-radius:10px; color:#cad7d0; background:rgba(255,255,255,.045); font:700 10px -apple-system,sans-serif; }
+  #approvalAccept { position:relative; overflow:hidden; color:#17231d; border-color:#9bc9b1; background:#9bc9b1; }
+  #approvalAccept::after { content:""; position:absolute; inset:0; width:var(--hold,0%); background:rgba(255,255,255,.38); pointer-events:none; }
+  #approvalReject { color:#e8aaa2; border-color:rgba(225,128,106,.3); }.approval-actions button:disabled{opacity:.38}
+  #approvalStop { display:none; width:100%; min-height:42px; margin-top:11px; border:1px solid rgba(225,128,106,.34); border-radius:10px; color:#f0b1a8; background:rgba(225,128,106,.08); font:700 10px -apple-system,sans-serif; }
+  #approval.running { border-color:rgba(52,211,153,.3); }.running .approval-head i{background:#34d399;box-shadow:0 0 12px rgba(52,211,153,.55)}
+  .running .approval-actions,.running #directiveEditor{display:none}.running #approvalStop{display:block}
+  #directiveEditor { display:none; margin-top:9px; }.editing #directiveEditor{display:grid;grid-template-columns:1fr auto;gap:7px}
+  #directiveText { min-height:70px; resize:none; border:1px solid rgba(134,169,149,.28); border-radius:10px; padding:10px; color:#e0ece5; background:rgba(2,7,6,.75); font:11px/1.5 -apple-system,sans-serif; outline:none; }
+  #directiveSend { border:1px solid rgba(134,169,149,.35); border-radius:10px; padding:0 12px; color:#dce9e2; background:rgba(134,169,149,.12); }
+  #approvalError { display:none; margin-top:8px; color:#f2a49a; font:9px/1.4 "SF Mono",Menlo,monospace; }.approval-error #approvalError{display:block}
+
   /* ── BottomSheet metrics ── */
   #sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; height: 332px;
     transform: translateY(calc(100% - 74px - var(--sab)));
@@ -136,7 +166,7 @@
 <div id="app">
   <header>
     <span class="mark">❖</span><h1>BigKiji Universe</h1><span class="sub">MOBILE · DEVICE GPU</span>
-    <span id="conn"><i></i><span id="connT">CONNECTING</span></span>
+    <button id="install">INSTALL</button><span id="conn"><i></i><span id="connT">CONNECTING</span></span>
   </header>
   <div id="comm">[LIVE] Linking to the BigKiji nerve center…</div>
   <div id="cvWrap">
@@ -151,6 +181,15 @@
     <button id="mic" class="cbtn" title="Live voice">🎙</button>
     <button id="send" class="cbtn" title="Send">▲</button>
   </div>
+  <section id="approval" aria-live="assertive" aria-label="Owner approval required">
+    <div class="approval-head"><i></i><div><b id="approvalTitle">Owner approval required</b><span id="approvalMeta"></span></div><button id="approvalClose" aria-label="Hide approval sheet">×</button></div>
+    <div id="approvalGoal"></div><div id="approvalAssignments"></div>
+    <div class="plan-seal"><span>CURRENT PLAN SEAL</span><b id="approvalHash"></b></div>
+    <div class="approval-actions"><button id="approvalAccept">Hold to accept</button><button id="approvalEdit">Edit</button><button id="approvalReject">Reject</button></div>
+    <button id="approvalStop">Stop run</button>
+    <div id="directiveEditor"><textarea id="directiveText" placeholder="Describe what BigKiji should change before execution…"></textarea><button id="directiveSend">Re-plan</button></div>
+    <div id="approvalError"></div>
+  </section>
   <div id="sheet">
     <div id="grab"><div class="bar"></div>
       <div id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</div>
@@ -173,18 +212,25 @@ import * as THREE from '/vendor/three.module.js';
 
 /* ── auth token: 初回 /?t=xxx で入場 → localStorage保存（cookieも同時に付く） ── */
 const qs = new URLSearchParams(location.search);
-if (qs.get('t')) { localStorage.setItem('bk_t', qs.get('t')); history.replaceState(null, '', '/'); }
+if (qs.get('t')) { localStorage.setItem('bk_t', qs.get('t')); }
 const TOKEN = localStorage.getItem('bk_t') || '';
+let CSRF = localStorage.getItem('bk_csrf') || '';
 const api = (p) => p + (TOKEN ? (p.includes('?') ? '&' : '?') + 't=' + TOKEN : '');
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
 const $ = (id) => document.getElementById(id);
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); installPrompt = event; $('install').classList.add('on'); });
+$('install').onclick = async () => {
+  if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; $('install').classList.remove('on'); return; }
+  comm(/iPhone|iPad/i.test(navigator.userAgent) ? '[INSTALL] Share → Add to Home Screen' : '[INSTALL] Use your browser menu → Install app');
+};
+if (!matchMedia('(display-mode: standalone)').matches && /iPhone|iPad/i.test(navigator.userAgent)) $('install').classList.add('on');
 const AGENTS = {
-  'claude-code': ['Claude', '#d97757'], gemini: ['Gemini', '#4e8cff'], codex: ['Codex', '#00a67d'],
-  biglama: ['BigLama', '#a78bfa'], marble: ['Marble', '#34d399'], justin: ['Justin', '#f472b6'],
-  risa: ['Risa', '#fbbf24'], coco: ['Coco', '#f87171'],
+  'claude-code': ['Claude', '#d97757'], codex: ['Codex', '#00a67d'],
+  'pi-agent': ['PiAgent', '#d946ef'], qwen: ['Local Qwen', '#38bdf8'],
 };
 
 /* ── LIVE COMMENTARY BAR ── */
@@ -212,6 +258,7 @@ function setStage(text, { busy = false, pct = null, hold = 0 } = {}) {
 const evTimes = [];
 const latHist = [];
 let lastTokRate = 0, vaultCount = 0, curModel = '', sseRtt = 0, pendingInventory = null;
+let currentRun = null;
 const setM = (v, b, val, max) => { $(v).textContent = val; $(b).style.width = Math.min(100, (parseFloat(val) || 0) / max * 100) + '%'; };
 setInterval(() => {
   const now = performance.now();
@@ -280,6 +327,35 @@ function applyState(s) {
   vaultCount = s.inventory?.files?.length ?? s.vaultCount ?? 0;
   curModel = s.model || '';
   if (s.inventory) { pendingInventory = s.inventory; window.__applyMobileInventory?.(s.inventory); }
+  const active = (s.runs || []).filter((run) => !['COMPLETED', 'FAILED'].includes(run.status)).at(-1);
+  if (active) applyRun(active);
+}
+function applyRun(run) {
+  if (!run?.id) return; currentRun = run;
+  const pending = run.status === 'AWAITING_APPROVAL';
+  const running = ['EXECUTING', 'REPAIRING', 'VERIFYING'].includes(run.status); const panel = $('approval');
+  panel.classList.toggle('on', pending || running); panel.classList.toggle('running', running); panel.classList.remove('approval-error', 'editing');
+  if (!pending && !running) return;
+  $('approvalTitle').textContent = running ? 'BigKiji run in progress' : run.repairCycle ? `Repair ${run.repairCycle} needs approval` : 'Owner approval required';
+  $('approvalMeta').textContent = `${run.id} · revision ${run.revision || 1}`;
+  $('approvalGoal').textContent = run.promptPreview || 'Review the current BigKiji execution plan.';
+  $('approvalAssignments').innerHTML = (run.assignments || []).map((item) => `<span>${esc(item.provider)} · ${esc(item.title || item.role)}</span>`).join('');
+  $('approvalHash').textContent = String(run.planHash || '').slice(0, 16) || 'unsealed';
+  setStage(running ? run.status : 'AWAITING OWNER DIRECTIVE', { busy: running, pct: running ? 62 : 25 }); wakeMobileCore();
+}
+async function post(path, body) {
+  const response = await fetch(api(path), { method:'POST', headers:{ 'content-type':'application/json', ...(CSRF ? { 'x-bigkiji-csrf': CSRF } : {}) }, body:JSON.stringify(body || {}) });
+  const value = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(value.error || `Request failed ${response.status}`); error.payload = value; throw error; } return value;
+}
+async function sendDirective(action, text = '') {
+  if (!currentRun) return; const buttons = $('approval').querySelectorAll('button'); buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const result = await post('/api/directive', { action, text, runId:currentRun.id, revision:currentRun.revision,
+      planHash:currentRun.planHash, idempotencyKey:crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` });
+    applyRun(result); comm(`[OWNER] ${action === 'accept' ? 'Plan accepted' : action === 'reject' ? 'Plan rejected' : 'Directive sent for re-planning'}`);
+  } catch (error) {
+    if (error.payload?.run) applyRun(error.payload.run); $('approval').classList.add('approval-error'); $('approvalError').textContent = error.message === 'plan changed' ? 'The plan changed on another screen. Review the refreshed version before approving.' : error.message;
+  } finally { buttons.forEach((button) => { button.disabled = false; }); }
 }
 function connect() {
   if (es) { try { es.close(); } catch (_) {} }
@@ -291,6 +367,7 @@ function connect() {
     clearTimeout(esTimer); esTimer = setTimeout(connect, 3000);
   };
   es.addEventListener('state', (e) => applyState(JSON.parse(e.data)));
+  es.addEventListener('run', (e) => applyRun(JSON.parse(e.data)));
   es.addEventListener('inventory', (e) => applyState({ inventory: JSON.parse(e.data) }));
   es.addEventListener('phase', (e) => { const phase = JSON.parse(e.data); if (phase.phase === 'PREFLIGHT' || phase.phase === 'AWAITING_OWNER_DIRECTIVE') wakeMobileCore(); });
   es.addEventListener('commentary', (e) => { const c = JSON.parse(e.data); comm('[LIVE] ' + c.text); });
@@ -330,7 +407,20 @@ function connect() {
   });
   es.addEventListener('touch', () => { evTimes.push(performance.now()); ambientFlash(); });
 }
-connect();
+async function bootstrapAuth() {
+  const pairing = qs.get('pair');
+  if (pairing) {
+    try {
+      const response = await fetch('/api/mobile/pair', { method:'POST', headers:{'content-type':'application/json'},
+        body:JSON.stringify({ code:pairing, name:`${/iPhone|iPad/i.test(navigator.userAgent) ? 'iPhone' : /Android/i.test(navigator.userAgent) ? 'Android' : 'Mobile'} Owner`, platform:navigator.platform || 'mobile' }) });
+      const value = await response.json(); if (!response.ok) throw new Error(value.error || 'Pairing failed');
+      CSRF = value.csrf; localStorage.setItem('bk_csrf', CSRF); localStorage.removeItem('bk_t'); history.replaceState(null, '', '/');
+      comm(`[LINKED] ${value.device?.name || 'Owner phone'} paired securely`);
+    } catch (error) { $('connT').textContent = 'PAIR EXPIRED'; comm(`[LINK] ${error.message}`); return; }
+  } else if (qs.get('t')) history.replaceState(null, '', '/');
+  connect();
+}
+bootstrapAuth();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     connect();
@@ -348,9 +438,7 @@ async function sendPrompt(text) {
   wakeMobileCore();
   replyShow(esc('❯ ' + text), 'you');
   try {
-    const r = await fetch(api('/api/prompt'), {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
-    });
+    const r = await fetch(api('/api/prompt'), { method: 'POST', headers: { 'content-type': 'application/json', ...(CSRF ? { 'x-bigkiji-csrf': CSRF } : {}) }, body: JSON.stringify({ text, mode:'plan' }) });
     if (!r.ok) comm('[LIVE] ⚠️ Prompt rejected — check token / connection');
   } catch (_) { comm('[LIVE] ⚠️ Send failed — offline?'); }
 }
@@ -359,6 +447,23 @@ $('txt').addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter') { sendPrompt($('txt').value); $('txt').value = ''; }
 });
+
+/* ── Owner directive controls ── */
+$('approvalClose').onclick = () => $('approval').classList.remove('on');
+$('approvalEdit').onclick = () => { $('approval').classList.toggle('editing'); $('directiveText').focus(); };
+$('approvalReject').onclick = () => sendDirective('reject');
+$('approvalStop').onclick = async () => {
+  $('approvalStop').disabled = true;
+  try { await post('/api/abort'); $('approval').classList.remove('on'); comm('[OWNER] Run stopped'); }
+  catch (error) { $('approval').classList.add('approval-error'); $('approvalError').textContent = error.message; }
+  finally { $('approvalStop').disabled = false; }
+};
+$('directiveSend').onclick = () => { const text = $('directiveText').value.trim(); if (text) sendDirective('edit', text); };
+let holdTimer = null, holdStart = 0, holdFrame = 0;
+const cancelHold = () => { clearTimeout(holdTimer); cancelAnimationFrame(holdFrame); $('approvalAccept').style.setProperty('--hold', '0%'); };
+const paintHold = () => { const pct = Math.min(100, (performance.now() - holdStart) / 9); $('approvalAccept').style.setProperty('--hold', `${pct}%`); if (pct < 100) holdFrame = requestAnimationFrame(paintHold); };
+$('approvalAccept').addEventListener('pointerdown', (event) => { event.preventDefault(); holdStart = performance.now(); paintHold(); holdTimer = setTimeout(() => { cancelHold(); sendDirective('accept'); }, 900); });
+['pointerup','pointercancel','pointerleave'].forEach((name) => $('approvalAccept').addEventListener(name, cancelHold));
 
 /* ── BottomSheet drag ── */
 const sheet = $('sheet');
@@ -456,7 +561,7 @@ ids.forEach((id, i) => {
 });
 // Actual inventory graph. There are no decorative "file-like" particles:
 // each point below resolves to a daemon-reported file or folder on disk.
-const COMPANY_AGENT = { English_School: 'marble', Creative_Media: 'justin', Design_Studio: 'risa', LocalAI: 'biglama' };
+const COMPANY_AGENT = { English_School: 'pi-agent', Creative_Media: 'pi-agent', Design_Studio: 'pi-agent', LocalAI: 'qwen' };
 let mobileInventoryGraph = null;
 const fileHash = (value) => { let h = 2166136261; for (const ch of String(value)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967295; };
 function disposeMobileInventory() {

@@ -86,6 +86,7 @@ Open Settings with the HUD control or `Cmd/Ctrl + ,`.
 - **Audio & Voices** — Owner/Agent volumes, attention cue, speech speed, Qwen voice profiles, previews.
 - **Models & API** — approved provider credentials, Qwen timeout, Vault/Knowledge/Graphify paths.
 - **cmux** — connection, themes, workspace colors, new terminals, splits, and the complete Operations Index.
+- **Mobile** — Tailscale diagnostics, five-minute pairing QR codes, paired Owner devices, revocation, and PWA installation guidance.
 
 Path changes apply after restart. Audio and most cmux changes apply immediately.
 
@@ -98,6 +99,8 @@ Before an external executor starts, BigKiji:
 3. queries local Graphify data, or falls back to local text search;
 4. includes only matching file slices;
 5. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
+
+The daemon also maintains `~/.bigkiji/system_memory.json`, a secret-free structural index keyed by a source hash. Local Qwen receives at most 8,192 tokens (6,144 normally and 4,096 when degraded), and its work is split into short PiAgent-managed steps. Run `npm run index:memory` to inspect or refresh the index explicitly.
 
 Example sandbox:
 
@@ -161,7 +164,7 @@ bigkiji resume       # select a JSONL-backed session
 bigkiji reload       # reload local PiAgent hooks/extensions
 ```
 
-The daemon binds to `127.0.0.1:8777` by default. It stores runtime configuration in `~/.bigkiji/daemon.json` and session events in `~/.bigkiji/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves it. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
+The daemon binds to `127.0.0.1:8777` by default. It stores private runtime credentials in `~/.bigkiji/remote.json` and session events in `~/.bigkiji/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves the exact current revision. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
 
 ## Small Window and phone access
 
@@ -170,11 +173,12 @@ Click the BigKiji menu-bar icon to open the transparent Small Window. Its four c
 To connect an iPhone or Android device:
 
 1. Install and sign in to Tailscale on the Mac and phone using the same tailnet.
-2. Open the Small Window and choose **QR · PHONE**.
-3. BigKiji enables Tailscale Serve for the loopback daemon and shows an authenticated QR link.
-4. Scan the QR code on the phone. The daemon itself remains loopback-only; remote access is mediated by Tailscale.
+2. Open **Settings → Mobile** and choose **Create 5-minute QR**.
+3. BigKiji enables Tailscale Serve for the loopback daemon and creates a one-use pairing ticket. The daemon master token is never placed in the QR.
+4. Scan the QR, pair the phone, then add **BigKiji Universe Mobile** to the Home Screen.
+5. The paired PWA can send prompts, resume sessions, review the current plan seal, hold to accept, edit, reject, or stop a run. Stale revisions and duplicate approvals are rejected by the daemon.
 
-If Tailscale is logged out or unavailable, the Small Window shows that exact state and does not display a misleading live QR code.
+If Tailscale is logged out, Serve requires one-time tailnet approval, or the pairing ticket expires, Settings shows the exact recovery step and does not display a misleading live state. Paired phones can be revoked individually or all at once.
 The mobile 3D deck is not a remote-desktop stream: Three.js renders locally through the phone's WebGL GPU while the Mac sends only compact JSON/SSE state. When the mobile page is hidden, both its render loop and live event connection pause.
 
 ## Local voice
@@ -193,7 +197,7 @@ npm run check:imports
 SMOKE=1 npx electron .
 ```
 
-The test suite covers architecture, sandbox boundaries, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE event delivery, JSONL session persistence, owner approval, on-demand model activation, and hot reload.
+The test suite covers architecture, sandbox boundaries, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE delivery, JSONL sessions, one-time mobile pairing, CSRF protection, stale-plan rejection, explicit Owner approval, on-demand model activation, and hot reload.
 
 ## Build
 

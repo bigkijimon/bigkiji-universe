@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   onSessionUpdate: (cb) => ipcRenderer.on('session:update', (_e, session) => cb(session)),
   onPhaseUpdate: (cb) => ipcRenderer.on('phase:update', (_e, phase) => cb(phase)),
   remoteAccess: (ensure = false) => ipcRenderer.invoke('remote:access', ensure),
+  openExternal: (url) => ipcRenderer.invoke('open:external', url),
   previewStatus: () => ipcRenderer.invoke('preview:status'),
   previewStart: () => ipcRenderer.invoke('preview:start'),
   previewStop: () => ipcRenderer.invoke('preview:stop'),

@@ -17,14 +17,25 @@ class TailscaleRemoteAccess {
     this.bin = [process.env.TAILSCALE_BIN, '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale', 'tailscale'].find((value) => value && (value === 'tailscale' || fs.existsSync(value)));
   }
   token() { try { return JSON.parse(fs.readFileSync(this.configFile, 'utf8')).token || ''; } catch (_) { return ''; } }
-  async status({ ensure = false } = {}) {
+  async daemon(pathname, { method = 'GET', body } = {}) {
+    const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 3500);
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.port}${pathname}`, { method, signal: ctrl.signal,
+        headers: { authorization: `Bearer ${this.token()}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined });
+      const value = await response.json(); if (!response.ok) throw new Error(value.error || `daemon ${response.status}`); return value;
+    } finally { clearTimeout(timer); }
+  }
+  async status({ ensure = false, action = ensure ? 'pair' : 'status', deviceId = '' } = {}) {
+    if (action === 'devices') return this.daemon('/api/mobile/devices');
+    if (action === 'revoke') return this.daemon('/api/mobile/devices/revoke', { method: 'POST', body: { id: deviceId } });
     if (!this.bin) return { state: 'unavailable', ready: false, requirement: 'Install Tailscale on this Mac and on the phone.' };
     let status;
     try { status = JSON.parse(await run(this.bin, ['status', '--json'])); }
     catch (error) { return { state: 'offline', ready: false, requirement: 'Open Tailscale on this Mac, sign in, then retry. The phone must use the same tailnet.', detail: error.detail || error.message }; }
     const self = status.Self || {}; const online = self.Online !== false && ['Running', 'NeedsLogin'].includes(status.BackendState) ? status.BackendState === 'Running' : !!self.TailscaleIPs?.length;
     if (!online) return { state: 'offline', ready: false, requirement: 'Connect this Mac and the iPhone/Android device to the same Tailscale tailnet.', backendState: status.BackendState };
-    if (ensure) {
+    if (ensure || ['enable', 'pair'].includes(action)) {
       try { await run(this.bin, ['serve', '--bg', '--yes', `http://127.0.0.1:${this.port}`], 15000); }
       catch (error) {
         const detail = error.detail || error.message; const setupUrl = String(detail).match(/https:\/\/login\.tailscale\.com\/\S+/)?.[0] || '';
@@ -34,12 +45,21 @@ class TailscaleRemoteAccess {
       }
     }
     const dns = String(self.DNSName || '').replace(/\.$/, ''); const ip = self.TailscaleIPs?.find((value) => /^100\./.test(value)) || self.TailscaleIPs?.[0] || '';
-    const baseUrl = dns ? `https://${dns}` : `http://${ip}:${this.port}`; const token = this.token();
-    if (!baseUrl || !token) return { state: 'error', ready: false, requirement: 'BigKiji daemon credentials are not ready.' };
-    const url = `${baseUrl}/?t=${encodeURIComponent(token)}`;
+    const baseUrl = dns ? `https://${dns}` : `http://${ip}:${this.port}`;
+    if (!baseUrl || !this.token()) return { state: 'error', ready: false, requirement: 'BigKiji daemon credentials are not ready.' };
+    let serveReady = ensure || action === 'pair';
+    if (!serveReady) {
+      try { const serve = await run(this.bin, ['serve', 'status', '--json'], 4000); serveReady = String(serve).includes(`127.0.0.1:${this.port}`); } catch (_) {}
+    }
+    const shared = { state: serveReady ? 'ready' : 'available', ready: serveReady, displayUrl: `${baseUrl}/`,
+      device: self.HostName || dns.split('.')[0], requirement: serveReady
+        ? 'Private Tailscale route is ready. Create a one-time QR to pair an Owner phone.'
+        : 'Tailscale is connected. Create a QR to enable the private phone route.' };
+    if (action !== 'pair') return shared;
+    const pairing = await this.daemon('/api/mobile/pairing', { method: 'POST' });
+    const url = `${baseUrl}/?pair=${encodeURIComponent(pairing.code)}`;
     const qrDataUrl = await QRCode.toDataURL(url, { width: 300, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#07100d', light: '#f4fff9' } });
-    return { state: ensure ? 'ready' : 'available', ready: !!ensure, url, displayUrl: `${baseUrl}/`, qrDataUrl,
-      device: self.HostName || dns.split('.')[0], requirement: 'Install Tailscale on iPhone/Android and connect it to this Mac’s tailnet before scanning.' };
+    return { ...shared, url, qrDataUrl, pairingExpiresAt: pairing.expiresAt };
   }
 }
 

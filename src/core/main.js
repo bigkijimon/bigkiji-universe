@@ -102,7 +102,6 @@ function spawnShell() {
   bus.push({ source: 'system', type: 'info', text: `shell ready (${ptyMode} mode, ${shell})` });
 }
 
-let remote = null; // v12 リモートサーバ（whenReadyで起動・全broadcastをSSEへ中継）
 function broadcast(channel, payload) {
   if (channel === 'pi:stats') fleetMetrics.ingestStats(payload);
   else if (channel === 'bk:swarm') fleetMetrics.ingestSwarm(payload);
@@ -111,7 +110,6 @@ function broadcast(channel, payload) {
   for (const w of [trayWin, mainWin]) {
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
   }
-  if (remote) remote.publish(channel, payload);
 }
 taskRunner.on('task', (task) => {
   fleetMetrics.ingestTask(task); broadcast('task:event', task);
@@ -939,7 +937,18 @@ ipcMain.handle('run:approve', (_e, id) => daemonClient?.connected ? daemonClient
 ipcMain.handle('run:abort', (_e, id) => daemonClient?.connected ? daemonClient.abort(String(id)) : coordinator.abort(String(id)));
 ipcMain.handle('session:list', async () => daemonClient?.connected ? (await daemonClient.sessions()).sessions : []);
 ipcMain.handle('session:get', async (_e, id) => daemonClient?.connected ? daemonClient.session(String(id)) : null);
-ipcMain.handle('remote:access', async (_e, ensure = false) => remoteAccess?.status({ ensure: !!ensure }) || ({ state: 'unavailable', ready: false }));
+ipcMain.handle('remote:access', async (_e, request = false) => {
+  const options = typeof request === 'object' && request ? request : { ensure: !!request, action: request ? 'pair' : 'status' };
+  if (!remoteAccess) return { state: 'unavailable', ready: false };
+  try { return await remoteAccess.status(options); }
+  catch (error) {
+    return { state: 'error', ready: false, requirement: 'BigKiji Core is unavailable.', detail: String(error.message || error) };
+  }
+});
+ipcMain.handle('open:external', (_e, url) => {
+  const value = String(url || ''); if (!/^https?:\/\//i.test(value)) throw new Error('Only HTTP(S) links can be opened');
+  return shell.openExternal(value);
+});
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
 ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('model:status:snapshot', () => fleetMetrics.snapshot());
@@ -1187,27 +1196,9 @@ app.whenReady().then(async () => {
     bus.push({ source: 'system', type: 'info', text: `Vault not found (${VAULT}) — file galaxy & deliverables will be empty on this machine` });
   }
 
-  // v12 リモートサーバ（iPhone PWA / bigkiji CLI の同期エンジン）。SMOKE時は起動しない
-  if (!SMOKE && !daemonClient?.connected) {
-    try {
-      remote = require('./remote-server').start({
-        appDir: APP_ROOT,
-        piSendPrompt: (text) => piSendPrompt(text),
-        piAbort: () => pi.abort(),
-        approveRun: (id) => coordinator.approve(id),
-        abortRun: (id) => coordinator.abort(id),
-        handleUtterance,
-        getState: () => ({
-          ...bus.snapshot(), piRunning: pi.running, model: pi.model, voiceOn,
-          live: liveVoice.active, vaultCount: vaultFiles.length,
-          deliverables: latestDeliverables.slice(0, 6).map((d) => ({ name: d.name, company: d.company, ts: d.ts })),
-        }),
-        log: (t) => bus.push({ source: 'system', type: 'info', text: t }),
-      });
-    } catch (err) {
-      bus.push({ source: 'system', type: 'info', text: `remote server failed: ${String(err.message).slice(0, 120)}` });
-    }
-  }
+  // Port 8777 belongs exclusively to the standalone daemon. The Electron app never starts a second listener.
+  if (!SMOKE && !daemonClient?.connected) bus.push({ source: 'system', type: 'warn',
+    text: 'Mobile and CLI sync are unavailable until the standalone BigKiji Core Engine reconnects.' });
 
   // ⌥Space = どこからでも会話開始（小窓を開いて入力欄へフォーカス）
   const ok = globalShortcut.register('Alt+Space', () => {
@@ -1251,7 +1242,8 @@ app.whenReady().then(async () => {
       bus.push({ source: 'system', agent: 'biglama', type: 'task', text: 'SNAP visual test — local planning pulse' });
     }, 4700);
     if (process.env.SNAP_SETTINGS) {
-      setTimeout(() => mainWin?.webContents.executeJavaScript('window.BKSettings?.open()').catch(() => {}), 3200);
+      const page = String(process.env.SNAP_SETTINGS || 'audio').replace(/[^a-z-]/g, '');
+      setTimeout(() => mainWin?.webContents.executeJavaScript(`window.BKSettings?.open();document.querySelector('[data-page="${page}"]')?.click()`).catch(() => {}), 3200);
     }
     if (process.env.SNAP_WAKE) {
       setTimeout(() => {

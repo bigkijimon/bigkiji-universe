@@ -156,6 +156,10 @@
 
   /* v2 floating HUD: the Electron surface is fully transparent; only useful controls cast a shadow. */
   .shell { padding: 8px; gap: 7px; overflow: hidden; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+  .shell::before,.shell::after { content:""; position:absolute; z-index:-1; pointer-events:none; border-radius:50%; filter:blur(28px); opacity:.2; }
+  .shell::before { width:150px;height:150px;left:-58px;top:112px;background:rgba(52,211,153,.32);animation:decorDrift 12s ease-in-out infinite; }
+  .shell::after { width:130px;height:130px;right:-48px;bottom:82px;background:rgba(168,85,247,.25);animation:decorDrift 15s ease-in-out -5s infinite reverse; }
+  @keyframes decorDrift { 0%,100%{transform:translate3d(0,0,0) scale(.96)}50%{transform:translate3d(9px,-12px,0) scale(1.05)} }
   header, #orbWrap, .composer, #cards, .streamCard, .utilityRow, #piAnswer, #feed > .fcd {
     border: 1px solid rgba(255,255,255,.10); border-radius: 12px;
     background: rgba(15,23,42,.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
@@ -168,8 +172,13 @@
   .utilityRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:7px; }
   .utilityRow select,.utilityRow button { min-width:0; border:1px solid rgba(255,255,255,.10); border-radius:8px; color:#fff; background:rgba(4,10,18,.7); padding:6px 8px; font:9px "SF Mono",Menlo,monospace; }
   .utilityRow button { color:#00f3ff; cursor:pointer; font-weight:700; }
-  #cards { padding:7px; border-top:1px solid rgba(255,255,255,.1); gap:6px; }
+  #cards { padding:10px 9px 11px; border-top:1px solid rgba(255,255,255,.1); gap:8px; overflow:visible; }
   .acard { min-height:38px; padding:6px 8px; border-color:color-mix(in srgb,var(--c) 35%,transparent); background:rgba(2,7,15,.62); box-shadow:inset 0 0 15px color-mix(in srgb,var(--c) 5%,transparent); }
+  .acard:nth-child(1){--tx:2px;--ty:-3px;--rx:-.65deg}.acard:nth-child(2){--tx:-3px;--ty:4px;--rx:.7deg}.acard:nth-child(3){--tx:7px;--ty:0px;--rx:.45deg}.acard:nth-child(4){--tx:-5px;--ty:5px;--rx:-.55deg}
+  .acard { position:relative; transform:translate(var(--tx),var(--ty)) rotate(var(--rx)); animation:cardDrift 7s ease-in-out infinite; }
+  .acard:nth-child(2){animation-delay:-1.7s}.acard:nth-child(3){animation-delay:-3.4s}.acard:nth-child(4){animation-delay:-5.1s}
+  .acard::after{content:"";position:absolute;right:8px;bottom:-4px;width:20px;height:1px;background:linear-gradient(90deg,transparent,var(--c));opacity:.42}
+  @keyframes cardDrift { 0%,100%{transform:translate(var(--tx),var(--ty)) rotate(var(--rx))}50%{transform:translate(var(--tx),calc(var(--ty) - 2px)) rotate(var(--rx))} }
   .acard .an { color:#fff; text-shadow:0 0 8px color-mix(in srgb,var(--c) 45%,transparent); }
   .acard .ac { color:var(--c); font-size:8px; text-transform:uppercase; }
   .acard .ad { opacity:.55; }
@@ -178,6 +187,14 @@
   .streamCard .logHead span { color:#00f3ff; }
   .streamCard #log { height:58px; padding:0 3px; overflow:hidden; -webkit-mask-image:none; line-height:1.7; }
   .streamCard .row time { color:#ec4899; } .streamCard .row .txt { color:#fff; }
+  #agentBubbles { position:absolute; z-index:18; top:118px; right:14px; width:min(240px,calc(100% - 28px)); display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
+  .agentBubble { display:flex; align-items:flex-end; gap:7px; max-width:100%; opacity:0; transform:translate3d(12px,7px,0) scale(.96); animation:bubbleIn .28s var(--ease-out) forwards; }
+  .agentBubble.leaving { animation:bubbleOut .34s ease-in forwards; }
+  .agentAvatar { flex:none; width:26px; height:26px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--c) 48%,transparent); border-radius:9px 9px 4px 9px; color:var(--c); background:rgba(8,13,20,.9); box-shadow:0 8px 22px rgba(0,0,0,.42),0 0 13px color-mix(in srgb,var(--c) 20%,transparent); font:800 11px "SF Mono",Menlo,monospace; }
+  .agentSay { min-width:0; max-width:198px; padding:7px 9px; border:1px solid color-mix(in srgb,var(--c) 25%,rgba(255,255,255,.08)); border-radius:12px 12px 3px 12px; color:#f5faf7; background:rgba(9,15,24,.9); box-shadow:0 14px 30px rgba(0,0,0,.48); }
+  .agentSay b { display:block; margin-bottom:3px; color:var(--c); font:750 8px -apple-system,sans-serif; letter-spacing:.04em; }
+  .agentSay span { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; font:10px/1.42 -apple-system,"Hiragino Sans",sans-serif; }
+  @keyframes bubbleIn { to{opacity:1;transform:translate3d(0,0,0) scale(1)} } @keyframes bubbleOut { to{opacity:0;transform:translate3d(8px,-5px,0) scale(.96)} }
   #remotePanel { position:absolute; inset:8px; z-index:20; display:none; padding:16px; border:1px solid rgba(0,243,255,.35); border-radius:16px; background:rgba(4,9,18,.94); box-shadow:0 24px 60px rgba(0,0,0,.75),0 0 24px rgba(0,243,255,.16); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
   #remotePanel.on { display:flex; flex-direction:column; align-items:center; gap:10px; }
   #remotePanel img { width:220px; height:220px; border-radius:12px; background:#f4fff9; padding:5px; }
@@ -208,6 +225,7 @@
       <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
       <span class="status"><span class="dot"></span><span id="mode">…</span></span>
     </header>
+    <div id="agentBubbles" aria-live="polite" aria-label="Live AI messages"></div>
     <div class="utilityRow"><select id="sessionPicker" aria-label="Session history"><option value="">Session history</option></select><button id="remoteQR" type="button">QR · PHONE</button></div>
     <div id="orbWrap">
       <div class="bgHero"></div>
@@ -251,6 +269,29 @@
       'pi-agent-core': { short:'PiAgent', color:'#d946ef', glyph:'π' },
       'local-qwen': { short:'Local Qwen', color:'#38bdf8', glyph:'◈' },
     };
+    const CHAT_MODELS = {
+      'claude-code': MODEL_CARDS['claude-code'], claude: MODEL_CARDS['claude-code'], codex: MODEL_CARDS.codex,
+      'pi-agent-core': MODEL_CARDS['pi-agent-core'], pi: MODEL_CARDS['pi-agent-core'],
+      'local-qwen': MODEL_CARDS['local-qwen'], qwen: MODEL_CARDS['local-qwen'], biglama: MODEL_CARDS['local-qwen'],
+      gemini: { short:'Gemini', color:'#4e8cff', glyph:'✦' }, glm: { short:'GLM', color:'#a855f7', glyph:'✳' },
+    };
+    const bubbleDeck = document.getElementById('agentBubbles');
+    const bubbles = [];
+    function cleanBubbleText(text) {
+      return String(text || '').replace(/<(?:thought|thinking|analysis)\b[^>]*>[\s\S]*?<\/(?:thought|thinking|analysis)>/gi, '')
+        .replace(/^\s*(?:thinking|thought|analysis|internal reasoning)\s*:\s*.*$/gim, '').replace(/\s+/g, ' ').trim().slice(0, 150);
+    }
+    function popAgentBubble(agent, text) {
+      const model = CHAT_MODELS[agent]; const clean = cleanBubbleText(text); if (!model || !clean) return;
+      const el = document.createElement('div'); el.className = 'agentBubble'; el.style.setProperty('--c', model.color);
+      el.innerHTML = `<div class="agentSay"><b>${model.short}</b><span></span></div><div class="agentAvatar">${model.glyph}</div>`;
+      el.querySelector('span').textContent = clean; bubbleDeck.appendChild(el);
+      const item = { el, timer:null }; bubbles.push(item);
+      // Two stacked messages fit inside the orb stage. Older messages leave in
+      // arrival order, so controls and the composer are never covered.
+      while (bubbles.length > 2) { const old = bubbles.shift(); clearTimeout(old.timer); old.el.classList.add('leaving'); setTimeout(() => old.el.remove(), 340); }
+      item.timer = setTimeout(() => { el.classList.add('leaving'); setTimeout(() => { el.remove(); const index=bubbles.indexOf(item); if(index>=0)bubbles.splice(index,1); }, 360); }, 4700 + bubbles.length * 450);
+    }
     for (const [id, m] of Object.entries(MODEL_CARDS)) {
       const c = document.createElement('div');
       c.className = 'acard';
@@ -296,6 +337,10 @@
       while (log.children.length > 3) log.removeChild(log.firstChild);
       log.scrollTop = log.scrollHeight;
       count.textContent = String(++n);
+      if (!evt._replay && ['task','say','result','question','warn'].includes(evt.type)) {
+        const actualAgent = CHAT_MODELS[evt.agent] ? evt.agent : evt.source === 'pi' ? 'pi-agent-core' : null;
+        if (actualAgent) popAgentBubble(actualAgent, evt.text);
+      }
 
       // SYNAPSE FEED連動: ツール実行/実ファイル書込を進行カード化（AI同士のやりとりが見える）
       if (evt.source === 'pi' && evt.type === 'task') {

@@ -5,10 +5,11 @@ const { spawn } = require('child_process');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
 const { ContextPruner } = require('./context-pruner');
+const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
 
 // Providers are spawned only after PiAgent approval and are never kept resident.
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails() } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
@@ -16,13 +17,15 @@ class TaskRunner extends EventEmitter {
     this.spawnImpl = spawnImpl;
     this.secretProvider = null;
     this.policy = new SandboxPolicyResolver({ vaultRoot });
-    this.pruner = new ContextPruner({ graphPath });
+    this.pruner = new ContextPruner({ graphPath }); this.localPruner = new ContextPruner({ graphPath, maxFiles: 7, maxChars: 32000, maxTokens: 8192 });
+    this.qwenGuardrails = qwenGuardrails;
     this.completions = new Map();
   }
 
   snapshot() { return [...this.tasks.values()].map(({ child, ...task }) => ({ ...task })); }
   setSecretProvider(provider) { this.secretProvider = typeof provider === 'function' ? provider : null; }
   get(id) { return this.tasks.get(id) || null; }
+  microTasks(prompt) { return this.qwenGuardrails.chunk(prompt); }
 
   prepare({ prompt, planHash = null, cwd = this.cwd }) {
     const base = `plan-${Date.now().toString(36)}-${knowledge.hash(prompt)}`;
@@ -63,7 +66,7 @@ class TaskRunner extends EventEmitter {
     });
   }
 
-  async executeTask(spec, { autoApprove = true, timeoutMs } = {}) {
+  async executeTask(spec, { autoApprove = false, timeoutMs } = {}) {
     const task = this.plan(spec);
     if (autoApprove) this.approve(task.id);
     return this.waitFor(task.id, timeoutMs);
@@ -99,7 +102,9 @@ class TaskRunner extends EventEmitter {
       knowledge.canSpend(task.provider, true);
       policy = this.policy.resolve(task.cwd);
       if (!['qwen', 'ollama'].includes(task.provider)) this.policy.assertProvider(policy, task.provider);
-      prepared = this.pruner.prepare({ prompt: task.prompt, policy });
+      const local = ['qwen', 'ollama'].includes(task.provider);
+      prepared = (local ? this.localPruner : this.pruner).prepare({ prompt: task.prompt, policy,
+        maxTokens: local ? this.qwenGuardrails.budget() : this.pruner.maxTokens });
       task.context = { ...prepared.metrics, policySource: policy.source };
       ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy));
     } catch (error) {
@@ -108,6 +113,7 @@ class TaskRunner extends EventEmitter {
       this.emit('task', this.public(task)); return this.public(task);
     }
     task.status = 'running'; task.startedAt = new Date().toISOString(); task.updatedAt = task.startedAt;
+    const local = ['qwen', 'ollama'].includes(task.provider); if (local) this.qwenGuardrails.enter();
     try {
       const secret = this.secretProvider?.(task.provider) || '';
       const secretName = ({ claude: 'ANTHROPIC_API_KEY', 'claude-code': 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', glm: 'ZAI_API_KEY' })[task.provider];
@@ -120,7 +126,11 @@ class TaskRunner extends EventEmitter {
     task.child.stdout.on('data', (buf) => this.append(task, buf, false));
     task.child.stderr.on('data', (buf) => this.append(task, buf, true));
     task.child.on('error', (err) => this.finish(task, 1, '', String(err.message)));
-    task.child.on('close', (code, signal) => this.finish(task, code || 0, '', signal ? `signal:${signal}` : 'process exited'));
+    task.child.on('close', (code, signal) => this.finish(task, signal ? 1 : (code || 0), '', signal ? `signal:${signal}` : 'process exited'));
+    if (local) {
+      task.timeoutTimer = setTimeout(() => { if (task.child && task.status === 'running') { task.timedOut = true; task.child.kill('SIGTERM'); } }, this.qwenGuardrails.taskTimeoutMs);
+      task.timeoutTimer.unref?.();
+    }
     return this.public(task);
   }
 
@@ -137,8 +147,11 @@ class TaskRunner extends EventEmitter {
   finish(task, code, extra = '', error = '') {
     if (task.status !== 'running') return;
     if (extra || error) task.error = `${task.error}\n${extra || error}`.trim();
+    clearTimeout(task.timeoutTimer); delete task.timeoutTimer;
     task.status = code === 0 ? 'completed' : 'failed'; task.exitCode = code;
     task.finishedAt = new Date().toISOString(); task.updatedAt = task.finishedAt; delete task.child;
+    if (['qwen', 'ollama'].includes(task.provider)) this.qwenGuardrails.leave({
+      durationMs: Math.max(0, new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()), timedOut: !!task.timedOut });
     knowledge.recordEvent(task.id, { type: 'finish', status: task.status, provider: task.provider,
       evidence: code === 0 ? 'process exited 0' : (error || task.error || `exit ${code}`) });
     this.emit('task', this.public(task));

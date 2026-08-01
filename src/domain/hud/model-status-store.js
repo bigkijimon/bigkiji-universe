@@ -81,6 +81,12 @@ class ModelStatusStore extends EventEmitter {
       metrics: { lastActive: new Date().toISOString(), apiHealth: status === 'ERROR' ? 'error' : 'healthy' } }); }
   ingestSync() {}
   ingestVoice() {}
+  ingestQwenHealth(health = {}) {
+    this.touch('local-qwen', { available: true, connected: Number(health.active || 0) > 0,
+      status: Number(health.active || 0) > 0 ? 'EXECUTING' : 'IDLE',
+      metrics: { latencyMs: Number(health.durationMs || 0), apiHealth: health.degraded ? 'degraded · PiAgent resetting' : 'managed by PiAgent',
+        contextTokenLimit: Number(health.contextTokens || 0), lastResetReason: health.resetReason || '', lastActive: new Date().toISOString() } });
+  }
   snapshot() {
     const models = Object.values(this.models).map((model) => ({ ...model, metrics: { ...model.metrics } }));
     return { version: 2, models, connected: models.filter((model) => model.connected).length,

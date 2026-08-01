@@ -13,6 +13,8 @@ const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordin
 const { ModelStatusStore } = require('../hud/model-status-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
 const { SessionStore } = require('./session-store');
+const { MobileDeviceStore } = require('./mobile-device-store');
+const { writeSystemMemory } = require('../pi-core/system-memory');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
 const STATE_ROOT = path.join(os.homedir(), '.bigkiji');
@@ -42,6 +44,10 @@ function json(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(value));
 }
+function cookies(req) {
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').map((part) => part.trim().split('='))
+    .filter(([key, value]) => key && value).map(([key, value]) => [key, decodeURIComponent(value)]));
+}
 
 async function readJson(req, max = 1024 * 1024) {
   const chunks = []; let size = 0;
@@ -65,6 +71,11 @@ class DaemonEngine extends EventEmitter {
       routing: { executionMode: 'plan', maxAgents: 3, sessionLeader: 'auto', facilitationComplete: true },
       quality: { gate: 'strict', maxRepairCycles: 2 },
     }) });
+    setImmediate(() => { try { writeSystemMemory({ appRoot: this.appRoot }); } catch (error) {
+      this.publish('commentary', { source: 'PiAgent Engine', status: 'WARN', text: `System memory indexing failed: ${String(error.message).slice(0, 160)}` });
+    } });
+    this.runner.qwenGuardrails.on('health', (health) => this.models.ingestQwenHealth(health));
+    this.runner.qwenGuardrails.on('reset', (reset) => this.publish('commentary', { source: 'Local Qwen', status: 'RESET', text: `KV cache reset: ${reset.reason}` }));
     this.runner.on('task', (task) => {
       this.models.ingestTask(task); this.publish('task', task);
       const sessionId = task.metadata?.runId && this.runSessions.get(task.metadata.runId);
@@ -118,11 +129,11 @@ class DaemonEngine extends EventEmitter {
     return { accepted: true, sessionId: session.id, run };
   }
 
-  directive({ action, runId, text }) {
+  directive({ action, runId, text, revision, planHash, idempotencyKey }) {
     const run = this.coordinator.get(String(runId || '')); if (!run) throw new Error('Unknown run');
     const sessionId = this.runSessions.get(run.id); const normalized = String(action || '').toLowerCase();
     this.sessions.append(sessionId, { type: 'directive', action: normalized, text: String(text || '') });
-    if (normalized === 'accept') return this.coordinator.approve(run.id);
+    if (normalized === 'accept') return this.coordinator.approve(run.id, { revision, planHash, idempotencyKey });
     if (normalized === 'reject' || normalized === 'cancel') return this.coordinator.abort(run.id);
     if (normalized === 'edit' || normalized === 'custom') {
       this.coordinator.abort(run.id);
@@ -173,6 +184,7 @@ class DaemonEngine extends EventEmitter {
 
 function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}) {
   const clients = new Set(); let seq = 0;
+  const mobileDevices = new MobileDeviceStore({ root: engine.stateRoot });
   const sockets = new Set(); const wss = new WebSocketServer({ noServer: true });
   const staticFiles = {
     '/': ['src/components/UI/remote/mobile.html', 'text/html; charset=utf-8'],
@@ -187,18 +199,35 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, source: 'bigkiji-daemon', version: 2, pid: process.pid, uptimeMs: Date.now() - engine.startedAt });
-    const cookieToken = /(?:^|;\s*)bk_t=([a-f0-9]+)/.exec(req.headers.cookie || '')?.[1] || '';
-    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || url.searchParams.get('t') || cookieToken;
+    const jar = cookies(req); const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const masterToken = bearer || url.searchParams.get('t') || jar.bk_t || ''; const isMaster = masterToken === config.token;
+    const mobileDevice = jar.bk_mobile ? mobileDevices.authenticate(jar.bk_mobile) : null;
     if (req.method === 'GET' && staticFiles[url.pathname]) {
-      if (url.pathname === '/' && token !== config.token) return json(res, 401, { error: 'Open the authenticated QR link from BigKiji Universe.' });
+      const pairingCode = url.searchParams.get('pair') || '';
+      if (url.pathname === '/' && !isMaster && !mobileDevice && !mobileDevices.validPairing(pairingCode)) return json(res, 401, { error: 'Open a current pairing QR from BigKiji Universe.' });
       const [relative, type] = staticFiles[url.pathname]; const file = path.join(engine.appRoot, relative);
       if (!fs.existsSync(file)) return json(res, 404, { error: 'asset not found' });
       const headers = { 'content-type': type, 'cache-control': url.pathname === '/' ? 'no-cache' : 'public, max-age=86400' };
-      if (url.pathname === '/' && url.searchParams.get('t') === config.token) headers['set-cookie'] = `bk_t=${config.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`;
       res.writeHead(200, headers); fs.createReadStream(file).pipe(res); return;
     }
-    if (token !== config.token) return json(res, 401, { error: 'unauthorized' });
     try {
+      if (req.method === 'POST' && url.pathname === '/api/mobile/pair') {
+        const body = await readJson(req); const paired = mobileDevices.pair(body.code, { name: body.name, platform: body.platform });
+        res.writeHead(201, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+          'set-cookie': `bk_mobile=${paired.token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=7776000` });
+        res.end(JSON.stringify({ paired: true, csrf: paired.csrf, device: paired.device })); return;
+      }
+      if (!isMaster && !mobileDevice) return json(res, 401, { error: 'unauthorized' });
+      if (url.pathname.startsWith('/api/mobile/') && url.pathname !== '/api/mobile/me' && !isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+      if (mobileDevice && req.method !== 'GET') {
+        const origin = String(req.headers.origin || ''); const host = String(req.headers.host || '');
+        if (origin && new URL(origin).host !== host) return json(res, 403, { error: 'origin mismatch' });
+        if (!mobileDevices.verifyCsrf(mobileDevice, req.headers['x-bigkiji-csrf'])) return json(res, 403, { error: 'csrf check failed' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mobile/pairing') return json(res, 201, mobileDevices.createPairing());
+      if (req.method === 'GET' && url.pathname === '/api/mobile/devices') return json(res, 200, { devices: mobileDevices.list() });
+      if (req.method === 'GET' && url.pathname === '/api/mobile/me') return json(res, 200, { device: mobileDevice ? mobileDevices.public(mobileDevice) : null, master: isMaster });
+      if (req.method === 'POST' && url.pathname === '/api/mobile/devices/revoke') { const body = await readJson(req); return json(res, 200, mobileDevices.revoke(String(body.id || ''))); }
       if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, engine.state());
       if (req.method === 'GET' && url.pathname === '/api/sessions') return json(res, 200, { sessions: engine.sessions.list(Number(url.searchParams.get('limit') || 40)) });
       if (req.method === 'GET' && url.pathname === '/api/session') {
@@ -213,7 +242,11 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         const body = await readJson(req);
         return json(res, 202, engine.prompt(body.text, { mode: body.mode, sessionId: body.sessionId }));
       }
-      if (req.method === 'POST' && url.pathname === '/api/directive') return json(res, 200, engine.directive(await readJson(req)));
+      if (req.method === 'POST' && url.pathname === '/api/directive') {
+        const body = await readJson(req); const run = engine.coordinator.get(String(body.runId || ''));
+        if (mobileDevice && (!run || Number(body.revision) !== run.revision || String(body.planHash || '') !== run.planHash)) return json(res, 409, { error: 'plan changed', run });
+        return json(res, 200, engine.directive(body));
+      }
       if (req.method === 'POST' && url.pathname === '/api/run/approve') { const body = await readJson(req); return json(res, 200, engine.directive({ action: 'accept', runId: body.id })); }
       if (req.method === 'POST' && url.pathname === '/api/run/abort') { const body = await readJson(req); return json(res, 200, engine.directive({ action: 'reject', runId: body.id })); }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
@@ -255,7 +288,7 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
   server.on('error', (error) => { console.error(`[BIGKIJI DAEMON ERROR] ${error.message}`); process.exitCode = 1; });
   const close = () => { clearInterval(ping); for (const socket of sockets) socket.close(); wss.close(); engine.shutdown(); server.close(() => process.exit(0)); };
   process.once('SIGTERM', close); process.once('SIGINT', close);
-  return { server, engine, config, close };
+  return { server, engine, config, mobileDevices, close };
 }
 
 if (require.main === module) startDaemon();

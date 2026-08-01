@@ -19,8 +19,8 @@ function termsFor(prompt) {
 }
 
 class ContextPruner {
-  constructor({ graphPath = '', maxFiles = 10, maxChars = 30000 } = {}) {
-    this.graphPath = graphPath; this.maxFiles = maxFiles; this.maxChars = maxChars; this.cache = new Map();
+  constructor({ graphPath = '', maxFiles = 10, maxChars = 48000, maxTokens = 12000 } = {}) {
+    this.graphPath = graphPath; this.maxFiles = maxFiles; this.maxChars = maxChars; this.maxTokens = Math.min(8192 * 4, Math.max(512, maxTokens)); this.cache = new Map();
   }
 
   read(file) {
@@ -63,7 +63,8 @@ class ContextPruner {
     } catch (_) { return new Set(); }
   }
 
-  prepare({ prompt, policy }) {
+  prepare({ prompt, policy, maxTokens = this.maxTokens }) {
+    maxTokens = Math.min(this.maxTokens, Math.max(512, Number(maxTokens) || this.maxTokens));
     const terms = termsFor(prompt); const allFiles = this.files(policy); const hints = this.graphHints(terms, policy);
     let fullContextTokens = estimateTokens(prompt); const scored = [];
     for (const file of allFiles) {
@@ -75,22 +76,26 @@ class ContextPruner {
       if (score) scored.push({ file, relative, text, score });
     }
     scored.sort((a, b) => b.score - a.score || a.relative.localeCompare(b.relative));
-    const included = []; let used = 0;
+    const included = []; let used = 0; let usedTokens = estimateTokens(prompt) + 32;
     for (const item of scored.slice(0, this.maxFiles)) {
       const lines = item.text.split('\n'); const indexes = [];
       lines.forEach((line, index) => { if (terms.some((term) => line.toLowerCase().includes(term.toLowerCase()))) indexes.push(index); });
       const ranges = indexes.length ? indexes.slice(0, 4).map((index) => [Math.max(0, index - 24), Math.min(lines.length, index + 25)]) : [[0, Math.min(lines.length, 80)]];
       const slice = ranges.map(([a, b]) => `L${a + 1}-L${b}:\n${lines.slice(a, b).join('\n')}`).join('\n…\n');
-      if (used + slice.length > this.maxChars) break;
-      used += slice.length; included.push({ path: item.relative, content: slice });
+      const sliceTokens = estimateTokens(slice) + estimateTokens(item.relative) + 12;
+      if (used + slice.length > this.maxChars || usedTokens + sliceTokens > maxTokens) break;
+      used += slice.length; usedTokens += sliceTokens; included.push({ path: item.relative, content: slice });
     }
     const context = included.map((item) => `\n<file path="${item.path}">\n${item.content}\n</file>`).join('');
-    const prunedPrompt = `${prompt}\n\n[Sandbox-scoped relevant context only]${context || '\nNo matching local context was required.'}`;
+    let prunedPrompt = `${prompt}\n\n[Sandbox-scoped relevant context only]${context || '\nNo matching local context was required.'}`;
+    if (estimateTokens(prunedPrompt) > maxTokens) {
+      const ratio = maxTokens / estimateTokens(prunedPrompt); prunedPrompt = prunedPrompt.slice(0, Math.max(1024, Math.floor(prunedPrompt.length * ratio * 0.96)));
+    }
     const prunedContextTokens = estimateTokens(prunedPrompt);
     return { prompt: prunedPrompt, metrics: { fullContextTokens, prunedContextTokens,
       tokensSaved: Math.max(0, fullContextTokens - prunedContextTokens), measurement: 'estimated',
       includedFiles: included.map((item) => item.path), excludedFiles: Math.max(0, allFiles.length - included.length),
-      sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length } };
+      sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length, contextTokenLimit: maxTokens } };
   }
 }
 

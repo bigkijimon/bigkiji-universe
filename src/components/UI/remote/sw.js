@@ -2,7 +2,7 @@
 // BigKiji Universe Mobile — service worker.
 // 鉄則: /api/* には絶対に respondWith しない（SSEストリームを死守）。
 // '/' は network-first（UIを古くしない）、静的資産のみ cache-first。
-const VERSION = 'bkm-v1';
+const VERSION = 'bkm-v2';
 const STATIC = ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/vendor/three.module.js', '/vendor/three.core.js'];
 
 self.addEventListener('install', (e) => {

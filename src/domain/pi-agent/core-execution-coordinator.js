@@ -66,6 +66,8 @@ class CoreExecutionCoordinator extends EventEmitter {
       mode: ['plan', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
       status: 'PLANNING', leader: routing.sessionLeader === 'auto' || !routing.sessionLeader ? 'claude-code' : routing.sessionLeader,
       assignments: [], repairCycle: 0, maxRepairCycles: Number(settings.quality?.maxRepairCycles || 3),
+      revision: 1, requestedMode: ['plan', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
+      directiveKeys: [],
       quality: { gate: settings.quality?.gate || 'strict', makerCheckerSeparated: true, checks: [] },
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
@@ -73,31 +75,37 @@ class CoreExecutionCoordinator extends EventEmitter {
     const selectedRoles = selectRoles(text, { ...routing, qualityGate: settings.quality?.gate, facilitationComplete: !!promptSpec });
     const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, maxAgents).map((item) => ({ ...item,
       provider: this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider }));
+    run.planHash = planHash || knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
+      assignments: blueprint.map(({ role, provider, write, title }) => ({ role, provider, write, title })) }));
     run.assignments = blueprint.map((item, index) => {
       const task = this.taskRunner.plan({
         id: `${run.id}-${item.role}`,
         provider: item.provider,
         prompt: this._assignmentPrompt(run, item),
         cwd: run.cwd,
-        planHash,
+        planHash: run.planHash,
         metadata: { runId: run.id, role: item.role, agent: item.agent, title: item.title, write: item.write, order: index },
       });
       this.taskToRun.set(task.id, run.id);
       return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, title: item.title,
         write: item.write, status: task.status, fallbackIndex: 0 };
     });
-    run.status = run.mode === 'auto' ? 'DISPATCHING' : 'AWAITING_APPROVAL';
+    // Owner policy is intentionally stronger than executionMode: every mutation-capable run waits here.
+    run.status = 'AWAITING_APPROVAL';
     this.runs.set(run.id, run);
     this._emit(run, 'planned');
     knowledge.recordEvent(run.id, { type: 'run-planned', status: run.status, provider: run.leader, evidence: `${run.assignments.length} specialist assignments` });
-    if (run.mode === 'auto') queueMicrotask(() => this.approve(run.id));
     return publicRun(run);
   }
 
-  approve(id) {
+  approve(id, expected = {}) {
     const run = this.runs.get(id);
     if (!run) throw new Error(`Unknown run: ${id}`);
-    if (!['AWAITING_APPROVAL', 'DISPATCHING'].includes(run.status)) return publicRun(run);
+    if (expected.revision != null && Number(expected.revision) !== run.revision) throw new Error('STALE_RUN_REVISION');
+    if (expected.planHash && String(expected.planHash) !== run.planHash) throw new Error('STALE_PLAN_HASH');
+    if (expected.idempotencyKey && run.directiveKeys.includes(String(expected.idempotencyKey))) return publicRun(run);
+    if (run.status !== 'AWAITING_APPROVAL') return publicRun(run);
+    if (expected.idempotencyKey) run.directiveKeys.push(String(expected.idempotencyKey));
     run.status = 'EXECUTING'; run.startedAt = run.startedAt || new Date().toISOString(); run.updatedAt = new Date().toISOString();
     this._emit(run, 'dispatch');
     for (const assignment of run.assignments) {
@@ -110,6 +118,7 @@ class CoreExecutionCoordinator extends EventEmitter {
   abort(id) {
     const run = this.runs.get(id);
     if (!run) throw new Error(`Unknown run: ${id}`);
+    if (['FAILED', 'COMPLETED'].includes(run.status)) return publicRun(run);
     for (const assignment of run.assignments) {
       const task = this.taskRunner.get(assignment.taskId);
       if (task && ['running', 'queued', 'awaiting_approval'].includes(task.status)) this.taskRunner.abort(task.id);
@@ -148,7 +157,12 @@ class CoreExecutionCoordinator extends EventEmitter {
       run.status = 'REPAIRING'; run.repairCycle += 1; this._emit(run, 'repair');
       let restarted = 0;
       for (const item of failed) restarted += this._fallback(run, item) ? 1 : 0;
-      if (restarted) { run.status = 'EXECUTING'; this._emit(run, 'redispatch'); return; }
+      if (restarted) {
+        run.revision += 1;
+        run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
+          assignments: run.assignments.map(({ role, provider, write, title }) => ({ role, provider, write, title })) }));
+        run.status = 'AWAITING_APPROVAL'; this._emit(run, 'repair-awaiting-approval'); return;
+      }
     }
     run.status = failed.length ? 'FAILED' : 'VERIFYING';
     run.quality.checks = [
@@ -174,7 +188,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       metadata: { ...(oldTask?.metadata || {}), runId: run.id, repairCycle: run.repairCycle, fallbackFrom: assignment.provider },
     });
     this.taskToRun.set(task.id, run.id); assignment.taskId = task.id; assignment.provider = next; assignment.status = task.status;
-    this.taskRunner.approve(task.id); return true;
+    return true;
   }
 
   _emit(run, kind) { this.emit('run', { kind, ...publicRun(run) }); }
