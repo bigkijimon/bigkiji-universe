@@ -6,6 +6,8 @@ The central **Core Accretion Field** receives live data through curved synapse s
 
 > Local planning, memory, context pruning, and speech use Qwen/Ollama. The only authorized paid execution providers are Claude, Codex, Gemini, and GLM.
 
+Natural conversation is local-first too. A lightweight resident Qwen model handles chat and idea capture without waking paid models. Ideas begin as private Markdown drafts under `~/.bigkiji/ideas/`; adopting a draft, improving it with Gemini, or turning it into code always remains an explicit Owner action.
+
 ## What you get
 
 - **3D Force Graph Canvas** — real Vault files, agent relationships, organic synapse strands, pointer zoom, focus and auto-camera modes.
@@ -120,6 +122,14 @@ Example sandbox:
 ```
 
 Invalid sandbox JSON, path traversal, symlink escape, sensitive file, stale disclosure, unknown tool, or a provider outside the allowlist fails closed before the provider process starts.
+
+### Natural conversation and idea drafts
+
+- Ordinary text uses `POST /api/turn`; `CHAT` replies naturally without creating an execution run.
+- `IDEA` creates a private local Markdown draft. The repository stays unchanged until the Owner selects **Adopt**.
+- `TASK` creates a local draft and a sealed execution plan. External models stay stopped until the exact plan and disclosure are approved.
+- **Gemini polish** is a two-step action: review the payload hash and estimated tokens, then approve that exact draft. Gemini receives no repository files or web tools for this operation.
+- CLI users can run `/ideas`, `/idea enhance`, `/idea send`, `/idea plan`, `/idea adopt`, and `/idea archive`. Use `/run …` for an explicit execution plan.
 
 ## Obsidian and Graphify
 

@@ -40,6 +40,12 @@ const DEFAULTS = Object.freeze({
     allSpecialists: false,
     sessionLeader: 'auto',
   },
+  conversation: {
+    model: 'qwen2.5:0.5b',
+    contextTokens: 4096,
+    autoIdeas: true,
+    cloudEnhancementApproval: 'always',
+  },
   quality: {
     gate: 'strict',
     repairScope: 'broad',
@@ -129,6 +135,11 @@ class SettingsStore {
     next.routing.allSpecialists = false;
     next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)
       ? next.routing.sessionLeader : 'auto';
+    next.conversation = next.conversation || clone(DEFAULTS.conversation);
+    next.conversation.model = String(next.conversation.model || 'qwen2.5:0.5b').slice(0, 120);
+    next.conversation.contextTokens = clamp(next.conversation.contextTokens, 1024, 8192, 4096);
+    next.conversation.autoIdeas = next.conversation.autoIdeas !== false;
+    next.conversation.cloudEnhancementApproval = 'always';
     next.quality.gate = ['standard', 'strict'].includes(next.quality.gate) ? next.quality.gate : 'strict';
     next.quality.repairScope = ['off', 'low', 'broad'].includes(next.quality.repairScope) ? next.quality.repairScope : 'broad';
     next.quality.maxRepairCycles = clamp(next.quality.maxRepairCycles, 0, 5, 3);

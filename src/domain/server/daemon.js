@@ -17,6 +17,8 @@ const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
+const { ConversationEngine } = require('../pi-core/conversation-engine');
+const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
 const STATE_ROOT = path.join(os.homedir(), '.bigkiji');
@@ -27,6 +29,7 @@ const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
+  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status',
 });
 
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
@@ -62,11 +65,17 @@ async function readJson(req, max = 1024 * 1024) {
 }
 
 class DaemonEngine extends EventEmitter {
-  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd() } = {}) {
+  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd(),
+    conversationEngine = null, ideaStore = null, knowledgeStore = knowledge } = {}) {
     super();
     this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = path.resolve(workspace);
     this.startedAt = Date.now(); this.sessions = new SessionStore({ root: path.join(this.stateRoot, 'sessions') });
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace, maxParallel: 3 });
+    this.conversation = conversationEngine || new ConversationEngine();
+    this.ideas = ideaStore || new IdeaDraftStore({ root: path.join(this.stateRoot, 'ideas'), workspace: this.workspace });
+    this.ideaEnhancements = new Map();
+    this.knowledge = knowledgeStore;
+    this.conversationConfig = { autoIdeas: true, cloudEnhancementApproval: 'always' };
     this.secrets = new Map();
     for (const [provider, variable] of Object.entries(PROVIDER_SECRET)) {
       const value = process.env[variable];
@@ -92,6 +101,7 @@ class DaemonEngine extends EventEmitter {
       this.models.ingestTask(task); this.publish('task', task);
       const sessionId = task.metadata?.runId && this.runSessions.get(task.metadata.runId);
       if (sessionId) this.sessions.append(sessionId, { type: 'task', status: task.status, task });
+      if (task.metadata?.kind === 'idea-enhancement' && ['completed', 'failed', 'blocked'].includes(task.status)) this.finishIdeaEnhancement(task);
     });
     this.runner.on('log', (entry) => {
       this.publish('tasklog', entry);
@@ -114,6 +124,96 @@ class DaemonEngine extends EventEmitter {
 
   publish(event, data) { this.emit('event', { event, channel: EVENT_CHANNEL[event] || event, data, ts: Date.now() }); }
 
+  sessionSeed(sessionId) {
+    const session = sessionId && this.sessions.read(sessionId); if (!session) return [];
+    return (session.events || []).filter((entry) => entry.type === 'conversation' && entry.text)
+      .map((entry) => ({ role: entry.role === 'assistant' ? 'assistant' : 'owner', text: entry.text })).slice(-16);
+  }
+
+  async turn(text, { sessionId = '', mode = 'auto' } = {}) {
+    const inspected = redactPayload(String(text || '').trim());
+    if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
+    const clean = inspected.text; if (!clean) throw new Error('Conversation text is empty');
+    const session = sessionId ? this.sessions.read(sessionId) : this.sessions.create(clean, { workspace: this.workspace, mode: 'conversation' });
+    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    const seed = this.sessionSeed(session.id);
+    this.activeSessionId = session.id;
+    this.sessions.append(session.id, { type: 'conversation', role: 'owner', status: 'CONVERSATION', text: clean });
+    this.publish('session', this.sessions.read(session.id));
+    this.publish('conversation', { kind: 'turn_start', sessionId: session.id, model: this.conversation.model, text: clean.slice(0, 120), receivedAt: Date.now() });
+    this.publish('pi', { kind: 'turn_start', model: this.conversation.model, text: clean.slice(0, 120) });
+    const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed,
+      onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
+    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
+      turnId: result.turnId, provider: result.provider, latencyMs: result.latencyMs });
+    let draft = null; let run = null;
+    if (result.kind === 'TASK' || (result.kind === 'IDEA' && this.conversationConfig.autoIdeas)) {
+      draft = this.ideas.create({ ...result, sessionId: session.id, turnId: result.turnId, sourceExcerpt: clean, provider: result.provider,
+        ideas: result.ideas.length ? result.ideas : (result.kind === 'IDEA' ? [result.summary || clean] : []) });
+      this.sessions.append(session.id, { type: 'idea', status: 'draft', ideaId: draft.id, draftHash: draft.draftHash, title: draft.title });
+      this.publish('idea', { action: 'created', draft });
+      this.knowledge.rememberIdea?.(draft, 'draft');
+      this.publish('knowledge', { status: 'DRAFTED', ideaId: draft.id, draftHash: draft.draftHash, localOnly: true });
+    }
+    if (result.kind === 'TASK') {
+      const goal = result.summary || clean;
+      const promptSpec = { goal, constraints: result.requirements || [], steps: result.todos || [],
+        acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
+      run = this.coordinator.submit({ prompt: clean, promptSpec, cwd: this.workspace, mode: mode === 'manual' ? 'manual' : 'plan' });
+      this.runSessions.set(run.id, session.id); this.sessions.append(session.id, { type: 'run', status: run.status, run }); this.publish('run', run);
+    }
+    const output = { accepted: true, kind: result.kind, reply: result.reply, sessionId: session.id, turnId: result.turnId,
+      provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
+      requiresApproval: !!run || false };
+    this.publish('conversation', { kind: 'turn_complete', ...output });
+    this.publish('stats', { turn: { input: result.context?.estimatedTokens || 0, output: Math.max(1, Math.ceil(result.reply.length / 4)) },
+      ms: result.latencyMs, provider: result.provider, model: result.model });
+    this.publish('session', this.sessions.read(session.id));
+    return output;
+  }
+
+  requestIdeaEnhancement(id, { draftHash = '' } = {}) {
+    const draft = this.ideas.read(id); if (!draft) throw new Error('Unknown idea draft');
+    if (!draftHash || draftHash !== draft.draftHash) throw new Error('STALE_IDEA_DRAFT');
+    const taskId = `idea-enhance-${Date.now().toString(36)}-${id}`;
+    const prompt = `Improve this private BigKiji idea draft. Do not use tools, web search, files, or outside context. Preserve owner decisions and do not invent requirements. Return JSON only with keys title, summary, ideas, requirements, decisions, openQuestions, todos.\n\n${draft.markdown}`;
+    const task = this.runner.plan({ id: taskId, provider: 'gemini', prompt, cwd: this.workspace,
+      metadata: { kind: 'idea-enhancement', ideaId: draft.id, draftHash: draft.draftHash, promptOnly: true,
+        title: `Gemini improvement for ${draft.title}`, write: false } });
+    this.ideaEnhancements.set(task.id, { ideaId: draft.id, draftHash: draft.draftHash });
+    this.publish('idea', { action: 'enhancement-planned', draft: { ...draft, markdown: undefined }, task });
+    return { draft: { ...draft, markdown: undefined }, task };
+  }
+
+  approveIdeaEnhancement({ taskId, draftHash, disclosureHash } = {}) {
+    const pending = this.ideaEnhancements.get(String(taskId || '')); if (!pending) throw new Error('Unknown idea enhancement');
+    const draft = this.ideas.read(pending.ideaId); if (!draft || !draftHash || draftHash !== pending.draftHash || draftHash !== draft.draftHash) throw new Error('STALE_IDEA_DRAFT');
+    const task = this.runner.get(taskId); if (!task || task.metadata?.kind !== 'idea-enhancement') throw new Error('Unknown idea enhancement task');
+    return this.runner.approve(task.id, { disclosureHash });
+  }
+
+  finishIdeaEnhancement(task) {
+    const pending = this.ideaEnhancements.get(task.id); if (!pending) return;
+    if (task.status !== 'completed') { this.publish('idea', { action: 'enhancement-failed', ideaId: pending.ideaId, task }); return; }
+    try {
+      const raw = String(task.output || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+      const start = raw.indexOf('{'); const end = raw.lastIndexOf('}'); const parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
+      const draft = this.ideas.revise(pending.ideaId, { ...parsed, provider: 'gemini', status: 'enhanced' }, { expectedHash: pending.draftHash });
+      this.knowledge.rememberIdea?.(draft, 'enhanced');
+      this.publish('idea', { action: 'enhanced', draft }); this.publish('knowledge', { status: 'ENHANCED', ideaId: draft.id, draftHash: draft.draftHash });
+    } catch (error) { this.publish('idea', { action: 'enhancement-failed', ideaId: pending.ideaId, error: String(error.message).slice(0, 240), task }); }
+    finally { this.ideaEnhancements.delete(task.id); }
+  }
+
+  planIdea(id, { draftHash = '' } = {}) {
+    const draft = this.ideas.read(id); if (!draft) throw new Error('Unknown idea draft');
+    if (!draftHash || draftHash !== draft.draftHash) throw new Error('STALE_IDEA_DRAFT');
+    const run = this.coordinator.submit({ prompt: draft.markdown, promptSpec: { goal: draft.summary || draft.title,
+      constraints: draft.requirements, steps: draft.todos, acceptance: draft.decisions, questions: draft.openQuestions, ideaId: draft.id }, cwd: this.workspace, mode: 'plan' });
+    const sessionId = draft.sessionId || this.activeSessionId; if (sessionId) { this.runSessions.set(run.id, sessionId); this.sessions.append(sessionId, { type: 'run', status: run.status, run }); }
+    this.publish('run', run); return run;
+  }
+
   setCredentials(values = {}, { replace = false } = {}) {
     for (const provider of ['claude', 'codex', 'gemini', 'glm']) {
       if (!replace && !Object.prototype.hasOwnProperty.call(values, provider)) continue;
@@ -125,6 +225,15 @@ class DaemonEngine extends EventEmitter {
       .map((provider) => [provider, this.secrets.has(provider)]));
     this.publish('security', this.securityState);
     return { ok: true, credentials: this.securityState.credentials };
+  }
+
+  configureConversation(config = {}) {
+    if (config.model) this.conversation.model = String(config.model).slice(0, 120);
+    if (config.contextTokens) this.conversation.maxContextTokens = Math.max(1024, Math.min(8192, Number(config.contextTokens) || 4096));
+    this.conversationConfig.autoIdeas = config.autoIdeas !== false;
+    this.conversationConfig.cloudEnhancementApproval = 'always';
+    const snapshot = { ...this.conversation.snapshot(), ...this.conversationConfig };
+    this.publish('knowledge', { status: 'CONVERSATION_CONFIGURED', conversation: snapshot }); return snapshot;
   }
 
   onRun(run) {
@@ -215,7 +324,7 @@ class DaemonEngine extends EventEmitter {
     return { source: 'bigkiji-daemon', version: 2, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt,
       workspace: this.workspace, activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
       tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, security: this.securityState,
-      phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
+      conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
   }
   shutdown() { clearInterval(this.inventoryTimer); this.runner.shutdown(); }
 }
@@ -268,6 +377,10 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         const body = await readJson(req, 64 * 1024);
         return json(res, 200, engine.setCredentials(body.values || body, { replace: body.replace === true }));
       }
+      if (req.method === 'POST' && url.pathname === '/api/conversation/config') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        return json(res, 200, engine.configureConversation(await readJson(req)));
+      }
       if (req.method === 'GET' && url.pathname === '/api/mobile/devices') return json(res, 200, { devices: mobileDevices.list() });
       if (req.method === 'GET' && url.pathname === '/api/mobile/me') return json(res, 200, { device: mobileDevice ? mobileDevices.public(mobileDevice) : null, master: isMaster });
       if (req.method === 'POST' && url.pathname === '/api/mobile/devices/revoke') { const body = await readJson(req); return json(res, 200, mobileDevices.revoke(String(body.id || ''))); }
@@ -285,6 +398,18 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         const body = await readJson(req);
         return json(res, 202, engine.prompt(body.text, { mode: body.mode, sessionId: body.sessionId }));
       }
+      if (req.method === 'POST' && url.pathname === '/api/turn') {
+        const body = await readJson(req); return json(res, 200, await engine.turn(body.text, { mode: body.mode, sessionId: body.sessionId }));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/ideas') return json(res, 200, { ideas: engine.ideas.list(Number(url.searchParams.get('limit') || 40)) });
+      if (req.method === 'GET' && url.pathname === '/api/idea') {
+        const draft = engine.ideas.read(url.searchParams.get('id')); return json(res, draft ? 200 : 404, draft || { error: 'not found' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/idea/enhance') { const body = await readJson(req); return json(res, 202, engine.requestIdeaEnhancement(body.id, body)); }
+      if (req.method === 'POST' && url.pathname === '/api/idea/enhance/approve') { const body = await readJson(req); return json(res, 202, engine.approveIdeaEnhancement(body)); }
+      if (req.method === 'POST' && url.pathname === '/api/idea/plan') { const body = await readJson(req); return json(res, 202, engine.planIdea(body.id, body)); }
+      if (req.method === 'POST' && url.pathname === '/api/idea/promote') { const body = await readJson(req); const draft = engine.ideas.promote(body.id, body); engine.knowledge.rememberIdea?.(draft, 'promoted'); engine.publish('idea', { action: 'promoted', draft }); return json(res, 200, draft); }
+      if (req.method === 'POST' && url.pathname === '/api/idea/archive') { const body = await readJson(req); const result = engine.ideas.archive(body.id, body); engine.publish('idea', { action: 'archived', ...result }); return json(res, 200, result); }
       if (req.method === 'POST' && url.pathname === '/api/directive') {
         const body = await readJson(req); const run = engine.coordinator.get(String(body.runId || ''));
         if (mobileDevice && (!run || Number(body.revision) !== run.revision || String(body.planHash || '') !== run.planHash

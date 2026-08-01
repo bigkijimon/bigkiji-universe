@@ -5,9 +5,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { DaemonEngine, startDaemon } = require('../src/domain/server/daemon');
+const { daemonSpawnEnv } = require('../src/domain/server/daemon-client');
 const WebSocket = require('ws');
 
 (async () => {
+  assert.equal(daemonSpawnEnv({}, '/workspace', 42, { electron:'40.0.0' }).ELECTRON_RUN_AS_NODE, '1', 'Electron must spawn the daemon in Node mode');
+  assert.equal(daemonSpawnEnv({}, '/workspace', 42, { node:'26.0.0' }).ELECTRON_RUN_AS_NODE, undefined, 'plain Node must not receive Electron-only flags');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-daemon-test-'));
   const engine = new DaemonEngine({ stateRoot: root, workspace: process.cwd() });
   const planned = engine.prompt('Review the daemon architecture and UI. Do not execute yet.', { mode: 'plan' });

@@ -122,7 +122,7 @@ class TaskRunner extends EventEmitter {
       if (!policy.valid) throw new Error(policy.error || 'SECURITY_POLICY_INVALID');
       if (!['qwen', 'ollama'].includes(task.provider)) this.policy.assertProvider(policy, task.provider);
       if (policy.security?.policyHash !== task.disclosure?.policyHash) throw new Error('STALE_SECURITY_POLICY');
-      if (!verifyDisclosureManifest(task.disclosure, policy)) throw new Error('STALE_DISCLOSURE_MANIFEST');
+      if (!verifyDisclosureManifest(task.disclosure, policy, task.preparedPrompt)) throw new Error('STALE_DISCLOSURE_MANIFEST');
       prepared = { prompt: task.preparedPrompt, metrics: task.context };
       task.runtime = this.security.createRuntime(task.id);
       fs.writeFileSync(task.runtime.policyFile, JSON.stringify(policy, null, 2), { mode: 0o600 });
@@ -209,13 +209,15 @@ class TaskRunner extends EventEmitter {
     const local = ['qwen', 'ollama'].includes(task.provider);
     if (!local) this.policy.assertProvider(policy, task.provider);
     if (!policy.valid) throw new Error(policy.error || 'SECURITY_POLICY_INVALID');
-    const prepared = (local ? this.localPruner : this.pruner).prepare({ prompt: task.prompt, policy,
-      maxTokens: local ? this.qwenGuardrails.budget() : this.pruner.maxTokens });
+    const pruner = local ? this.localPruner : this.pruner;
+    const prepared = task.metadata?.promptOnly
+      ? pruner.preparePromptOnly({ prompt: task.prompt, policy, maxTokens: local ? this.qwenGuardrails.budget() : this.pruner.maxTokens })
+      : pruner.prepare({ prompt: task.prompt, policy, maxTokens: local ? this.qwenGuardrails.budget() : this.pruner.maxTokens });
     task.context = { ...prepared.metrics, policySource: policy.source };
     task.preparedPrompt = prepared.prompt; task.securityPolicy = policy;
     task.disclosure = createDisclosureManifest({ runId: task.metadata?.runId || task.id, provider: task.provider,
       purpose: task.metadata?.title || task.prompt.slice(0, 240), policy, slices: prepared.slices,
-      redactions: prepared.redactions, estimatedTokens: prepared.metrics.prunedContextTokens });
+      redactions: prepared.redactions, estimatedTokens: prepared.metrics.prunedContextTokens, payload: prepared.prompt });
     this.emit('security', { taskId: task.id, provider: task.provider, decision: 'MANIFEST', disclosure: task.disclosure, at: new Date().toISOString() });
     return task;
   }

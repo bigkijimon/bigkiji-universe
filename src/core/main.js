@@ -871,8 +871,11 @@ function piSendPrompt(text, opts = {}) {
   if (opts.raw) { piDispatch(String(text), opts); return; }
   if (daemonClient?.connected) {
     const mode = settingsStore?.get().routing.executionMode || 'plan';
-    daemonClient.prompt(String(text), { mode }).then((result) => {
-      bus.push({ source: 'system', type: 'info', text: `Daemon run ${result.run.id} · ${result.run.assignments.length} on-demand models · ${result.run.status}` });
+    daemonClient.turn(String(text), { mode, sessionId: daemonState?.activeSessionId || '' }).then((result) => {
+      daemonState = { ...(daemonState || {}), activeSessionId: result.sessionId };
+      if (result.run) bus.push({ source: 'system', type: 'info', text: `Daemon run ${result.run.id} · ${result.run.assignments.length} on-demand models · ${result.run.status}` });
+      else if (result.draft) bus.push({ source: 'pi', type: 'result', text: `Local idea draft saved · ${result.draft.title}` });
+      if (result.reply) speak(result.reply);
     }).catch((error) => {
       bus.push({ source: 'system', type: 'warn', text: `Daemon route unavailable: ${error.message} · using in-app fallback` });
       fastDispatch(String(text));
@@ -923,6 +926,11 @@ taskCache.init({
   emit: { liveComment: (t, s) => liveComment(t, s), broadcast: (ch, p) => broadcast(ch, p) },
 });
 ipcMain.on('pi:prompt', (_e, text) => piSendPrompt(text));
+ipcMain.handle('conversation:turn', async (_e, text, options = {}) => {
+  if (!daemonClient?.connected) throw new Error('BigKiji daemon is unavailable');
+  const result = await daemonClient.turn(String(text), { ...options, sessionId: options.sessionId || daemonState?.activeSessionId || '' });
+  daemonState = { ...(daemonState || {}), activeSessionId: result.sessionId }; return result;
+});
 
 // Approved parallel execution lanes. Planning is stored locally first; paid
 // lanes cannot be started until an explicit owner approval arrives from UI.
@@ -944,6 +952,13 @@ ipcMain.handle('run:approve', (_e, value) => {
 ipcMain.handle('run:abort', (_e, id) => daemonClient?.connected ? daemonClient.abort(String(id)) : coordinator.abort(String(id)));
 ipcMain.handle('session:list', async () => daemonClient?.connected ? (await daemonClient.sessions()).sessions : []);
 ipcMain.handle('session:get', async (_e, id) => daemonClient?.connected ? daemonClient.session(String(id)) : null);
+ipcMain.handle('idea:list', async () => daemonClient?.connected ? (await daemonClient.ideas()).ideas : []);
+ipcMain.handle('idea:get', async (_e, id) => daemonClient?.connected ? daemonClient.idea(String(id)) : null);
+ipcMain.handle('idea:enhance', async (_e, idea) => daemonClient.enhanceIdea(String(idea.id), String(idea.draftHash)));
+ipcMain.handle('idea:enhance-approve', async (_e, spec) => daemonClient.approveIdeaEnhancement(spec));
+ipcMain.handle('idea:plan', async (_e, idea) => daemonClient.planIdea(String(idea.id), String(idea.draftHash)));
+ipcMain.handle('idea:promote', async (_e, idea) => daemonClient.promoteIdea(String(idea.id), String(idea.draftHash)));
+ipcMain.handle('idea:archive', async (_e, idea) => daemonClient.archiveIdea(String(idea.id), String(idea.draftHash)));
 ipcMain.handle('remote:access', async (_e, request = false) => {
   const options = typeof request === 'object' && request ? request : { ensure: !!request, action: request ? 'pair' : 'status' };
   if (!remoteAccess) return { state: 'unavailable', ready: false };
@@ -967,6 +982,9 @@ ipcMain.handle('preview:stop', () => { previewServer?.close(); const state = pre
 ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});
+  if (daemonClient?.connected && JSON.stringify(before.conversation) !== JSON.stringify(next.conversation)) {
+    daemonClient.configureConversation(next.conversation).catch((error) => bus.push({ source:'system', type:'warn', text:`Conversation settings sync failed: ${error.message}` }));
+  }
   if (ttsService && (before.audio.ttsEndpoint !== next.audio.ttsEndpoint || before.audio.ttsModel !== next.audio.ttsModel)) {
     ttsService.stop();
   }
@@ -1116,14 +1134,17 @@ app.whenReady().then(async () => {
       const daemon = await daemonClient.ensure({ timeoutMs: 8000 });
       await daemonClient.syncCredentials(Object.fromEntries(['claude', 'codex', 'gemini', 'glm']
         .map((provider) => [provider, settingsStore.getSecret(provider)]).filter(([, value]) => value)));
+      await daemonClient.configureConversation(settingsStore.get().conversation);
       daemonState = await daemonClient.state();
       const channelMap = { task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
-        fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status' };
+        fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status',
+        conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status' };
       daemonClient.on('event', ({ event, data }) => {
         if (event === 'state') { daemonState = data; broadcast('daemon:state', data); return; }
         const channel = channelMap[event]; if (channel) broadcast(channel, data);
         if (event === 'run') daemonState = { ...(daemonState || {}), runs: [...(daemonState?.runs || []).filter((run) => run.id !== data.id), data] };
         if (event === 'security') daemonState = { ...(daemonState || {}), security: data };
+        if (event === 'idea' && data.draft) daemonState = { ...(daemonState || {}), ideas: [...(daemonState?.ideas || []).filter((idea) => idea.id !== data.draft.id), data.draft] };
       });
       daemonClient.connect();
       bus.push({ source: 'system', type: 'info', text: `${daemon.started ? 'Started' : 'Attached to'} standalone BigKiji Core Engine · 127.0.0.1:8777` });

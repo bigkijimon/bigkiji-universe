@@ -7,6 +7,12 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 
+function daemonSpawnEnv(baseEnv, workspace, parentPid, versions = process.versions) {
+  const env = { ...baseEnv, BIGKIJI_DAEMON_PARENT: String(parentPid), BIGKIJI_WORKSPACE: workspace };
+  if (versions?.electron) env.ELECTRON_RUN_AS_NODE = '1';
+  return env;
+}
+
 class DaemonClient extends EventEmitter {
   constructor({ appRoot, host = '127.0.0.1', port = 8777, token = '', workspace = process.cwd() } = {}) {
     super(); this.appRoot = path.resolve(appRoot || path.resolve(__dirname, '..', '..', '..'));
@@ -26,8 +32,11 @@ class DaemonClient extends EventEmitter {
     const current = await this.health();
     if (current?.ok) { this.connected = true; this.token = this.loadToken(); return { ...current, started: false }; }
     const entry = path.join(this.appRoot, 'src', 'domain', 'server', 'daemon.js');
-    const child = spawn(process.execPath, [entry], { cwd: this.appRoot, detached: true, stdio: 'ignore',
-      env: { ...process.env, BIGKIJI_DAEMON_PARENT: String(process.pid), BIGKIJI_WORKSPACE: this.workspace } });
+    // Inside Electron, process.execPath points at Electron.app rather than a
+    // standalone Node binary. ELECTRON_RUN_AS_NODE keeps the daemon headless
+    // and prevents an orphaned duplicate Electron application process.
+    const childEnv = daemonSpawnEnv(process.env, this.workspace, process.pid);
+    const child = spawn(process.execPath, [entry], { cwd: this.appRoot, detached: true, stdio: 'ignore', env: childEnv });
     this.childPid = child.pid; child.unref();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -47,9 +56,11 @@ class DaemonClient extends EventEmitter {
     return response.json();
   }
   state() { return this.get('/api/state'); }
+  turn(text, options = {}) { return this.post('/api/turn', { text, ...options }); }
   prompt(text, options = {}) { return this.post('/api/prompt', { text, ...options }); }
   approve(run) { const value = typeof run === 'string' ? { id: run } : run; return this.post('/api/run/approve', value); }
   syncCredentials(values, { replace = false } = {}) { return this.post('/api/security/credentials', { values, replace }); }
+  configureConversation(config) { return this.post('/api/conversation/config', config); }
   abort(id) { return this.post('/api/run/abort', { id }); }
   async reload() {
     const state = await this.state();
@@ -58,6 +69,13 @@ class DaemonClient extends EventEmitter {
   publish(channel, payload) { return this.post('/api/publish', { channel, payload }); }
   sessions() { return this.get('/api/sessions'); }
   session(id) { return this.get(`/api/session?id=${encodeURIComponent(id)}`); }
+  ideas(limit = 40) { return this.get(`/api/ideas?limit=${encodeURIComponent(limit)}`); }
+  idea(id) { return this.get(`/api/idea?id=${encodeURIComponent(id)}`); }
+  enhanceIdea(id, draftHash) { return this.post('/api/idea/enhance', { id, draftHash }); }
+  approveIdeaEnhancement(spec) { return this.post('/api/idea/enhance/approve', spec); }
+  planIdea(id, draftHash) { return this.post('/api/idea/plan', { id, draftHash }); }
+  promoteIdea(id, draftHash) { return this.post('/api/idea/promote', { id, draftHash, ownerConfirmed: true }); }
+  archiveIdea(id, draftHash) { return this.post('/api/idea/archive', { id, draftHash, ownerConfirmed: true }); }
   connect() {
     if (this.controller) return; this.controller = new AbortController();
     this._socket(this.controller.signal).catch(() => this._stream(this.controller.signal))
@@ -97,4 +115,4 @@ class DaemonClient extends EventEmitter {
   }
 }
 
-module.exports = { DaemonClient };
+module.exports = { DaemonClient, daemonSpawnEnv };

@@ -78,10 +78,11 @@ function printState(state) {
 
 async function repl(client) {
   let mode = 'plan'; let sessionId = ''; const state = await client.state(); console.log(header(state));
-  console.log(`${A.dim}Commands: /status /fleet /mode plan|auto /resume /reload /hud /abort /clear /help /exit${A.reset}`);
+  console.log(`${A.dim}Commands: /status /fleet /ideas /idea plan|enhance|send|adopt|archive /run /resume /reload /hud /abort /clear /help /exit${A.reset}`);
   client.on('event', ({ event, data }) => {
-    if (!['commentary', 'phase', 'tasklog', 'run'].includes(event)) return;
-    const text = data.text || data.phase || data.status || ''; process.stdout.write(`\n${A.dim}[${event}]${A.reset} ${text}\nπ> `);
+    if (!['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea'].includes(event)) return;
+    const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
+    process.stdout.write(`\n${A.dim}[${event}]${A.reset} ${text}\nπ> `);
   }); client.connect();
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.violet}π>${A.reset} ` });
   rl.on('line', async (line) => {
@@ -93,11 +94,28 @@ async function repl(client) {
       else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be plan, auto, or manual'); mode = next === 'manual' ? 'plan' : next; console.log(`Mode: ${mode}`); }
       else if (text === '/resume') { const session = await selectSession(client); if (session) { sessionId = session.id; console.log(`Resumed ${session.id}: ${session.promptSummary}`); } }
       else if (text === '/reload') console.log(await client.reload());
+      else if (text === '/ideas') {
+        const { ideas } = await client.ideas(); ideas.forEach((idea) => console.log(`${A.amber}${idea.id}${A.reset}  ${idea.status.padEnd(9)} ${idea.title}  ${String(idea.draftHash).slice(0,10)}`));
+      }
+      else if (text.startsWith('/idea ')) {
+        const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('Usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
+        const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('Idea not found');
+        if (action === 'plan') console.log(await client.planIdea(id, idea.draftHash));
+        else if (action === 'enhance') { const planned = await client.enhanceIdea(id, idea.draftHash); const d = planned.task.disclosure;
+          console.log(`${A.violet}Gemini disclosure${A.reset} ${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
+        else if (action === 'send') console.log(await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
+        else if (action === 'adopt') console.log(await client.promoteIdea(id, idea.draftHash));
+        else if (action === 'archive') console.log(await client.archiveIdea(id, idea.draftHash));
+        else throw new Error('Unknown idea action');
+      }
+      else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode, sessionId }); sessionId = result.sessionId; console.log(`${A.mint}Plan ready:${A.reset} ${result.run.id} · ${result.run.status}`); }
       else if (text === '/hud') console.log(launchHud());
       else if (text === '/abort') console.log(await client.post('/api/abort'));
       else if (text === '/clear') process.stdout.write('\x1b[H\x1b[2J');
-      else if (text === '/help') console.log('Send a brief, review the generated model assignments, then accept from HUD/TUI or run /mode auto before sending.');
-      else { const result = await client.prompt(text, { mode, sessionId }); sessionId = result.sessionId; console.log(`${A.mint}Plan ready:${A.reset} ${result.run.id} · ${result.run.assignments.map((item) => item.provider).join(', ')} · ${result.run.status}`); }
+      else if (text === '/help') console.log('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.');
+      else { const result = await client.turn(text, { mode, sessionId }); sessionId = result.sessionId; console.log(`${A.mint}${result.reply}${A.reset}`);
+        if (result.draft) console.log(`${A.amber}Draft:${A.reset} ${result.draft.id} · ${result.draft.title}`);
+        if (result.run) console.log(`${A.cyan}Plan:${A.reset} ${result.run.id} · ${result.run.status}`); }
     } catch (error) { console.log(`${A.coral}✗ ${error.message}${A.reset}`); }
     rl.prompt();
   });
@@ -113,10 +131,9 @@ async function main(argv = process.argv.slice(2)) {
   if (command === 'reload') { console.log(await client.reload()); return; }
   if (command === 'resume') { const session = await selectSession(client); if (session) console.log(JSON.stringify(await client.session(session.id), null, 2)); return; }
   if (args.length) {
-    const result = await client.prompt(args.join(' '), { mode: auto ? 'auto' : 'plan' });
-    console.log(`${A.mint}● ${result.run.status}${A.reset} ${result.run.id}`);
-    console.log(`  session ${result.sessionId}\n  models  ${result.run.assignments.map((item) => item.provider).join(' · ')}`);
-    if (!auto) console.log(`${A.amber}  Awaiting owner directive. Open “bigkiji monitor” and press a to accept.${A.reset}`);
+    const result = await client.turn(args.join(' '), { mode: auto ? 'auto' : 'plan' }); console.log(`${A.mint}${result.reply}${A.reset}`);
+    if (result.draft) console.log(`  draft   ${result.draft.id} · ${result.draft.title}`);
+    if (result.run) { console.log(`  run     ${result.run.id} · ${result.run.status}`); console.log(`${A.amber}  Awaiting owner directive. Open “bigkiji monitor” and press a to accept.${A.reset}`); }
     return;
   }
   await repl(client);

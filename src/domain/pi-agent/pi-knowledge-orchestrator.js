@@ -24,7 +24,7 @@ function cleanText(value, max = 1200) {
     .replace(/\s+/g, ' ').trim().slice(0, max);
 }
 function emptyState() {
-  return { version: 2, project: 'bigkiji-universe', tasks: [], plans: [], events: [],
+  return { version: 2, project: 'bigkiji-universe', tasks: [], plans: [], ideas: [], events: [],
     physicalLayout: {}, fleetMetrics: null, updatedAt: null };
 }
 function emptyGraph() {
@@ -41,7 +41,7 @@ function writeJson(file, data) {
 }
 function loadState() {
   const state = readJson(STATE_PATH, emptyState);
-  return { ...emptyState(), ...state, version: 2, tasks: state.tasks || [], plans: state.plans || [], events: state.events || [] };
+  return { ...emptyState(), ...state, version: 2, tasks: state.tasks || [], plans: state.plans || [], ideas: state.ideas || [], events: state.events || [] };
 }
 function loadGraph() {
   const graph = readJson(GRAPH_PATH, emptyGraph);
@@ -103,6 +103,17 @@ function saveFleetMetrics(metrics) {
   const state = loadState(); state.fleetMetrics = { ...metrics, savedAt: new Date().toISOString() }; saveState(state);
   return state.fleetMetrics;
 }
+function rememberIdea(draft, status = draft?.status || 'draft') {
+  if (!draft?.id || !draft?.draftHash) return null;
+  const item = { id: cleanText(draft.id, 96), title: cleanText(draft.title, 180), summary: cleanText(draft.summary, 900),
+    status: cleanText(status, 40), draftHash: cleanText(draft.draftHash, 80), sessionId: cleanText(draft.sessionId, 96),
+    promotedPath: cleanText(draft.promotedPath, 300), updatedAt: new Date().toISOString() };
+  const state = loadState(); state.ideas = [...state.ideas.filter((idea) => idea.id !== item.id), item].slice(-200); saveState(state);
+  const graph = loadGraph(); upsertNode(graph, `idea:${item.id}`, 'idea', `${item.title} · ${item.status}`);
+  if (item.sessionId) { upsertNode(graph, `session:${item.sessionId}`, 'session', item.sessionId); edge(graph, `session:${item.sessionId}`, `idea:${item.id}`, 'produced-idea'); }
+  if (item.promotedPath) { upsertNode(graph, `source-file:${item.promotedPath}`, 'source-file', item.promotedPath); edge(graph, `idea:${item.id}`, `source-file:${item.promotedPath}`, 'promoted-to'); }
+  saveGraph(graph); return item;
+}
 function upsertNode(graph, id, type, label) {
   const existing = graph.nodes.find((n) => n.id === id);
   if (existing) { existing.label = cleanText(label, 240); existing.updatedAt = new Date().toISOString(); return; }
@@ -121,4 +132,4 @@ function canSpend(provider, planned = false) { return assertExecutor(provider) &
 
 module.exports = { ROOT, STATE_PATH, GRAPH_PATH, ALLOWED_EXECUTORS, PAID_EXECUTORS,
   cleanText, hash, loadState, loadGraph, saveState, saveGraph, createTask, rememberPlan,
-  findPlan, recordEvent, savePhysicalLayout, saveFleetMetrics, assertExecutor, canSpend };
+  findPlan, recordEvent, savePhysicalLayout, saveFleetMetrics, rememberIdea, assertExecutor, canSpend };

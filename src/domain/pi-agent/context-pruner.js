@@ -104,6 +104,19 @@ class ContextPruner {
       sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length, contextTokenLimit: maxTokens,
       redactionCount: redacted.redactionCount } };
   }
+
+  preparePromptOnly({ prompt, policy, maxTokens = this.maxTokens }) {
+    maxTokens = Math.min(this.maxTokens, Math.max(512, Number(maxTokens) || this.maxTokens));
+    const redacted = redactPayload(String(prompt || ''));
+    if (redacted.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_CONTEXT');
+    let value = redacted.text; const initialTokens = estimateTokens(value);
+    if (initialTokens > maxTokens) value = value.slice(0, Math.max(1024, Math.floor(value.length * (maxTokens / initialTokens) * 0.96)));
+    const prunedContextTokens = estimateTokens(value);
+    return { prompt: value, slices: [], redactions: redacted.findings,
+      metrics: { fullContextTokens: initialTokens, prunedContextTokens, tokensSaved: Math.max(0, initialTokens - prunedContextTokens),
+        measurement: 'estimated', includedFiles: [], excludedFiles: 0, sandboxPath: policy.sandboxPath,
+        scannedFiles: 0, contextTokenLimit: maxTokens, redactionCount: redacted.redactionCount, promptOnly: true } };
+  }
 }
 
 module.exports = { ContextPruner, estimateTokens, termsFor, SKIP };

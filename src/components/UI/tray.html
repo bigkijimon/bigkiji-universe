@@ -163,7 +163,7 @@
   .shell::before { width:150px;height:150px;left:-58px;top:112px;background:rgba(52,211,153,.32);animation:decorDrift 12s ease-in-out infinite; }
   .shell::after { width:130px;height:130px;right:-48px;bottom:82px;background:rgba(168,85,247,.25);animation:decorDrift 15s ease-in-out -5s infinite reverse; }
   @keyframes decorDrift { 0%,100%{transform:translate3d(0,0,0) scale(.96)}50%{transform:translate3d(9px,-12px,0) scale(1.05)} }
-  header, #orbWrap, .composer, #cards, .streamCard, .utilityRow, #piAnswer, #feed > .fcd {
+  header, #orbWrap, .composer, #cards, .streamCard, .utilityRow, #piAnswer, #ideaDraft, #feed > .fcd {
     border: 1px solid rgba(255,255,255,.10); border-radius: 12px;
     background: rgba(15,23,42,.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
     box-shadow: 0 20px 25px -5px rgba(0,0,0,.7), 0 0 15px rgba(0,255,200,.15);
@@ -197,6 +197,17 @@
   .agentSay { min-width:0; max-width:198px; padding:7px 9px; border:1px solid color-mix(in srgb,var(--c) 25%,rgba(255,255,255,.08)); border-radius:12px 12px 3px 12px; color:#f5faf7; background:rgba(9,15,24,.9); box-shadow:0 14px 30px rgba(0,0,0,.48); }
   .agentSay b { display:block; margin-bottom:3px; color:var(--c); font:750 8px -apple-system,sans-serif; letter-spacing:.04em; }
   .agentSay span { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; font:10px/1.42 -apple-system,"Hiragino Sans",sans-serif; }
+  #ideaDraft { display:none; margin:0 12px 4px; padding:9px 10px; border-color:rgba(234,179,8,.24); background:linear-gradient(110deg,rgba(24,22,12,.88),rgba(15,23,42,.78)); }
+  #ideaDraft.on { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px 10px; align-items:center; animation:draftReveal .32s var(--ease-out) both; }
+  #ideaDraft .ideaCopy { min-width:0; }.ideaEyebrow { color:#eab308; font:750 7px "SF Mono",Menlo,monospace; letter-spacing:.14em; }
+  #ideaDraft strong { display:block; margin-top:3px; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:650 10.5px -apple-system,"Hiragino Sans",sans-serif; }
+  #ideaDraft small { display:block; margin-top:2px; color:rgba(226,240,234,.48); font:7.5px "SF Mono",Menlo,monospace; }
+  .ideaActions { display:flex; gap:4px; }.ideaActions button { border:1px solid rgba(255,255,255,.12); border-radius:7px; padding:5px 7px; color:#dce8e1; background:rgba(255,255,255,.035); cursor:pointer; font:700 7px -apple-system,sans-serif; }
+  .ideaActions button[data-action="enhance"] { color:#b8a1ff; border-color:rgba(168,85,247,.28); }.ideaActions button[data-action="plan"] { color:#8ed3b2; border-color:rgba(16,185,129,.28); }
+  .ideaActions button.confirm { color:#111827; background:#eab308; border-color:#eab308; }.ideaActions button:disabled { opacity:.35; cursor:default; }
+  #ideaDisclosure { display:none; grid-column:1/-1; padding-top:7px; border-top:1px solid rgba(255,255,255,.08); color:#aebbb4; font:7.5px/1.5 "SF Mono",Menlo,monospace; }
+  #ideaDisclosure.on { display:flex; justify-content:space-between; gap:8px; align-items:center; } #ideaDisclosure button { flex:none; border:1px solid rgba(168,85,247,.4); border-radius:7px; padding:5px 8px; color:#fff; background:rgba(168,85,247,.15); font:700 7px -apple-system,sans-serif; cursor:pointer; }
+  @keyframes draftReveal { from{opacity:0;transform:translateY(5px) rotate(-.2deg)}to{opacity:1;transform:translateY(0) rotate(-.2deg)} }
   @keyframes bubbleIn { to{opacity:1;transform:translate3d(0,0,0) scale(1)} } @keyframes bubbleOut { to{opacity:0;transform:translate3d(8px,-5px,0) scale(.96)} }
   #remotePanel { position:absolute; inset:8px; z-index:20; display:none; padding:16px; border:1px solid rgba(0,243,255,.35); border-radius:16px; background:rgba(4,9,18,.94); box-shadow:0 24px 60px rgba(0,0,0,.75),0 0 24px rgba(0,243,255,.16); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
   #remotePanel.on { display:flex; flex-direction:column; align-items:center; gap:10px; }
@@ -246,6 +257,7 @@
       </button>
     </div>
     <div id="piAnswer"></div>
+    <div id="ideaDraft" aria-live="polite"><div class="ideaCopy"><span class="ideaEyebrow">LOCAL IDEA DRAFT</span><strong id="ideaTitle"></strong><small id="ideaMeta"></small></div><div class="ideaActions"><button data-action="enhance">Gemini polish</button><button data-action="plan">Make plan</button><button data-action="promote">Adopt</button><button data-action="archive">×</button></div><div id="ideaDisclosure"><span></span><button type="button">Review &amp; send</button></div></div>
     <div id="feed"></div>
     <div id="cards"></div>
     <div class="streamCard"><div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
@@ -404,6 +416,48 @@
     const cmd = document.getElementById('cmd');
     const piToggle = document.getElementById('piToggle');
     const piAnswer = document.getElementById('piAnswer');
+    const ideaDraft = document.getElementById('ideaDraft');
+    const ideaDisclosure = document.getElementById('ideaDisclosure');
+    let currentIdea = null; let pendingEnhancement = null; let confirmTimer = null;
+    function showIdea(draft, action = 'created') {
+      if (!draft?.id) return; currentIdea = draft; ideaDraft.classList.add('on');
+      document.getElementById('ideaTitle').textContent = draft.title || 'Untitled idea';
+      document.getElementById('ideaMeta').textContent = `${action === 'enhanced' ? 'Gemini-enhanced' : 'Private · local only'} · ${String(draft.draftHash || '').slice(0,10)}`;
+      ideaDisclosure.classList.remove('on'); pendingEnhancement = null;
+    }
+    function confirmIdeaButton(button, label, action) {
+      if (!button.classList.contains('confirm')) {
+        ideaDraft.querySelectorAll('button.confirm').forEach((item) => item.classList.remove('confirm'));
+        button.classList.add('confirm'); const before = button.textContent; button.textContent = label;
+        clearTimeout(confirmTimer); confirmTimer = setTimeout(() => { button.classList.remove('confirm'); button.textContent = before; }, 4200); return;
+      }
+      clearTimeout(confirmTimer); button.disabled = true; action().finally(() => { button.disabled = false; button.classList.remove('confirm'); });
+    }
+    ideaDraft.querySelector('.ideaActions').addEventListener('click', async (event) => {
+      const button = event.target.closest('button'); if (!button || !currentIdea) return; const action = button.dataset.action;
+      try {
+        if (action === 'enhance') {
+          button.disabled = true; pendingEnhancement = await window.bigkiji.enhanceIdea(currentIdea);
+          const manifest = pendingEnhancement.task?.disclosure || {}; ideaDisclosure.querySelector('span').textContent =
+            `Gemini · ${manifest.estimatedTokens || 0} tok · ${manifest.files?.length || 0} files · payload ${String(manifest.payloadHash || '').slice(0,10)}`;
+          ideaDisclosure.classList.add('on');
+        } else if (action === 'plan') {
+          const run = await window.bigkiji.planIdea(currentIdea); piAnswer.textContent = `Plan ready · ${run.assignments?.length || 0} models remain asleep until approval.`; piAnswer.classList.add('on');
+        } else if (action === 'promote') confirmIdeaButton(button, 'Adopt now', async () => {
+          const adopted = await window.bigkiji.promoteIdea(currentIdea); showIdea(adopted, 'promoted');
+        });
+        else if (action === 'archive') confirmIdeaButton(button, 'Archive?', async () => { await window.bigkiji.archiveIdea(currentIdea); ideaDraft.classList.remove('on'); currentIdea = null; });
+      } catch (error) { piAnswer.textContent = String(error.message || error); piAnswer.classList.add('on'); }
+      finally { if (action === 'enhance') button.disabled = false; }
+    });
+    ideaDisclosure.querySelector('button').addEventListener('click', async () => {
+      if (!pendingEnhancement || !currentIdea) return; const button = ideaDisclosure.querySelector('button'); button.disabled = true;
+      try {
+        await window.bigkiji.approveIdeaEnhancement({ taskId:pendingEnhancement.task.id, draftHash:currentIdea.draftHash,
+          disclosureHash:pendingEnhancement.task.disclosure?.disclosureHash });
+        ideaDisclosure.querySelector('span').textContent = 'Gemini is improving only this sealed draft…'; ideaDisclosure.classList.add('on');
+      } catch (error) { piAnswer.textContent = String(error.message || error); piAnswer.classList.add('on'); button.disabled = false; }
+    });
     let piMode = true; // 既定の宛先=AI（初回⏎でPiが自動起動）
     piToggle.addEventListener('click', () => {
       piMode = !piMode;
@@ -448,6 +502,17 @@
       feedResolve('turn');
       feedCard('tok' + Date.now(), '✅', s.turn ? ('in ' + s.turn.input + ' · out ' + s.turn.output + ' tok') : 'turn done', '#34d399', false);
     });
+    window.bigkiji.onConversation((turn) => {
+      if (turn.kind !== 'turn_complete') return;
+      if (turn.reply) popAgentBubble('local-qwen', turn.reply);
+      if (turn.degraded) feedCard('conversation-degraded', '○', 'Local model unavailable · safe fallback used', '#eab308', false);
+    });
+    window.bigkiji.onIdeaDraft((event) => {
+      if (event.action === 'created' || event.action === 'enhanced' || event.action === 'promoted') showIdea(event.draft, event.action);
+      if (event.action === 'enhancement-failed') { ideaDisclosure.querySelector('span').textContent = `Gemini improvement stopped · ${event.error || event.task?.error || 'provider failed'}`; ideaDisclosure.querySelector('button').disabled = true; }
+      if (event.action === 'archived') { ideaDraft.classList.remove('on'); currentIdea = null; }
+    });
+    window.bigkiji.listIdeas?.().then((ideas) => { if (ideas?.[0] && ideas[0].status !== 'archived') showIdea(ideas[0], ideas[0].status); }).catch(() => {});
     window.bigkiji.onComposerFocus(() => { cmd.focus(); cmd.select(); });
     document.getElementById('openCanvas').addEventListener('click', () => window.bigkiji.openMain());
     document.getElementById('nudge').addEventListener('click', () => {

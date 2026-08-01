@@ -156,6 +156,11 @@
   #feedM .fl { font: 10px "SF Mono", Menlo, monospace; color: var(--faint); line-height: 1.8;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #feedM .fl b { color: var(--dim); font-weight: 600; }
+  #ideaM { display:none; margin:8px 12px; padding:10px 11px; border:1px solid rgba(234,179,8,.25); border-radius:13px; background:linear-gradient(120deg,rgba(28,24,10,.9),rgba(8,16,24,.9)); box-shadow:0 14px 32px rgba(0,0,0,.32); }
+  #ideaM.on { display:block; } #ideaM label { display:block; color:#eab308; font:750 8px "SF Mono",Menlo,monospace; letter-spacing:.12em; }
+  #ideaM strong { display:block; margin:5px 0 8px; color:#f8fafc; font:650 12px/1.35 -apple-system,"Hiragino Sans",sans-serif; }
+  #ideaM nav { display:flex; gap:6px; } #ideaM button { border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px 9px; color:#dce8e2; background:rgba(255,255,255,.04); font:700 9px -apple-system,sans-serif; }
+  #ideaM button:first-child { color:#b8a1ff;border-color:rgba(168,85,247,.3) } #ideaM button:nth-child(2){color:#86d5ad;border-color:rgba(16,185,129,.3)}
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -175,6 +180,7 @@
     <span id="vstate">LISTENING</span>
   </div>
   <div id="reply"></div>
+  <div id="ideaM"><label>PRIVATE IDEA DRAFT</label><strong id="ideaMTitle"></strong><nav><button data-idea="enhance">Gemini polish</button><button data-idea="plan">Make plan</button><button data-idea="adopt">Adopt</button></nav></div>
   <div id="composer">
     <input id="txt" type="text" autocomplete="off" spellcheck="false"
       placeholder="Command the universe…  ⏎ to send" enterkeyhint="send" />
@@ -259,6 +265,7 @@ const evTimes = [];
 const latHist = [];
 let lastTokRate = 0, vaultCount = 0, curModel = '', sseRtt = 0, pendingInventory = null;
 let currentRun = null;
+let currentIdea = null;
 const setM = (v, b, val, max) => { $(v).textContent = val; $(b).style.width = Math.min(100, (parseFloat(val) || 0) / max * 100) + '%'; };
 setInterval(() => {
   const now = performance.now();
@@ -372,6 +379,21 @@ function connect() {
   es.addEventListener('inventory', (e) => applyState({ inventory: JSON.parse(e.data) }));
   es.addEventListener('phase', (e) => { const phase = JSON.parse(e.data); if (phase.phase === 'PREFLIGHT' || phase.phase === 'AWAITING_OWNER_DIRECTIVE') wakeMobileCore(); });
   es.addEventListener('commentary', (e) => { const c = JSON.parse(e.data); comm('[LIVE] ' + c.text); });
+  // The final conversation event is authoritative state. Visible text is already
+  // delivered through the Pi delta stream, so rendering it again would duplicate
+  // every local reply on mobile.
+  es.addEventListener('conversation', (e) => {
+    const turn = JSON.parse(e.data);
+    if (turn.kind === 'turn_complete' && turn.reply) {
+      replyBuf = turn.reply;
+      feedM(`<b>${esc(turn.model || 'Local Qwen')}</b> ${esc(turn.kind || 'CHAT')} · ${turn.latencyMs ?? '—'}ms`);
+    }
+  });
+  es.addEventListener('idea', (e) => {
+    const event = JSON.parse(e.data); if (event.draft) { currentIdea = event.draft; $('ideaMTitle').textContent = currentIdea.title; $('ideaM').classList.add('on'); }
+    if (event.action === 'archived') { currentIdea = null; $('ideaM').classList.remove('on'); }
+    if (event.action === 'enhancement-failed') comm('[IDEA] Gemini improvement stopped: ' + (event.error || event.task?.error || 'provider failed'));
+  });
   es.addEventListener('pi', (e) => {
     const p = JSON.parse(e.data);
     if (p.kind === 'turn_start') {
@@ -439,7 +461,7 @@ async function sendPrompt(text) {
   wakeMobileCore();
   replyShow(esc('❯ ' + text), 'you');
   try {
-    const r = await fetch(api('/api/prompt'), { method: 'POST', headers: { 'content-type': 'application/json', ...(CSRF ? { 'x-bigkiji-csrf': CSRF } : {}) }, body: JSON.stringify({ text, mode:'plan' }) });
+    const r = await fetch(api('/api/turn'), { method: 'POST', headers: { 'content-type': 'application/json', ...(CSRF ? { 'x-bigkiji-csrf': CSRF } : {}) }, body: JSON.stringify({ text, mode:'plan' }) });
     if (!r.ok) comm('[LIVE] ⚠️ Prompt rejected — check token / connection');
   } catch (_) { comm('[LIVE] ⚠️ Send failed — offline?'); }
 }
@@ -447,6 +469,20 @@ $('send').addEventListener('click', () => { sendPrompt($('txt').value); $('txt')
 $('txt').addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter') { sendPrompt($('txt').value); $('txt').value = ''; }
+});
+$('ideaM').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-idea]'); if (!button || !currentIdea) return; button.disabled = true;
+  try {
+    if (button.dataset.idea === 'plan') await post('/api/idea/plan', { id:currentIdea.id, draftHash:currentIdea.draftHash });
+    else if (button.dataset.idea === 'adopt') {
+      if (!confirm(`Adopt “${currentIdea.title}” into docs/ideas?`)) return;
+      currentIdea = await post('/api/idea/promote', { id:currentIdea.id, draftHash:currentIdea.draftHash, ownerConfirmed:true });
+    } else if (button.dataset.idea === 'enhance') {
+      const planned = await post('/api/idea/enhance', { id:currentIdea.id, draftHash:currentIdea.draftHash }); const seal = planned.task.disclosure;
+      if (!confirm(`Send this sealed draft to Gemini?\n${seal.estimatedTokens} tokens · ${seal.files.length} files\nPayload ${seal.payloadHash.slice(0,12)}`)) return;
+      await post('/api/idea/enhance/approve', { taskId:planned.task.id, draftHash:currentIdea.draftHash, disclosureHash:seal.disclosureHash });
+    }
+  } catch (error) { comm('[IDEA] ' + error.message); } finally { button.disabled = false; }
 });
 
 /* ── Owner directive controls ── */
