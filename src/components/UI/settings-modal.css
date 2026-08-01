@@ -33,6 +33,12 @@
 .settings-card { padding: 13px; border: 1px solid rgba(184,202,191,.12); border-radius: 12px; background: rgba(10,15,13,.48); }
 .settings-card.wide { grid-column: 1 / -1; }
 .settings-card h3 { margin: 0 0 10px; color: rgba(224,232,227,.72); font: 650 9px "SF Mono", Menlo, monospace; letter-spacing: .1em; }
+.security-posture { border-color: rgba(101,190,154,.25); background: linear-gradient(145deg,rgba(16,30,25,.7),rgba(8,14,12,.46)); }
+.security-seal { display:flex; align-items:center; gap:12px; margin:3px 0 13px; padding:11px; border:1px solid rgba(101,190,154,.16); border-radius:10px; background:rgba(101,190,154,.06); }
+.security-seal>span { display:grid; place-items:center; width:34px; height:34px; border-radius:50%; color:#9bd8bd; background:rgba(101,190,154,.12); box-shadow:0 0 20px rgba(101,190,154,.1); }
+.security-seal div { display:grid; gap:3px; } .security-seal b { color:#dceae3; font:700 13px "SF Mono",monospace; } .security-seal b.ok{color:#8fd4b4}.security-seal b.bad{color:#e9a18d}.security-seal small{color:#70857b;font-size:10px}
+.security-counts { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }.security-counts div{display:grid;gap:3px;padding:12px;border:1px solid rgba(184,202,191,.1);border-radius:9px;background:rgba(255,255,255,.018)}.security-counts b{color:#e4eee9;font:700 22px "SF Mono",monospace}.security-counts span{color:#71877c;font-size:9px}
+.security-recent { display:grid; gap:5px; }.security-row{display:grid;grid-template-columns:70px 76px 90px 1fr;gap:8px;align-items:center;padding:7px 8px;border-bottom:1px solid rgba(184,202,191,.08);font:9px "SF Mono",monospace}.security-row time{color:#70857b}.security-row b{color:#9bd8bd}.security-row span{color:#b2c2ba}.security-row em{color:#7e9188;font-style:normal;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#securityPolicyHash{display:block;margin-top:9px;color:#71877c;font:9px "SF Mono",monospace}
 .settings-copy { font-size:11px; line-height:1.65; color:#91a098; }
 .setting-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(150px, 1.25fr) auto; gap: 9px; align-items: center; min-height: 34px; }
 .setting-row + .setting-row { border-top: 1px solid rgba(151,218,204,.08); }

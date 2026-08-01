@@ -1,36 +1,20 @@
 'use strict';
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { execFile } = require('child_process');
 const knowledge = require('./pi-knowledge-orchestrator');
 
-// Front desk only. Gemini owns owner facilitation; local Qwen is the zero-cost
-// fallback and GLM is used only if both are unavailable.
-const PRIORITY = ['gemini', 'ollama', 'glm'];
+// Front desk is deliberately local-only. External providers receive no owner
+// text until a disclosure manifest has been reviewed and approved.
+const PRIORITY = ['ollama'];
 const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
 const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
 const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: 'glm-4.7-flash' };
-const PLACEHOLDER = /^REPLACE_WITH|^YOUR_|^$/i;
-
-function usableKey(value) { return typeof value === 'string' && value.length > 8 && !PLACEHOLDER.test(value); }
-function glmConfig() {
-  if (usableKey(process.env.ZAI_API_KEY)) return { key: process.env.ZAI_API_KEY, baseUrl: 'https://api.z.ai/api/paas/v4' };
-  try {
-    const file = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.pi', 'agent', 'models.json'), 'utf8'));
-    const provider = file.providers?.zai;
-    if (provider && usableKey(provider.apiKey)) return { key: provider.apiKey, baseUrl: provider.baseUrl };
-  } catch (_) {}
-  return null;
-}
 async function ollamaReady(timeoutMs = 850) {
   const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try { const response = await fetch('http://127.0.0.1:11434/api/tags', { signal: ctrl.signal }); return response.ok; }
   catch (_) { return false; } finally { clearTimeout(timer); }
 }
-async function detect() { return { ollama: await ollamaReady(), glm: !!glmConfig(), claude: true, codex: true,
-  gemini: usableKey(process.env.GEMINI_API_KEY) || executableExists(process.env.GEMINI_BIN || 'gemini'), kimi: false, openrouter: false }; }
+async function detect() { return { ollama: await ollamaReady(), glm: false, claude: false, codex: false,
+  gemini: false, kimi: false, openrouter: false }; }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
 
 function safeJson(text) {
@@ -52,31 +36,6 @@ async function runOllama(prompt) {
   });
   const body = await response.json(); if (!response.ok || body.error) throw new Error(body.error || `ollama ${response.status}`);
   return String(body.response || '');
-}
-function executableExists(command) {
-  if (path.isAbsolute(command)) { try { fs.accessSync(command, fs.constants.X_OK); return true; } catch (_) { return false; } }
-  return String(process.env.PATH || '').split(path.delimiter).some((dir) => {
-    try { fs.accessSync(path.join(dir, command), fs.constants.X_OK); return true; } catch (_) { return false; }
-  });
-}
-function runGemini(prompt) {
-  return new Promise((resolve, reject) => {
-    execFile(process.env.GEMINI_BIN || 'gemini', ['--prompt', prompt, '--output-format', 'json', '--approval-mode', 'plan', '--sandbox', '--skip-trust'],
-      { timeout: 45000, maxBuffer: 2 * 1024 * 1024, env: process.env }, (error, stdout, stderr) => {
-        if (error) { reject(new Error(String(stderr || error.message).slice(0, 500))); return; }
-        const raw = String(stdout || '').trim(); const wrapped = safeJson(raw);
-        resolve(typeof wrapped?.response === 'string' ? wrapped.response : typeof wrapped?.text === 'string' ? wrapped.text : raw);
-      });
-  });
-}
-async function runGlm(prompt) {
-  const conf = glmConfig(); if (!conf) throw new Error('GLM is not configured');
-  const response = await fetch(`${conf.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${conf.key}` },
-    body: JSON.stringify({ model: MODELS.glm, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.1 }),
-  });
-  const body = await response.json(); if (!response.ok) throw new Error(body.error?.message || `glm ${response.status}`);
-  return String(body.choices?.[0]?.message?.content || '');
 }
 function fallbackSpec(ownerText) {
   return { status: 'ready', questions: [], promptSpec: {
@@ -106,7 +65,7 @@ class FastFacilitatorRouter {
       onStart?.(candidate);
       try {
         const request = facilitatorPrompt(combined, prior);
-        const raw = candidate === 'gemini' ? await runGemini(request) : candidate === 'ollama' ? await runOllama(request) : await runGlm(request);
+        const raw = await runOllama(request);
         parsed = safeJson(raw); if (!parsed) throw new Error(`${candidate} returned invalid facilitator JSON`);
         provider = candidate; break;
       } catch (err) { lastError = err; }
@@ -130,4 +89,4 @@ class FastFacilitatorRouter {
   reset() { this.pending = null; }
 }
 
-module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, executableExists };
+module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt };

@@ -85,6 +85,7 @@ Open Settings with the HUD control or `Cmd/Ctrl + ,`.
 
 - **Audio & Voices** — Owner/Agent volumes, attention cue, speech speed, Qwen voice profiles, previews.
 - **Models & API** — approved provider credentials, Qwen timeout, Vault/Knowledge/Graphify paths.
+- **Security** — live egress posture, disclosure seals, blocked actions, and policy hash.
 - **cmux** — connection, themes, workspace colors, new terminals, splits, and the complete Operations Index.
 - **Mobile** — Tailscale diagnostics, five-minute pairing QR codes, paired Owner devices, revocation, and PWA installation guidance.
 
@@ -98,7 +99,9 @@ Before an external executor starts, BigKiji:
 2. rejects paths outside the configured Vault and blocked providers;
 3. queries local Graphify data, or falls back to local text search;
 4. includes only matching file slices;
-5. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
+5. redacts credentials and personal identifiers, then seals the selected paths and line ranges in a disclosure manifest;
+6. waits for Owner approval of the exact revision, plan hash, disclosure hash, and policy hash;
+7. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
 
 The daemon also maintains `~/.bigkiji/system_memory.json`, a secret-free structural index keyed by a source hash. Local Qwen receives at most 8,192 tokens (6,144 normally and 4,096 when degraded), and its work is split into short PiAgent-managed steps. Run `npm run index:memory` to inspect or refresh the index explicitly.
 
@@ -116,7 +119,7 @@ Example sandbox:
 }
 ```
 
-Invalid sandbox JSON, path traversal, or a provider outside the allowlist forces the task back to the local-only path.
+Invalid sandbox JSON, path traversal, symlink escape, sensitive file, stale disclosure, unknown tool, or a provider outside the allowlist fails closed before the provider process starts.
 
 ## Obsidian and Graphify
 
@@ -176,7 +179,7 @@ To connect an iPhone or Android device:
 2. Open **Settings → Mobile** and choose **Create 5-minute QR**.
 3. BigKiji enables Tailscale Serve for the loopback daemon and creates a one-use pairing ticket. The daemon master token is never placed in the QR.
 4. Scan the QR, pair the phone, then add **BigKiji Universe Mobile** to the Home Screen.
-5. The paired PWA can send prompts, resume sessions, review the current plan seal, hold to accept, edit, reject, or stop a run. Stale revisions and duplicate approvals are rejected by the daemon.
+5. The paired PWA can send prompts, resume sessions, review the current plan and disclosure seals, hold to accept, edit, reject, or stop a run. Stale revisions, changed disclosures, and duplicate approvals are rejected by the daemon.
 
 If Tailscale is logged out, Serve requires one-time tailnet approval, or the pairing ticket expires, Settings shows the exact recovery step and does not display a misleading live state. Paired phones can be revoked individually or all at once.
 The mobile 3D deck is not a remote-desktop stream: Three.js renders locally through the phone's WebGL GPU while the Mac sends only compact JSON/SSE state. When the mobile page is hidden, both its render loop and live event connection pause.
@@ -197,7 +200,7 @@ npm run check:imports
 SMOKE=1 npx electron .
 ```
 
-The test suite covers architecture, sandbox boundaries, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE delivery, JSONL sessions, one-time mobile pairing, CSRF protection, stale-plan rejection, explicit Owner approval, on-demand model activation, and hot reload.
+The test suite covers architecture, sandbox boundaries, symlink escape, secret/PII canaries, minimal child environments, stale disclosures, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE delivery, JSONL sessions, one-time mobile pairing, CSRF protection, explicit Owner approval, on-demand model activation, and desktop-only hot reload.
 
 ## Build
 
@@ -254,6 +257,7 @@ npx electron-rebuild -f -w node-pty
 src/core/                 Electron lifecycle, IPC, paths, voice, metrics, cmux bridge
 src/domain/3d-canvas/     graph canvas, camera, roadmap, particles and shaders
 src/domain/pi-agent/      sandbox policy, context pruning, cache, routers and task runner
+src/domain/pi-core/       system memory, fail-closed tool hooks, redaction and disclosure seals
 src/domain/server/        standalone daemon, GUI/CLI transport and JSONL sessions
 src/domain/terminal/      Mission Relay, terminal tabs, cmux mirror and resize behavior
 src/cli/tui/              ANSI/cmux live monitor
@@ -266,9 +270,15 @@ tools/                    self-tests, local Qwen TTS, release verification and C
 
 - `.env`, recordings, Graphify output, model caches, and credentials are not committed.
 - Renderer processes access privileged features only through the preload IPC bridge.
-- External model context is sandbox-scoped and secret-filtered.
+- External model context is sandbox-scoped, secret-filtered, and sealed in an Owner-approved disclosure manifest.
+- Provider processes receive an isolated HOME and a minimal environment containing only that provider's credential.
+- Model-native WebSearch, WebFetch, browser, MCP, extensions, and arbitrary network shell commands are blocked. Research must pass through the PiAgent sanitizing broker.
+- Claude uses a PreToolUse deny hook; Gemini uses an admin policy and sandbox; Codex uses ephemeral strict configuration; GLM runs without tools. Missing enforcement stops the launch instead of relaxing policy.
+- Self-repair may generate and test a proposal, but applying, reloading, committing, publishing, spending, or changing credentials always requires explicit Owner approval.
 - cmux uses `execFile(argv)` without a shell and requires confirmation for destructive commands.
 - Local Graphify code extraction requires no LLM. Semantic media/document extraction may use whichever backend you explicitly configure in Graphify itself.
+
+Direct sandboxing materially reduces accidental disclosure but cannot prove safety against an operating-system or provider vulnerability. BigKiji reports such unsupported enforcement as `DEGRADED` and keeps the affected external model closed.
 
 ## License
 

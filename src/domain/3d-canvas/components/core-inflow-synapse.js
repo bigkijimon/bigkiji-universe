@@ -29,13 +29,25 @@ export class CoreInflowSynapse {
   absorbCluster(fromCenter, coreCenter, color = '#34d399', density = 9) {
     if (!fromCenter || !coreCenter) return;
     const toward = coreCenter.clone().sub(fromCenter).normalize();
+    const facing = toward.clone().negate();
+    const tangent = new THREE.Vector3().crossVectors(facing, Math.abs(facing.y) > 0.92
+      ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).normalize();
+    const bitangent = new THREE.Vector3().crossVectors(facing, tangent).normalize();
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
     for (let index = 0; index < density && this.particles.length < this.maxParticles; index++) {
       // Source samples cover the whole file/agent particle cluster. Destination
       // samples cover the Core's facing hemisphere instead of its centre.
-      const sourceNoise = new THREE.Vector3().randomDirection(); sourceNoise.y *= 0.62;
-      const source = fromCenter.clone().addScaledVector(sourceNoise, 0.18 + Math.random() * 0.72);
-      const surfaceNoise = new THREE.Vector3().randomDirection().multiplyScalar(0.28 + Math.random() * 0.48);
-      const destination = coreCenter.clone().addScaledVector(toward.clone().negate(), 0.36).add(surfaceNoise);
+      const phase = index * goldenAngle; const layer = index % 4;
+      const sourceRadius = 0.3 + layer * 0.13;
+      const sourceNoise = tangent.clone().multiplyScalar(Math.cos(phase) * sourceRadius)
+        .addScaledVector(bitangent, Math.sin(phase) * sourceRadius * 0.72)
+        .addScaledVector(facing, ((index % 3) - 1) * 0.12);
+      const source = fromCenter.clone().add(sourceNoise);
+      const radius = 0.48 + layer * 0.05; const lateral = 0.14 + (index % 3) * 0.055;
+      const surfaceNoise = facing.clone().multiplyScalar(Math.sqrt(Math.max(0.01, radius * radius - lateral * lateral)))
+        .addScaledVector(tangent, Math.cos(phase) * lateral)
+        .addScaledVector(bitangent, Math.sin(phase) * lateral);
+      const destination = coreCenter.clone().add(surfaceNoise);
       this.spawn(source, destination, color, 'absorption');
     }
   }

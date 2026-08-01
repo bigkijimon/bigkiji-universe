@@ -37,7 +37,8 @@ async function main() {
   const run = coordinator.submit({ prompt: fixture.ownerPrompt, promptSpec: { goal: fixture.ownerPrompt, acceptance: fixture.acceptance }, mode: 'auto', cwd: root });
   assert.strictEqual(run.status, 'AWAITING_APPROVAL');
   assert.strictEqual(runner.snapshot().filter((task) => task.status === 'running').length, 0);
-  coordinator.approve(run.id, { revision: run.revision, planHash: run.planHash, idempotencyKey: 'owner-test-approval' });
+  coordinator.approve(run.id, { revision: run.revision, planHash: run.planHash, disclosureHash: run.disclosureHash,
+    idempotencyKey: 'owner-test-approval' });
   const deadline = Date.now() + 3000;
   while (!['COMPLETED', 'FAILED'].includes(coordinator.get(run.id).status) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   const result = coordinator.get(run.id);

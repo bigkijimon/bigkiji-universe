@@ -174,7 +174,9 @@
           <div class="task-progress"><i style="width:${progress}%"></i></div><div class="assignment-chips">${(run.assignments || []).map((item) => `<span data-state="${escapeHtml(item.status)}"><i></i>${escapeHtml(item.provider)} · ${escapeHtml(item.status)}</span>`).join('')}</div>
           <div class="task-actions">${canApprove ? '<button data-run-act="approve">Start selected models</button>' : ''}${canCancel ? '<button class="quiet" data-run-act="abort">Cancel</button>' : ''}</div>`;
         card.querySelectorAll('[data-run-act]').forEach((button) => button.onclick = async () => {
-          if (button.dataset.runAct === 'approve') await window.bigkiji.approveRun(run.id); else await window.bigkiji.abortRun(run.id);
+          if (button.dataset.runAct === 'approve') await window.bigkiji.approveRun({ id: run.id, revision: run.revision,
+            planHash: run.planHash, disclosureHash: run.disclosureHash,
+            idempotencyKey: `desktop-${run.id}-${run.revision}-${run.disclosureHash}` }); else await window.bigkiji.abortRun(run.id);
         }); card.querySelector('[data-run-dismiss]').onclick = () => { this.dismissedRuns.add(run.id); this.renderCards(); }; this.actionList.appendChild(card);
       }
       for (const task of [...this.tasks.values()].filter((task) => !this.dismissedTasks.has(task.id)).reverse().slice(0, 12)) {

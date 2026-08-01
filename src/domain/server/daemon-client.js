@@ -48,9 +48,13 @@ class DaemonClient extends EventEmitter {
   }
   state() { return this.get('/api/state'); }
   prompt(text, options = {}) { return this.post('/api/prompt', { text, ...options }); }
-  approve(id) { return this.post('/api/run/approve', { id }); }
+  approve(run) { const value = typeof run === 'string' ? { id: run } : run; return this.post('/api/run/approve', value); }
+  syncCredentials(values, { replace = false } = {}) { return this.post('/api/security/credentials', { values, replace }); }
   abort(id) { return this.post('/api/run/abort', { id }); }
-  reload() { return this.post('/api/reload'); }
+  async reload() {
+    const state = await this.state();
+    return this.post('/api/reload', { policyHash: state.security?.policyHash || '', ownerConfirmed: true });
+  }
   publish(channel, payload) { return this.post('/api/publish', { channel, payload }); }
   sessions() { return this.get('/api/sessions'); }
   session(id) { return this.get(`/api/session?id=${encodeURIComponent(id)}`); }

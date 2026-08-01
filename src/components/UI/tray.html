@@ -48,6 +48,9 @@
     transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
   .hbtn:hover { background: rgba(52,211,153,.12); color: var(--em); }
   .hbtn:active { transform: scale(0.97); }
+  .securityBadge { display:inline-flex; align-items:center; gap:4px; padding:3px 6px; border:1px solid rgba(143,212,180,.18); border-radius:999px;
+    color:rgba(168,215,194,.72); background:rgba(34,73,57,.12); font:700 8px "SF Mono",Menlo,monospace; letter-spacing:.06em; }
+  .securityBadge::before { content:'◇'; color:#8fd4b4; }.securityBadge.blocked{color:#e9a18d;border-color:rgba(233,161,141,.3);background:rgba(112,42,30,.12)}.securityBadge.blocked::before{content:'!';color:#e9a18d}
 
   #orbWrap { position: relative; height: 148px; flex: none; cursor: text; overflow: hidden; }
   #orbWrap .bgHero { position: absolute; inset: -12px; background: url("./assets/nebula.png") center/cover;
@@ -223,6 +226,7 @@
       <span id="mark"></span><span class="title">BigKiji Universe</span>
       <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
       <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
+      <span id="securityBadge" class="securityBadge" title="BigKiji egress security status">SECURE</span>
       <span class="status"><span class="dot"></span><span id="mode">…</span></span>
     </header>
     <div id="agentBubbles" aria-live="polite" aria-label="Live AI messages"></div>
@@ -301,9 +305,15 @@
       cards.appendChild(c);
       cardMap[id] = { el: c, count: c.querySelector('.ac'), timer: null };
     }
+    function updateSecurity(security = {}) {
+      const badge = document.getElementById('securityBadge'); const blocked = Number(security.blocked || 0);
+      badge.textContent = blocked ? `${blocked} BLOCKED` : (security.status === 'ENFORCED' ? 'SECURE' : 'DEGRADED');
+      badge.classList.toggle('blocked', blocked > 0 || security.status === 'DEGRADED');
+      badge.title = `${security.mode || 'strict-direct'} · web ${security.webSearch || 'broker-only'}`;
+    }
     window.bigkiji.getInfo().then((i) => {
       document.getElementById('mode').textContent = i.ptyMode === 'pty' ? 'LIVE · pty' : 'LIVE · pipe';
-      updateModels(i.modelStatus);
+      updateModels(i.modelStatus); updateSecurity(i.security);
     });
     function updateModels(snapshot) {
       for (const model of snapshot?.models || []) {
@@ -313,6 +323,7 @@
       }
     }
     window.bigkiji.onModelStatus(updateModels);
+    window.bigkiji.onSecurityStatus(updateSecurity);
     window.addEventListener('bk:event', (e) => {
       const evt = e.detail;
       if (evt.type === 'pulse' && evt.stats) { // 実測値は1行をその場更新（行スパム廃止）

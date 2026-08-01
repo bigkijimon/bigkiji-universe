@@ -929,11 +929,18 @@ ipcMain.on('pi:prompt', (_e, text) => piSendPrompt(text));
 ipcMain.handle('task:list', async () => daemonClient?.connected ? (await daemonClient.state()).tasks : taskRunner.snapshot());
 ipcMain.handle('task:plan', (_e, spec) => taskRunner.plan(spec));
 ipcMain.handle('task:prepare', (_e, spec) => taskRunner.prepare(spec));
-ipcMain.handle('task:approve', (_e, id) => taskRunner.approve(String(id)));
+ipcMain.handle('task:approve', (_e, value) => {
+  const task = typeof value === 'string' ? { id: value } : value;
+  return taskRunner.approve(String(task.id), { disclosureHash: task.disclosureHash });
+});
 ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
 ipcMain.handle('run:list', async () => daemonClient?.connected ? (await daemonClient.state()).runs : (coordinator?.snapshot() || []));
-ipcMain.handle('run:approve', (_e, id) => daemonClient?.connected ? daemonClient.approve(String(id)) : coordinator.approve(String(id)));
+ipcMain.handle('run:approve', (_e, value) => {
+  const run = typeof value === 'string' ? { id: value } : value;
+  const expected = { revision: run.revision, planHash: run.planHash, disclosureHash: run.disclosureHash, idempotencyKey: run.idempotencyKey };
+  return daemonClient?.connected ? daemonClient.approve(run) : coordinator.approve(String(run.id), expected);
+});
 ipcMain.handle('run:abort', (_e, id) => daemonClient?.connected ? daemonClient.abort(String(id)) : coordinator.abort(String(id)));
 ipcMain.handle('session:list', async () => daemonClient?.connected ? (await daemonClient.sessions()).sessions : []);
 ipcMain.handle('session:get', async (_e, id) => daemonClient?.connected ? daemonClient.session(String(id)) : null);
@@ -975,7 +982,15 @@ ipcMain.handle('settings:update', (_event, patch) => {
   broadcast('settings:changed', next);
   return next;
 });
-ipcMain.handle('settings:secret', (_event, id, value) => settingsStore.setSecret(String(id), String(value || '')));
+ipcMain.handle('settings:secret', async (_event, id, value) => {
+  const provider = String(id); const secret = String(value || '');
+  const status = settingsStore.setSecret(provider, secret);
+  if (daemonClient?.connected && ['claude', 'codex', 'gemini', 'glm'].includes(provider)) {
+    await daemonClient.syncCredentials({ [provider]: secret });
+    daemonState = await daemonClient.state();
+  }
+  return status;
+});
 ipcMain.handle('settings:secret-status', () => settingsStore.secretStatus());
 ipcMain.handle('voice:status', () => ttsService?.snapshot() || ({ state: 'offline', ready: false, engine: 'system-neural' }));
 ipcMain.handle('voice:preview', async (_event, spec = {}) => {
@@ -1084,7 +1099,7 @@ ipcMain.handle('get-info', () => {
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
     fleet: daemonState?.models || fleetMetrics.snapshot(), modelStatus: daemonState?.models || fleetMetrics.snapshot(), relationships: relationshipService.snapshot(), runs: daemonState?.runs || coordinator?.snapshot() || [],
     sessions: daemonState?.sessions || [], daemon: daemonState ? { connected: true, pid: daemonState.pid, activeSessionId: daemonState.activeSessionId } : { connected: false },
-    preview: previewServer?.snapshot() || { running: false },
+    preview: previewServer?.snapshot() || { running: false }, security: daemonState?.security || { mode: 'strict-direct', status: 'ENFORCED', blocked: 0, manifests: 0, recent: [] },
     buildId: APP_BUILD_ID,
     paths: { appRoot: APP_ROOT, vaultRoot: VAULT, knowledgeRoot: PATHS.knowledgeRoot, graphPath: PATHS.graphPath },
     costPolicy: { planning: ['qwen-local'], paid: ['claude', 'codex', 'gemini', 'glm'], localOperators: ['qwen'], blocked: ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'] },
@@ -1099,13 +1114,16 @@ app.whenReady().then(async () => {
     try {
       daemonClient = new DaemonClient({ appRoot: APP_ROOT, workspace: PATHS.vaultRoot });
       const daemon = await daemonClient.ensure({ timeoutMs: 8000 });
+      await daemonClient.syncCredentials(Object.fromEntries(['claude', 'codex', 'gemini', 'glm']
+        .map((provider) => [provider, settingsStore.getSecret(provider)]).filter(([, value]) => value)));
       daemonState = await daemonClient.state();
       const channelMap = { task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
-        fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats' };
+        fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status' };
       daemonClient.on('event', ({ event, data }) => {
         if (event === 'state') { daemonState = data; broadcast('daemon:state', data); return; }
         const channel = channelMap[event]; if (channel) broadcast(channel, data);
         if (event === 'run') daemonState = { ...(daemonState || {}), runs: [...(daemonState?.runs || []).filter((run) => run.id !== data.id), data] };
+        if (event === 'security') daemonState = { ...(daemonState || {}), security: data };
       });
       daemonClient.connect();
       bus.push({ source: 'system', type: 'info', text: `${daemon.started ? 'Started' : 'Attached to'} standalone BigKiji Core Engine · 127.0.0.1:8777` });
@@ -1292,4 +1310,4 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); taskRunner.shutdown(); daemonClient?.disconnect(); ttsService?.stop(); cmuxBridge?.stop(); previewServer?.close(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.dispose(); taskRunner.shutdown(); daemonClient?.disconnect(); ttsService?.stop(); cmuxBridge?.stop(); previewServer?.close(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });

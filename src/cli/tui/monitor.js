@@ -30,7 +30,9 @@ class TUIMonitor {
     if (key === 'r') { const result = await this.client.reload().catch((error) => ({ error: error.message })); this.push('RELOAD', result.error || `${result.cleared} hooks`); }
     if (key === 'a' || key === 'x') {
       const run = (this.state.runs || []).filter((item) => item.status === 'AWAITING_APPROVAL').at(-1);
-      if (run) { const result = key === 'a' ? await this.client.approve(run.id) : await this.client.abort(run.id); this.push('OWNER', result.status); }
+      if (run) { const approval = { id: run.id, revision: run.revision, planHash: run.planHash, disclosureHash: run.disclosureHash,
+        idempotencyKey: `tui-${run.id}-${run.revision}-${run.disclosureHash}` };
+        const result = key === 'a' ? await this.client.approve(approval) : await this.client.abort(run.id); this.push('OWNER', result.status); }
     }
     if (key === 'h') this.client.emit('hud-request');
   }

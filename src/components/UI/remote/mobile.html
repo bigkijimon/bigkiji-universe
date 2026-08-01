@@ -340,7 +340,7 @@ function applyRun(run) {
   $('approvalMeta').textContent = `${run.id} · revision ${run.revision || 1}`;
   $('approvalGoal').textContent = run.promptPreview || 'Review the current BigKiji execution plan.';
   $('approvalAssignments').innerHTML = (run.assignments || []).map((item) => `<span>${esc(item.provider)} · ${esc(item.title || item.role)}</span>`).join('');
-  $('approvalHash').textContent = String(run.planHash || '').slice(0, 16) || 'unsealed';
+  $('approvalHash').textContent = `${String(run.planHash || '').slice(0, 10) || 'unsealed'} · disclosure ${String(run.disclosureHash || '').slice(0, 10) || 'missing'}`;
   setStage(running ? run.status : 'AWAITING OWNER DIRECTIVE', { busy: running, pct: running ? 62 : 25 }); wakeMobileCore();
 }
 async function post(path, body) {
@@ -351,10 +351,11 @@ async function sendDirective(action, text = '') {
   if (!currentRun) return; const buttons = $('approval').querySelectorAll('button'); buttons.forEach((button) => { button.disabled = true; });
   try {
     const result = await post('/api/directive', { action, text, runId:currentRun.id, revision:currentRun.revision,
-      planHash:currentRun.planHash, idempotencyKey:crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` });
+      planHash:currentRun.planHash, disclosureHash:currentRun.disclosureHash,
+      idempotencyKey:crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` });
     applyRun(result); comm(`[OWNER] ${action === 'accept' ? 'Plan accepted' : action === 'reject' ? 'Plan rejected' : 'Directive sent for re-planning'}`);
   } catch (error) {
-    if (error.payload?.run) applyRun(error.payload.run); $('approval').classList.add('approval-error'); $('approvalError').textContent = error.message === 'plan changed' ? 'The plan changed on another screen. Review the refreshed version before approving.' : error.message;
+    if (error.payload?.run) applyRun(error.payload.run); $('approval').classList.add('approval-error'); $('approvalError').textContent = /plan or disclosure changed/i.test(error.message) ? 'The plan or disclosure changed on another screen. Review the refreshed version before approving.' : error.message;
   } finally { buttons.forEach((button) => { button.disabled = false; }); }
 }
 function connect() {

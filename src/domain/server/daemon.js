@@ -15,6 +15,8 @@ const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
 const { SessionStore } = require('./session-store');
 const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
+const { redactPayload } = require('../pi-core/security/payload-redactor');
+const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
 const STATE_ROOT = path.join(os.homedir(), '.bigkiji');
@@ -24,7 +26,7 @@ const PID_FILE = path.join(STATE_ROOT, 'daemon.pid');
 const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
-  stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update',
+  stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
 });
 
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
@@ -65,7 +67,17 @@ class DaemonEngine extends EventEmitter {
     this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = path.resolve(workspace);
     this.startedAt = Date.now(); this.sessions = new SessionStore({ root: path.join(this.stateRoot, 'sessions') });
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace, maxParallel: 3 });
+    this.secrets = new Map();
+    for (const [provider, variable] of Object.entries(PROVIDER_SECRET)) {
+      const value = process.env[variable];
+      if (value) this.secrets.set(provider === 'claude-code' ? 'claude' : provider, String(value));
+    }
+    this.runner.setSecretProvider((provider) => this.secrets.get(provider === 'claude-code' ? 'claude' : provider) || '');
     this.models = new ModelStatusStore({ knowledge }); this.runSessions = new Map(); this.activeSessionId = '';
+    const initialPolicy = this.runner.policy.resolve(this.workspace);
+    this.securityState = { mode: 'strict-direct', status: 'ENFORCED', webSearch: 'broker-only', environment: 'minimal',
+      blocked: 0, manifests: 0, recent: [], policyHash: initialPolicy.security?.policyHash || '',
+      credentials: Object.fromEntries(['claude', 'codex', 'gemini', 'glm'].map((provider) => [provider, this.secrets.has(provider)])) };
     this.inventory = { root: this.workspace, files: [], folders: [], scannedAt: 0, truncated: false };
     this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => ({
       routing: { executionMode: 'plan', maxAgents: 3, sessionLeader: 'auto', facilitationComplete: true },
@@ -86,6 +98,13 @@ class DaemonEngine extends EventEmitter {
       const task = this.runner.get(entry.taskId); const sessionId = task?.metadata?.runId && this.runSessions.get(task.metadata.runId);
       if (sessionId) this.sessions.append(sessionId, { type: 'log', provider: entry.provider, text: String(entry.text || '').slice(0, 8000) });
     });
+    this.runner.on('security', (event) => {
+      if (event.decision === 'DENY') this.securityState.blocked += 1;
+      if (event.decision === 'MANIFEST') { this.securityState.manifests += 1; this.securityState.policyHash = event.disclosure?.policyHash || this.securityState.policyHash; }
+      this.securityState.recent = [{ decision: event.decision, provider: event.provider, reason: event.reason || '',
+        taskId: event.taskId, at: event.at }, ...this.securityState.recent].slice(0, 12);
+      this.publish('security', this.securityState);
+    });
     this.coordinator.on('run', (run) => this.onRun(run));
     this.models.on('update', (snapshot) => { this.publish('models', snapshot); this.publish('fleet', snapshot); });
     setImmediate(() => this.refreshInventory().catch(() => {}));
@@ -94,6 +113,19 @@ class DaemonEngine extends EventEmitter {
   }
 
   publish(event, data) { this.emit('event', { event, channel: EVENT_CHANNEL[event] || event, data, ts: Date.now() }); }
+
+  setCredentials(values = {}, { replace = false } = {}) {
+    for (const provider of ['claude', 'codex', 'gemini', 'glm']) {
+      if (!replace && !Object.prototype.hasOwnProperty.call(values, provider)) continue;
+      const value = typeof values[provider] === 'string' ? values[provider].trim() : '';
+      if (value) this.secrets.set(provider, value);
+      else this.secrets.delete(provider);
+    }
+    this.securityState.credentials = Object.fromEntries(['claude', 'codex', 'gemini', 'glm']
+      .map((provider) => [provider, this.secrets.has(provider)]));
+    this.publish('security', this.securityState);
+    return { ok: true, credentials: this.securityState.credentials };
+  }
 
   onRun(run) {
     this.models.ingestRun(run); const sessionId = this.runSessions.get(run.id) || this.activeSessionId;
@@ -109,7 +141,9 @@ class DaemonEngine extends EventEmitter {
   }
 
   prompt(text, { mode = 'plan', sessionId = '' } = {}) {
-    const clean = String(text || '').trim(); if (!clean) throw new Error('Prompt is empty');
+    const inspected = redactPayload(String(text || '').trim());
+    if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
+    const clean = inspected.text; if (!clean) throw new Error('Prompt is empty');
     const session = sessionId ? this.sessions.read(sessionId) : this.sessions.create(clean, { workspace: this.workspace });
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
     this.activeSessionId = session.id;
@@ -129,20 +163,24 @@ class DaemonEngine extends EventEmitter {
     return { accepted: true, sessionId: session.id, run };
   }
 
-  directive({ action, runId, text, revision, planHash, idempotencyKey }) {
+  directive({ action, runId, text, revision, planHash, disclosureHash, idempotencyKey }) {
     const run = this.coordinator.get(String(runId || '')); if (!run) throw new Error('Unknown run');
     const sessionId = this.runSessions.get(run.id); const normalized = String(action || '').toLowerCase();
-    this.sessions.append(sessionId, { type: 'directive', action: normalized, text: String(text || '') });
-    if (normalized === 'accept') return this.coordinator.approve(run.id, { revision, planHash, idempotencyKey });
+    const inspected = redactPayload(String(text || ''));
+    if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_DIRECTIVE');
+    this.sessions.append(sessionId, { type: 'directive', action: normalized, text: inspected.text });
+    if (normalized === 'accept') return this.coordinator.approve(run.id, { revision, planHash, disclosureHash, idempotencyKey });
     if (normalized === 'reject' || normalized === 'cancel') return this.coordinator.abort(run.id);
     if (normalized === 'edit' || normalized === 'custom') {
       this.coordinator.abort(run.id);
-      return this.prompt(String(text || ''), { mode: 'plan', sessionId });
+      return this.prompt(inspected.text, { mode: 'plan', sessionId });
     }
     throw new Error('Directive must be accept, edit, reject, or custom');
   }
 
-  reload() {
+  reload({ policyHash = '', ownerConfirmed = false } = {}) {
+    if (!ownerConfirmed) throw new Error('OWNER_CONFIRMATION_REQUIRED');
+    if (!policyHash || policyHash !== this.securityState.policyHash) throw new Error('STALE_SECURITY_POLICY');
     const roots = [path.join(this.appRoot, 'src', 'extensions'), path.join(this.appRoot, 'src', 'hooks')];
     let cleared = 0;
     for (const key of Object.keys(require.cache)) if (roots.some((root) => key.startsWith(`${root}${path.sep}`))) { delete require.cache[key]; cleared++; }
@@ -176,7 +214,7 @@ class DaemonEngine extends EventEmitter {
   state() {
     return { source: 'bigkiji-daemon', version: 2, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt,
       workspace: this.workspace, activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
-      tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory,
+      tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, security: this.securityState,
       phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
   }
   shutdown() { clearInterval(this.inventoryTimer); this.runner.shutdown(); }
@@ -225,6 +263,11 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         if (!mobileDevices.verifyCsrf(mobileDevice, req.headers['x-bigkiji-csrf'])) return json(res, 403, { error: 'csrf check failed' });
       }
       if (req.method === 'POST' && url.pathname === '/api/mobile/pairing') return json(res, 201, mobileDevices.createPairing());
+      if (req.method === 'POST' && url.pathname === '/api/security/credentials') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        const body = await readJson(req, 64 * 1024);
+        return json(res, 200, engine.setCredentials(body.values || body, { replace: body.replace === true }));
+      }
       if (req.method === 'GET' && url.pathname === '/api/mobile/devices') return json(res, 200, { devices: mobileDevices.list() });
       if (req.method === 'GET' && url.pathname === '/api/mobile/me') return json(res, 200, { device: mobileDevice ? mobileDevices.public(mobileDevice) : null, master: isMaster });
       if (req.method === 'POST' && url.pathname === '/api/mobile/devices/revoke') { const body = await readJson(req); return json(res, 200, mobileDevices.revoke(String(body.id || ''))); }
@@ -244,17 +287,29 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       }
       if (req.method === 'POST' && url.pathname === '/api/directive') {
         const body = await readJson(req); const run = engine.coordinator.get(String(body.runId || ''));
-        if (mobileDevice && (!run || Number(body.revision) !== run.revision || String(body.planHash || '') !== run.planHash)) return json(res, 409, { error: 'plan changed', run });
+        if (mobileDevice && (!run || Number(body.revision) !== run.revision || String(body.planHash || '') !== run.planHash
+          || String(body.disclosureHash || '') !== run.disclosureHash)) return json(res, 409, { error: 'plan or disclosure changed', run });
         return json(res, 200, engine.directive(body));
       }
-      if (req.method === 'POST' && url.pathname === '/api/run/approve') { const body = await readJson(req); return json(res, 200, engine.directive({ action: 'accept', runId: body.id })); }
+      if (req.method === 'POST' && url.pathname === '/api/run/approve') {
+        const body = await readJson(req); const run = engine.coordinator.get(String(body.id || ''));
+        if (!run || Number(body.revision) !== run.revision || String(body.planHash || '') !== run.planHash
+          || String(body.disclosureHash || '') !== run.disclosureHash) return json(res, 409, { error: 'plan or disclosure changed', run });
+        return json(res, 200, engine.directive({ action: 'accept', runId: body.id, revision: body.revision, planHash: body.planHash,
+          disclosureHash: body.disclosureHash, idempotencyKey: body.idempotencyKey }));
+      }
       if (req.method === 'POST' && url.pathname === '/api/run/abort') { const body = await readJson(req); return json(res, 200, engine.directive({ action: 'reject', runId: body.id })); }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
         const latest = engine.coordinator.snapshot().filter((run) => !['COMPLETED', 'FAILED'].includes(run.status)).at(-1);
         return json(res, 202, latest ? engine.coordinator.abort(latest.id) : { accepted: false });
       }
-      if (req.method === 'POST' && url.pathname === '/api/reload') return json(res, 200, engine.reload());
+      if (req.method === 'POST' && url.pathname === '/api/reload') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        const body = await readJson(req);
+        return json(res, 200, engine.reload(body));
+      }
       if (req.method === 'POST' && url.pathname === '/api/publish') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
         const body = await readJson(req); const event = Object.keys(EVENT_CHANNEL).find((key) => EVENT_CHANNEL[key] === body.channel) || body.event;
         if (!EVENT_CHANNEL[event]) return json(res, 400, { error: 'unsupported channel' });
         engine.publish(event, body.payload); return json(res, 202, { accepted: true });

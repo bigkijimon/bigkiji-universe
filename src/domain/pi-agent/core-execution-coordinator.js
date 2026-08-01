@@ -3,6 +3,7 @@
 const { EventEmitter } = require('events');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { ModelCapabilityRegistry } = require('./model-capability-registry');
+const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
 
 const ROLE_BLUEPRINT = Object.freeze([
   { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'gemini', title: 'Requirements and acceptance trace', write: false },
@@ -88,10 +89,12 @@ class CoreExecutionCoordinator extends EventEmitter {
       });
       this.taskToRun.set(task.id, run.id);
       return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, title: item.title,
-        write: item.write, status: task.status, fallbackIndex: 0 };
+        write: item.write, status: task.status, fallbackIndex: 0, disclosureHash: task.disclosure?.disclosureHash || '' };
     });
+    run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
+    run.disclosureHash = aggregateDisclosureHash(run.disclosures);
     // Owner policy is intentionally stronger than executionMode: every mutation-capable run waits here.
-    run.status = 'AWAITING_APPROVAL';
+    run.status = run.assignments.some((item) => item.status === 'blocked') ? 'SECURITY_BLOCKED' : 'AWAITING_APPROVAL';
     this.runs.set(run.id, run);
     this._emit(run, 'planned');
     knowledge.recordEvent(run.id, { type: 'run-planned', status: run.status, provider: run.leader, evidence: `${run.assignments.length} specialist assignments` });
@@ -103,6 +106,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (!run) throw new Error(`Unknown run: ${id}`);
     if (expected.revision != null && Number(expected.revision) !== run.revision) throw new Error('STALE_RUN_REVISION');
     if (expected.planHash && String(expected.planHash) !== run.planHash) throw new Error('STALE_PLAN_HASH');
+    if (!expected.disclosureHash || String(expected.disclosureHash) !== run.disclosureHash) throw new Error('STALE_DISCLOSURE_HASH');
     if (expected.idempotencyKey && run.directiveKeys.includes(String(expected.idempotencyKey))) return publicRun(run);
     if (run.status !== 'AWAITING_APPROVAL') return publicRun(run);
     if (expected.idempotencyKey) run.directiveKeys.push(String(expected.idempotencyKey));
@@ -110,7 +114,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     this._emit(run, 'dispatch');
     for (const assignment of run.assignments) {
       const task = this.taskRunner.get(assignment.taskId);
-      if (task?.status === 'awaiting_approval') this.taskRunner.approve(task.id);
+      if (task?.status === 'awaiting_approval') this.taskRunner.approve(task.id, { disclosureHash: task.disclosure?.disclosureHash });
     }
     return publicRun(run);
   }
@@ -161,6 +165,8 @@ class CoreExecutionCoordinator extends EventEmitter {
         run.revision += 1;
         run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
           assignments: run.assignments.map(({ role, provider, write, title }) => ({ role, provider, write, title })) }));
+        run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
+        run.disclosureHash = aggregateDisclosureHash(run.disclosures);
         run.status = 'AWAITING_APPROVAL'; this._emit(run, 'repair-awaiting-approval'); return;
       }
     }
@@ -188,6 +194,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       metadata: { ...(oldTask?.metadata || {}), runId: run.id, repairCycle: run.repairCycle, fallbackFrom: assignment.provider },
     });
     this.taskToRun.set(task.id, run.id); assignment.taskId = task.id; assignment.provider = next; assignment.status = task.status;
+    assignment.disclosureHash = task.disclosure?.disclosureHash || '';
     return true;
   }
 

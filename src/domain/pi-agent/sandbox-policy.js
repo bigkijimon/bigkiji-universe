@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { isInside } = require('../../core/path-config');
+const { SecurityPolicy, isSensitivePath } = require('../pi-core/security/security-policy');
 
 const PAID = Object.freeze(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
@@ -37,9 +38,10 @@ function uniqueRoots(values) {
 }
 
 class SandboxPolicyResolver {
-  constructor({ vaultRoot, paidAllowlist = PAID } = {}) {
+  constructor({ vaultRoot, paidAllowlist = PAID, security = new SecurityPolicy() } = {}) {
     this.vaultRoot = existingRealPath(vaultRoot || process.cwd());
     this.paidAllowlist = new Set(paidAllowlist);
+    this.security = security;
   }
 
   resolve(cwd = this.vaultRoot) {
@@ -59,13 +61,15 @@ class SandboxPolicyResolver {
     }
     const filesystem = raw.filesystem || {};
     const allowRead = uniqueRoots([taskRoot, ...(filesystem.allowRead || [])])
-      .filter((root) => isInside(this.vaultRoot, root));
+      .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
     const allowWrite = uniqueRoots(filesystem.allowWrite?.length ? filesystem.allowWrite : [taskRoot])
-      .filter((root) => isInside(this.vaultRoot, root));
+      .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
     const declared = raw.models?.allowPaid || raw.providers?.allow || PAID;
     const providers = [...new Set(declared.map(String))].filter((provider) => this.paidAllowlist.has(provider));
-    return { valid: true, localOnly: false, sandboxPath, allowRead, allowWrite, providers,
+    const resolved = { valid: true, localOnly: false, sandboxPath, allowRead, allowWrite, providers,
       source: sandboxPath ? 'sandbox' : 'safe-default', vaultRoot: this.vaultRoot, taskRoot };
+    resolved.security = this.security.normalize(resolved);
+    return resolved;
   }
 
   assertProvider(policy, provider) {

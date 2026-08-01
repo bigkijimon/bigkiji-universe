@@ -7,32 +7,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const MODELS_JSON = path.join(os.homedir(), '.pi', 'agent', 'models.json');
-
 // 役割定義（スペック§1①）。上から品質順に試し、429/沈黙で即降格
 const TIERS = [
   { id: 'zai/glm-4.7-flash', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
   { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'local ¥0 · planning · private', tag: 'LOCAL' },
 ];
 
-function realKey(v) {
-  return typeof v === 'string' && v.length > 8 && !v.startsWith('REPLACE_WITH');
-}
-
-// models.json＋envからプロバイダ可用性を判定（プレースホルダは不在扱い）
+// The planning router is local-only. It must not inspect external-provider
+// credential stores merely to guess availability; paid execution is resolved
+// after an owner-approved disclosure manifest in TaskRunner.
 function loadProviders() {
-  const avail = {
-    ollama: true, // 実疎通はollamaHealth()で別途確認
-  };
-  if (realKey(process.env.ZAI_API_KEY)) avail.zai = true;
-  try {
-    const conf = JSON.parse(fs.readFileSync(MODELS_JSON, 'utf8'));
-    for (const [name, p] of Object.entries(conf.providers || {})) {
-      if (name === 'ollama') continue;
-      if (p && realKey(p.apiKey)) avail[name] = true;
-    }
-  } catch (_) {}
-  return avail;
+  return { ollama: true }; //実疎通は ollamaHealth() で別途確認
 }
 
 function buildChain(avail = loadProviders(), { allowPaid = false } = {}) {

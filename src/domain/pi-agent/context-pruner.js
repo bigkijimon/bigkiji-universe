@@ -3,9 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 const { isInside } = require('../../core/path-config');
+const { isSensitivePath } = require('../pi-core/security/security-policy');
+const { redactPayload } = require('../pi-core/security/payload-redactor');
 
 const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.html', '.css', '.scss', '.py', '.sh', '.yml', '.yaml', '.toml', '.txt']);
-const SKIP = /(^|[\\/])(node_modules|\.git|graphify-out|recordings|dist|build|\.obsidian)([\\/]|$)|(^|[\\/])\.env($|\.)/i;
+const SKIP = /(^|[\\/])(node_modules|\.git|graphify-out|recordings|dist|build|\.obsidian|\.ssh|\.aws|\.azure|\.kube|\.gnupg|secrets?|credentials?)([\\/]|$)|(^|[\\/])\.env($|\.)|\.(?:pem|key|p8|p12|pfx|jks|keystore|kdbx)$/i;
 
 function estimateTokens(text) {
   let ascii = 0; let wide = 0;
@@ -38,7 +40,7 @@ class ContextPruner {
       for (const entry of entries) {
         if (out.length >= 1800) break;
         if (entry.name.startsWith('.')) continue;
-        const file = path.join(dir, entry.name); if (SKIP.test(file)) continue;
+        const file = path.join(dir, entry.name); if (SKIP.test(file) || isSensitivePath(file)) continue;
         if (entry.isDirectory()) walk(file, depth + 1);
         else if (TEXT_EXT.has(path.extname(file).toLowerCase())) out.push(file);
       }
@@ -84,18 +86,23 @@ class ContextPruner {
       const slice = ranges.map(([a, b]) => `L${a + 1}-L${b}:\n${lines.slice(a, b).join('\n')}`).join('\n…\n');
       const sliceTokens = estimateTokens(slice) + estimateTokens(item.relative) + 12;
       if (used + slice.length > this.maxChars || usedTokens + sliceTokens > maxTokens) break;
-      used += slice.length; usedTokens += sliceTokens; included.push({ path: item.relative, content: slice });
+      used += slice.length; usedTokens += sliceTokens; included.push({ path: item.relative, content: slice,
+        ranges: ranges.map(([a, b]) => `L${a + 1}-L${b}`) });
     }
     const context = included.map((item) => `\n<file path="${item.path}">\n${item.content}\n</file>`).join('');
-    let prunedPrompt = `${prompt}\n\n[Sandbox-scoped relevant context only]${context || '\nNo matching local context was required.'}`;
+    const redacted = redactPayload(`${prompt}\n\n[Sandbox-scoped relevant context only]${context || '\nNo matching local context was required.'}`);
+    if (redacted.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_CONTEXT');
+    let prunedPrompt = redacted.text;
     if (estimateTokens(prunedPrompt) > maxTokens) {
       const ratio = maxTokens / estimateTokens(prunedPrompt); prunedPrompt = prunedPrompt.slice(0, Math.max(1024, Math.floor(prunedPrompt.length * ratio * 0.96)));
     }
     const prunedContextTokens = estimateTokens(prunedPrompt);
-    return { prompt: prunedPrompt, metrics: { fullContextTokens, prunedContextTokens,
+    return { prompt: prunedPrompt, slices: included.map(({ path, ranges }) => ({ path, ranges })), redactions: redacted.findings,
+      metrics: { fullContextTokens, prunedContextTokens,
       tokensSaved: Math.max(0, fullContextTokens - prunedContextTokens), measurement: 'estimated',
       includedFiles: included.map((item) => item.path), excludedFiles: Math.max(0, allFiles.length - included.length),
-      sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length, contextTokenLimit: maxTokens } };
+      sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length, contextTokenLimit: maxTokens,
+      redactionCount: redacted.redactionCount } };
   }
 }
 

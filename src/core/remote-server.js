@@ -150,7 +150,7 @@ function start(deps) {
             res.writeHead(202, { 'content-type': 'application/json' });
             res.end('{"accepted":true}');
           } else if (p === '/api/run/approve') {
-            const { id } = JSON.parse(body.toString('utf8') || '{}'); const result = deps.approveRun(String(id || ''));
+            const approval = JSON.parse(body.toString('utf8') || '{}'); const result = deps.approveRun(approval);
             res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
           } else if (p === '/api/run/abort') {
             const { id } = JSON.parse(body.toString('utf8') || '{}'); const result = deps.abortRun(String(id || ''));

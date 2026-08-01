@@ -3,6 +3,8 @@
 // JSONL RPCで子プロセスとして持ち、指示/応答/ツール実行/実測トークンを中継する。
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const fs = require('fs');
+const { SecurityPolicy } = require('../pi-core/security/security-policy');
 // v13: 静的チェーン→動的チェーン（model-router.jsがキー実在を検知して可用ティアを構築。
 // GLMは確定実行時のみ参戦。quota沈黙・429検知でOllamaへ即降格する。
 const router = require('./model-router');
@@ -26,6 +28,9 @@ class PiBridge extends EventEmitter {
     this.lastStats = null;    // 前回get_session_statsの実測値（差分=ターン消費）
     this.modelIdx = 0;        // フォールバックチェーンの現在位置
     this.fallbackPromise = null; // 同じstderrを複数経路で受けても1ティアだけ降格する
+    this.security = new SecurityPolicy(); this.runtime = this.security.createRuntime(`pi-bridge-${process.pid}`);
+    fs.writeFileSync(this.runtime.policyFile, JSON.stringify(this.security.normalize({ valid: true, vaultRoot: cwd,
+      taskRoot: cwd, allowRead: [], allowWrite: [] }), null, 2), { mode: 0o600 });
   }
 
   get running() { return !!this.proc; }
@@ -95,8 +100,9 @@ class PiBridge extends EventEmitter {
     // No hidden shell lookup: only the approved GLM key in the process environment
     // may be used. Google/Kimi/OpenRouter credentials are never imported.
     try {
-      this.proc = spawn(this.piBin, ['--mode', 'rpc', '--approve', '--model', this.model, '--append-system-prompt', LANG_RULE], {
-        cwd: this.cwd, env: process.env,
+      this.proc = spawn(this.piBin, ['--mode', 'rpc', '--no-approve', '--model', this.model, '--append-system-prompt', LANG_RULE,
+        '--no-tools', '--no-context-files', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates'], {
+        cwd: this.cwd, env: this.security.minimalEnv('qwen', { runtime: this.runtime }),
       });
     } catch (err) {
       this.emit('status', { running: false, error: err.message });
@@ -117,6 +123,8 @@ class PiBridge extends EventEmitter {
     if (this.proc) { try { this.proc.kill(); } catch (_) {} this.proc = null; }
     this.emit('status', { running: false });
   }
+
+  dispose() { this.stop(); try { fs.rmSync(this.runtime.root, { recursive: true, force: true }); } catch (_) {} }
 
   _send(obj) {
     if (!this.proc) return;

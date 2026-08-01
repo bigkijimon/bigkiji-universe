@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { redactPayload } = require('../pi-core/security/payload-redactor');
 
 const ROOT = path.resolve(process.env.BIGKIJI_KNOWLEDGE_ROOT || process.env.KNOWLEDGE_ROOT
   || path.join(os.homedir(), '.pi', 'agent', 'knowledge', 'bigkiji-universe'));
@@ -18,9 +19,8 @@ function hash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
 function cleanText(value, max = 1200) {
-  return String(value || '').replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '')
-    .replace(/sk-[A-Za-z0-9_-]+/g, '[REDACTED_KEY]')
-    .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,}]+/ig, '$1=[REDACTED]')
+  return redactPayload(String(value || '')).text
+    .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '')
     .replace(/\s+/g, ' ').trim().slice(0, max);
 }
 function emptyState() {
