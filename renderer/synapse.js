@@ -10,9 +10,48 @@ import { ViralMembrane } from './viral-membrane.js';
 import { FileDetailPopup } from './file-detail-popup.js';
 import { ParticleCluster } from './particle-cluster.js';
 import { SmoothFocusController, zoomAroundPoint } from './camera-controls.js';
+import { TelemetryStore } from './telemetry-store.js';
+import { RightTelemetryPanel } from './right-telemetry-panel.js';
+import { SynapseSparkShedder } from './synapse-spark-shedder.js';
+import { radialShellPoint, fibonacciLeafPoint } from './radial-folder-geometry.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
+const telemetryStore = new TelemetryStore({ limit: 120 });
+let generatedMedia = null;
+function applyGeneratedAsset(assetUrl, mime = '') {
+  if (!assetUrl) return;
+  generatedMedia?.remove();
+  const video = /^video\//.test(mime) || /\.(mp4|webm)(?:$|\?)/i.test(assetUrl);
+  const element = document.createElement(video ? 'video' : 'img');
+  element.className = 'generated-hud-media';
+  element.src = assetUrl;
+  if (video) { element.autoplay = true; element.loop = true; element.muted = true; element.playsInline = true; }
+  element.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;mix-blend-mode:screen;opacity:.2;';
+  document.getElementById('bgField').appendChild(element);
+  generatedMedia = element;
+}
+const telemetryPanel = new RightTelemetryPanel({
+  store: telemetryStore,
+  root: document.getElementById('telemetryHud'),
+  mirror: document.getElementById('telemetryMirror'),
+  onComfyRetry: () => window.bigkiji.comfyStatus?.(),
+  onComfyCancel: () => {
+    const jobId = telemetryStore.snapshot().comfy.jobId;
+    if (jobId) window.bigkiji.comfyCancel?.(jobId);
+  },
+  onApplyAsset: () => {
+    const comfy = telemetryStore.snapshot().comfy;
+    applyGeneratedAsset(comfy.assetUrl, comfy.mime);
+  },
+});
+window.bigkiji.onComfyEvent?.((event) => {
+  telemetryStore.setComfy(event);
+  if (event.state === 'completed' && event.target === 'canvas-background') applyGeneratedAsset(event.assetUrl, event.mime);
+});
+window.bigkiji.comfyStatus?.().then((state) => telemetryStore.setComfy(state)).catch(() => {});
+window.bigkiji.onTaskEvent((task) => telemetryStore.upsertTask(task));
+window.bigkiji.onTaskLog((log) => telemetryStore.ingest({ ...log, source: log.provider || 'task', kind: 'exec' }, 'task-log'));
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 3)); // “4K”精細（オーナー指示）
@@ -30,14 +69,17 @@ else if (location.hash === '#side') camera.position.set(4.6, 2.2, 3.4); // 会�
 else camera.position.set(0, 4.5, 10.5);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.06;
+controls.enableDamping = false; // input stops immediately: no motion-sickness inertia
 // Motion-safe camera: no ambient drift or rotation. Explicit cluster/file
 // focus, cursor-centred wheel zoom and the three view buttons may move it.
 controls.autoRotate = false;
-controls.enableRotate = false;
+controls.enableRotate = true;
 controls.enablePan = true;
-controls.enableZoom = false;
+controls.enableZoom = true; // pinch zoom; wheel is overridden below to anchor at the pointer
+controls.rotateSpeed = 0.42;
+controls.panSpeed = 0.58;
+controls.zoomSpeed = 0.72;
+controls.screenSpacePanning = true;
 controls.minDistance = 2.6; controls.maxDistance = 34;
 
 // ---------- テクスチャ/ラベル ----------
@@ -100,9 +142,9 @@ function setLabelSub(s, sub) {
 }
 const fmtTok = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n | 0);
 
-// ---------- ファイル銀河（拡大LOD・v9反転）: 各惑星の足元にディレクトリ階層ツリー ----------
-// 会社惑星 → L1フォルダハブ → L2ハブ → ファイル葉（粒＝Vaultの実ファイル・新しいほど明るい）。
-// 拡大すると展開し、遠景でも微光で「オーブの下に粒子」の気配を見せる。
+// ---------- ファイル銀河: 各惑星の足元に3層の放射状フォルダコロニー ----------
+// 中心親コア → Shell 1(L1) → Shell 2(L2) → Shell 3(実ファイル)。
+// パスhashによる決定的な球面分布なので再スキャン時にも位置が飛ばない。
 const COMPANY_TO_AGENT = {
   English_School: 'marble', Creative_Media: 'justin', Design_Studio: 'risa', LocalAI: 'biglama',
 };
@@ -171,12 +213,14 @@ function buildCloud(key, files) {
   const d0 = isCore ? 0 : 1;     // 階層の起点（Core雲はparts[0]=会社名がL1になる）
   const grp = new THREE.Group();
   scene.add(grp);
+  const center = new THREE.Vector3(0, 0, 0);
   const N = files.length;
   const order = files.map((_, i) => i).sort((a, b) => files[b].t - files[a].t);
   const rank = new Array(N);
   order.forEach((fi, r) => { rank[fi] = r / N; });
 
-  // 階層ハブ位置: L1=中心円周・L2=親L1の周囲（角度はパスhashで決定的）
+  // 階層ハブ位置: L1/L2を別々の球殻へ置く。Yは上下対称にし、旧来の
+  // 「indexが増えるほど下へ垂れる」ツリー構造を作らない。
   const hub = {}; // hubKey → THREE.Vector3
   const hubFiles = {}; // hubKey → 配下ファイル数（=関係の濃さ。幹線の本数に反映）
   const hubOf = (f) => {
@@ -187,17 +231,11 @@ function buildCloud(key, files) {
     if (h1) hubFiles[h1] = (hubFiles[h1] || 0) + 1;
     if (h2) hubFiles[h2] = (hubFiles[h2] || 0) + 1;
     if (h1 && !hub[h1]) {
-      // 階層カスケード: L1は中心(惑星)の一段下に3D配置（輪ではなく半径も高さも散らす）
-      const a = hash01(h1) * Math.PI * 2;
-      const rr1 = R * (0.34 + hash01(h1 + 'r') * 0.38);
-      hub[h1] = new THREE.Vector3(Math.cos(a) * rr1, -R * (0.34 + hash01(h1 + 'y') * 0.16), Math.sin(a) * rr1);
+      hub[h1] = radialShellPoint(h1, 1, R, 0.68);
       hub[h1].userData = { depth: 1, c: f.c };
     }
     if (h2 && !hub[h2]) {
-      // L2は親L1のさらに一段下（上→下へ階層が流れる）
-      const a = hash01(h2) * Math.PI * 2;
-      const rr2 = R * (0.16 + hash01(h2 + 'r') * 0.18);
-      hub[h2] = hub[h1].clone().add(new THREE.Vector3(Math.cos(a) * rr2, -R * (0.2 + hash01(h2 + 'y') * 0.1), Math.sin(a) * rr2));
+      hub[h2] = radialShellPoint(h2, 2, R, 0.62);
       hub[h2].userData = { depth: 2, c: f.c };
     }
     return hub[h2] || hub[h1] || null;
@@ -208,14 +246,11 @@ function buildCloud(key, files) {
   files.forEach((f, i) => {
     const h = hubOf(f);
     leafHub[i] = h;
-    // 葉=ハブ下にぶら下がる立体ブロブ（球面サンプリング・2Dの輪禁止）
-    const th = hash01(f.p) * Math.PI * 2;
-    const phv = Math.acos(2 * hash01(f.p + 'v') - 1);
-    const rr = R * (0.05 + Math.pow(hash01(f.p + 'r'), 0.7) * 0.16);
-    const cx = h ? h.x : 0, cy = h ? h.y : -R * 0.3, cz = h ? h.z : 0;
-    const x = cx + Math.sin(phv) * Math.cos(th) * rr;
-    const y = cy - R * 0.05 + Math.cos(phv) * rr * 0.85;
-    const z = cz + Math.sin(phv) * Math.sin(th) * rr;
+    // 葉は最外殻へFibonacci風に分散。階層は筋繊維で読み、座標自体は
+    // 垂直方向に並べない。わずかな扁平率で銀河ディスクのリップル感を残す。
+    const ordered = rank[i] * Math.max(N - 1, 1);
+    const leafPoint = fibonacciLeafPoint(ordered, N, f.p, R);
+    const { x, y, z } = leafPoint;
     pos.set([x, y, z], i * 3);
     const c = new THREE.Color((COMPANY_META[f.c] || [0, '#8fa89c'])[1]);
     c.lerp(new THREE.Color('#ffffff'), 0.06 + 0.22 * (1 - rank[i])); // ガス色主体・新しいものだけ微白熱（白い砂粒化の禁止）
@@ -238,7 +273,17 @@ function buildCloud(key, files) {
   // Straight LineSegments are deliberately absent. The hierarchy is rendered
   // only by the curved ViralMembrane tubes built below.
   const hubKeys = Object.keys(hub);
-  const center = new THREE.Vector3(0, 0, 0);
+
+  // 親コア粒子は標準ファイル粒子(0.062)の2.5倍。ハブとは別materialに
+  // して、実活動に同期した呼吸を個別制御できるようにする。
+  const rootGeo = new THREE.BufferGeometry();
+  rootGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3));
+  const rootMat = new THREE.PointsMaterial({ size: 0.155, map: roundTex,
+    color: (COMPANY_META[files[0].c] || [0, '#34d399'])[1], transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  const rootPoint = new THREE.Points(rootGeo, rootMat);
+  rootPoint.userData.folderRoot = true;
+  grp.add(rootPoint);
 
   // フォルダハブ（結節点・少し大きい粒）
   const hp = new Float32Array(hubKeys.length * 3), hc = new Float32Array(hubKeys.length * 3);
@@ -252,7 +297,7 @@ function buildCloud(key, files) {
   hgeo.setAttribute('position', new THREE.BufferAttribute(hp, 3));
   hgeo.setAttribute('color', new THREE.BufferAttribute(hc, 3));
   const hubMat = new THREE.PointsMaterial({
-    size: 0.15, map: roundTex, vertexColors: true, transparent: true, opacity: 0,
+    size: 0.105, map: roundTex, vertexColors: true, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   grp.add(new THREE.Points(hgeo, hubMat));
@@ -303,7 +348,7 @@ function buildCloud(key, files) {
     membrane.addStrand([h.clone(), mid, leaf], 1);
   }
 
-  fileClouds[key] = { grp, points, ptsMat, hubMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
+  fileClouds[key] = { grp, points, ptsMat, rootMat, rootPoint, hubMat, files, leafHub, center, flow, flowMat, fpos, fedges, membrane, boost: 0 };
 
   // 常設シナプス束（v11全結合）: 雲の根→担当BHを繋ぐミニ筋繊維束。LODで消えないため、
   // 全ファイル網が「オーケストレーションのシナプスに常時結合している」ことが遠景でも読める。
@@ -683,14 +728,15 @@ void main(){
 }`;
 const FIBER_FRAG = /* glsl */ `
 uniform vec3 uColA; uniform vec3 uColMix; uniform float uGlow; uniform float uBright;
-uniform float uActive; uniform float uTime;
+uniform float uActive; uniform float uSympathy; uniform float uTime;
 varying float vA; varying float vT;
 void main(){
   if (vA < 0.5) discard;
   vec3 c = mix(uColMix, uColA, 1.0 - pow(1.0 - vT, 1.5)) * uBright;
   float flick = 0.75 + 0.25 * sin(uTime * 0.9 + vT * 6.0);
-  float a = uGlow * flick * (1.0 + uActive * 0.9);
-  gl_FragColor = vec4(c * (1.0 + uActive * 0.6), a);
+  float resonance = uSympathy * (0.55 + 0.45 * sin(uTime * 13.0 + vT * 19.0));
+  float a = uGlow * flick * (1.0 + uActive * 0.9 + resonance * 1.8);
+  gl_FragColor = vec4(c * (1.0 + uActive * 0.6 + resonance), a);
 }`;
 function buildFiberBundle({ colorHex, fibers = FIBER_N, seg = FIBER_SEG, spread = 1.0 }) {
   const V = fibers * seg * 2;
@@ -713,7 +759,7 @@ function buildFiberBundle({ colorHex, fibers = FIBER_N, seg = FIBER_SEG, spread 
   geo.setAttribute('aIdx', new THREE.BufferAttribute(aIdx, 1));
   const uniforms = {
     uStart: { value: new THREE.Vector3() }, uEnd: { value: new THREE.Vector3() },
-    uTime: { value: 0 }, uShow: { value: 0.3 }, uActive: { value: 0 },
+    uTime: { value: 0 }, uShow: { value: 0.3 }, uActive: { value: 0 }, uSympathy: { value: 0 },
     uGlow: { value: 0.06 }, uBright: { value: 1 },
     uColA: { value: new THREE.Color(colorHex) }, uColMix: { value: SILK_MIX.clone() },
   };
@@ -726,6 +772,12 @@ function buildFiberBundle({ colorHex, fibers = FIBER_N, seg = FIBER_SEG, spread 
   return { obj, uniforms };
 }
 const fiberBundles = ids.map((id) => ({ id, b: buildFiberBundle({ colorHex: window.AGENT_META[id].color }) }));
+const sparkShedder = new SynapseSparkShedder(scene, { capacity: 768 });
+for (const bundle of fiberBundles) {
+  sparkShedder.registerStrand(bundle.id, () => core.group.position.clone(), () => nodes[bundle.id]?.grp.position.clone(), (amount) => {
+    bundle.b.uniforms.uSympathy.value = Math.max(bundle.b.uniforms.uSympathy.value, amount);
+  });
+}
 
 // 常時維持される軽量データパルス。実イベント時のburstとは別に、Core⇄Agentの
 // 接続が生きていることを示す低輝度の流れを各Bezier束に置く。
@@ -771,6 +823,11 @@ function exciteStream(id, { result = false, tokens = 0 } = {}) {
   const nd = nodes[id];
   if (!nd) { coreActivity = Math.min(coreActivity + 0.3, 1.5); emitBurst('core', { tokens }); autoFocusOn('core'); return; }
   emitBurst(id, { tokens });
+  const flowStart = result ? nd.grp.position : core.group.position;
+  const flowEnd = result ? core.group.position : nd.grp.position;
+  sparkShedder.emit({ start: flowStart, end: flowEnd, color: window.AGENT_META[id].color,
+    intensity: Math.min(2, 0.55 + Math.log2(tokens + 2) * 0.16), eventId: `${id}:${result ? 'in' : 'out'}:${Math.floor(performance.now() / 180)}`,
+    sourceId: id, reduced: reducedMq.matches, performanceTier: perfStage });
   autoFocusOn(id); // 伝達が始まったオーブへカメラが乗り移る
   let st = streams[id];
   if (!st) {
@@ -1040,6 +1097,7 @@ function handleEvt(evt, replay) {
   seen.add(evt.id);
   if (seen.size > 600) seen.delete(seen.values().next().value);
   if (!replay && evt.id <= snapSeq) replay = true;
+  if (!replay) telemetryStore.ingest(evt, 'bus');
 
   if (evt.type === 'pulse' && evt.stats) { // 実測値はVITALSへ集約＝ストリームを汚さない
     lastStats = evt.stats;
@@ -1121,7 +1179,10 @@ function showCrawl(text, pri) {
   clearTimeout(crawlTimer);
   crawlTimer = setTimeout(() => crawlText.classList.remove('on'), pri ? 5200 : 4000);
 }
-window.bigkiji.onCommentary((c) => showCrawl(('[LIVE] ' + c.text).slice(0, 110), true));
+window.bigkiji.onCommentary((c) => {
+  telemetryStore.ingest({ ...c, source: c.source || 'pi', status: c.sev === 'error' ? 'ERROR' : 'SYNC' }, 'commentary');
+  showCrawl(('[LIVE] ' + c.text).slice(0, 110), true);
+});
 
 // ---------- Local-first preflight: Qwen plans; approved Claude/GLM execute after approval ----------
 window.bigkiji.onSwarm((s) => {
@@ -1155,6 +1216,7 @@ function feedThink(text) {
 }
 
 window.bigkiji.onPiEvent((e) => {
+  telemetryStore.ingest({ ...e, source: e.provider || e.model || 'pi' }, 'pi');
   coreFx.handle(e, corePosition, eventTarget);
   if (e.kind === 'turn_start') roadmap3d.setState('ROUTE', 'in-progress');
   else if (e.kind === 'delta') roadmap3d.setState('PLAN', 'in-progress');
@@ -1282,7 +1344,12 @@ renderDest();
 ccmd.addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return; // IME変換確定のEnterでは送信しない
   if (e.key === 'Enter' && ccmd.value.trim()) {
-    if (dest === 'ai' && /^\/parallel\s+/i.test(ccmd.value)) {
+    if (dest === 'ai' && /^\/media\s+/i.test(ccmd.value)) {
+      const prompt = ccmd.value.replace(/^\/media\s+/i, '').trim();
+      telemetryStore.setComfy({ state: 'queued', progress: 0, node: 'REQUEST', message: 'Preparing local media workflow' });
+      window.bigkiji.comfyGenerate({ workflowId: 'bigkiji-hud', inputs: { prompt, width: 1024, height: 576 }, target: 'hud' })
+        .catch((error) => telemetryStore.setComfy({ state: 'error', progress: 0, node: 'REQUEST', message: error.message }));
+    } else if (dest === 'ai' && /^\/parallel\s+/i.test(ccmd.value)) {
       window.prepareParallelTasks && window.prepareParallelTasks(ccmd.value.replace(/^\/parallel\s+/i, '').trim());
     } else if (dest === 'ai') window.bigkiji.piPrompt(ccmd.value); // turn_startイベントがパイプラインカードを起こす
     else { window.bigkiji.ptyInput(ccmd.value + '\n'); window.bkShowTerm && window.bkShowTerm(); }
@@ -1408,6 +1475,8 @@ const balls = ids.map((id) => nodes[id].orb.mesh);
 let hoverId = null;
 let hoverFile = null;
 let hoverPoint = { x: 0, y: 0 };
+let gestureStart = null;
+let suppressGestureClick = false;
 function pickAt(e) {
   const r = wrap.getBoundingClientRect();
   mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -1426,6 +1495,8 @@ function pickAt(e) {
 }
 
 renderer.domElement.addEventListener('pointermove', (e) => {
+  if (gestureStart && Math.hypot(e.clientX - gestureStart.x, e.clientY - gestureStart.y) > 5) suppressGestureClick = true;
+  if (suppressGestureClick) { tip?.classList.remove('on'); return; }
   const picked = pickAt(e);
   const r = picked.rect;
   const id = picked.id;
@@ -1466,6 +1537,7 @@ renderer.domElement.addEventListener('pointerleave', () => {
   tip.classList.remove('on'); renderer.domElement.style.cursor = '';
 });
 renderer.domElement.addEventListener('click', (event) => {
+  if (suppressGestureClick) { suppressGestureClick = false; return; }
   const picked = pickAt(event);
   hoverPoint = { x: event.clientX, y: event.clientY };
   if (picked.kind === 'file') {
@@ -1527,6 +1599,9 @@ function setStage(text, { busy = false, pct = 0, hold = 0 } = {}) {
   stageLine.textContent = '> ' + text;
   stageLine.classList.toggle('busy', busy);
   stageBar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  const upper = String(text).toUpperCase();
+  const phase = /VERIFY|SYNTHESIS|COMPLETE/.test(upper) ? 'VERIFY' : /EXEC|TOOL|GENERAT/.test(upper) ? 'EXECUTE' : 'PREFLIGHT';
+  telemetryStore.setPhase(phase, pct, text, busy ? 'active' : pct >= 100 ? 'completed' : 'idle');
   clearTimeout(stageResetT);
   if (hold) stageResetT = setTimeout(() => setStage('STANDBY — AWAITING DIRECTIVE'), hold);
 }
@@ -1577,80 +1652,11 @@ function codeToolEnd(tn, { err = false, ms = null, out = '' } = {}) {
   }
 }
 
-// NEURAL TRAVERSAL: いまAIがどのノード（agent→tool→file）を辿っているかのミニグラフ
-const trav = { actors: [], tools: [], files: [], hops: [] };
-const travCv = document.getElementById('traversal');
-const travCtx = travCv.getContext('2d');
-function hexA(hex, a) {
-  const c = new THREE.Color(hex);
-  return `rgba(${c.r * 255 | 0},${c.g * 255 | 0},${c.b * 255 | 0},${a})`;
-}
-function travNote(list, name, cap) {
-  let n = list.find((x) => x.name === name);
-  if (!n) { n = { name, last: 0 }; list.push(n); if (list.length > cap) list.shift(); }
-  n.last = Date.now();
-  return n;
-}
 function travHop(actor, tool, file, color, err) {
-  if (actor) travNote(trav.actors, actor, 6);
-  if (tool) travNote(trav.tools, tool, 6);
-  if (file) travNote(trav.files, file, 7);
-  trav.hops.push({ a: actor, b: tool, c: file, ts: Date.now(), color: color || '#34d399', err: !!err });
-  while (trav.hops.length > 22) trav.hops.shift();
+  telemetryStore.ingest({ source: actor || 'core', tool, file, isError: err,
+    kind: err ? 'error' : tool ? 'tool' : file ? 'sync' : 'exec',
+    text: [actor, tool, file].filter(Boolean).join(' → ') }, 'traversal');
 }
-function drawTrav() {
-  const w = travCv.clientWidth | 0, h = travCv.clientHeight | 0;
-  if (!w || !h) return;
-  if (travCv.width !== w * 2 || travCv.height !== h * 2) { travCv.width = w * 2; travCv.height = h * 2; }
-  const g = travCtx;
-  g.setTransform(2, 0, 0, 2, 0, 0);
-  g.clearRect(0, 0, w, h);
-  const now2 = Date.now();
-  const colX = [w * 0.13, w * 0.5, w * 0.87];
-  const place = (list, x) => list.map((n, i) => ({ n, x, y: 17 + ((h - 26) / Math.max(list.length, 1)) * (i + 0.5) }));
-  const A = place(trav.actors, colX[0]), T = place(trav.tools, colX[1]), F = place(trav.files, colX[2]);
-  const find = (arr, name) => arr.find((p) => p.n.name === name);
-  for (const hp of trav.hops) {
-    const age = (now2 - hp.ts) / 60000;
-    if (age > 1) continue;
-    const alpha = Math.max(0.06, 0.5 * (1 - age));
-    const seg = (p1, p2) => {
-      if (!p1 || !p2) return;
-      g.lineWidth = 1;
-      g.strokeStyle = hp.err ? `rgba(251,113,133,${alpha})` : hexA(hp.color, alpha);
-      g.beginPath();
-      g.moveTo(p1.x, p1.y);
-      g.quadraticCurveTo((p1.x + p2.x) / 2, (p1.y + p2.y) / 2 - 9, p2.x, p2.y);
-      g.stroke();
-      const k = (now2 - hp.ts) / 1500;
-      if (k < 1) { // 発火パルスが線上を走る
-        g.fillStyle = `rgba(255,255,255,${0.9 * (1 - k)})`;
-        g.beginPath();
-        g.arc(p1.x + (p2.x - p1.x) * k, p1.y + (p2.y - p1.y) * k - Math.sin(k * Math.PI) * 9, 1.6, 0, 6.283);
-        g.fill();
-      }
-    };
-    seg(find(A, hp.a), find(T, hp.b));
-    seg(find(T, hp.b), find(F, hp.c));
-  }
-  const dot = (p, color, r) => {
-    const hot = now2 - p.n.last < 1600;
-    g.fillStyle = hexA(color, hot ? 0.95 : 0.45);
-    g.beginPath(); g.arc(p.x, p.y, hot ? r + 1 : r, 0, 6.283); g.fill();
-    g.fillStyle = `rgba(226,240,234,${hot ? 0.85 : 0.4})`;
-    g.font = '600 8px "SF Mono", Menlo, monospace';
-    g.textAlign = p.x < w * 0.4 ? 'left' : p.x > w * 0.6 ? 'right' : 'center';
-    g.fillText(p.n.name.slice(0, 16), p.x + (p.x < w * 0.4 ? 6 : p.x > w * 0.6 ? -6 : 0), p.y - 6);
-  };
-  for (const p of A) dot(p, '#FFE81F', 2.6);
-  for (const p of T) dot(p, '#00f3ff', 2.2);
-  for (const p of F) dot(p, '#00ff9d', 2);
-  g.fillStyle = 'rgba(226,240,234,.3)';
-  g.font = '700 7px "SF Mono", Menlo, monospace';
-  g.textAlign = 'center';
-  g.fillText('AGENT', colX[0], 9); g.fillText('TOOL', colX[1], 9); g.fillText('FILE', colX[2], 9);
-}
-setInterval(drawTrav, 300);
 setStage('STANDBY — AWAITING DIRECTIVE');
 
 // ---------- 実測ライブ統計 + 劣化ラダー ----------
@@ -1751,6 +1757,7 @@ const zoomAnchor = new THREE.Vector3();
 const viewNormal = new THREE.Vector3();
 renderer.domElement.addEventListener('wheel', (event) => {
   event.preventDefault();
+  event.stopImmediatePropagation();
   targetDist = null;
   cameraFocus.cancel(); // stop a previous file focus from pulling the camera back
   const picked = pickAt(event);
@@ -1767,8 +1774,15 @@ renderer.domElement.addEventListener('wheel', (event) => {
   // point therefore remains under the cursor while zooming in and out.
   zoomAroundPoint(camera, controls.target, anchor, scale, 2.2, 34);
   controls.update();
-}, { passive: false });
-renderer.domElement.addEventListener('pointerdown', () => { targetDist = null; disableAutoCam(); });
+}, { passive: false, capture: true });
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  gestureStart = { x: event.clientX, y: event.clientY };
+  suppressGestureClick = false;
+  targetDist = null; disableAutoCam();
+});
+renderer.domElement.addEventListener('pointerup', () => { gestureStart = null; });
+renderer.domElement.addEventListener('pointercancel', () => { gestureStart = null; suppressGestureClick = false; });
+renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   filePopup.close(); clearFocus(); cameraFocus.reset();
@@ -1810,9 +1824,11 @@ const clock = new THREE.Clock();
     cl.membrane?.update(t, Math.max(galaxyO, 0.06), cl.boost);
     // v11全結合: ハブ/幹線は全LODで微発光を維持（葉粒だけLODゲート＝負荷対策）
     cl.hubMat.opacity = Math.max(galaxyO * 0.8, 0.22) * (1 + cl.boost * 0.4);
+    cl.rootMat.opacity = Math.max(galaxyO * 0.9, 0.5) * (0.86 + 0.14 * Math.sin(t * 2.1 + hash01(k) * 6));
+    cl.rootMat.size = 0.155 * (1 + (reduced ? 0 : 0.12 * Math.sin(t * 2.1 + hash01(k) * 6)) + cl.boost * 0.18);
     const nd = nodes[k];
     if (nd) { // 雲は自惑星の足元に追従
-      cl.grp.position.set(nd.grp.position.x, nd.grp.position.y - 0.62, nd.grp.position.z);
+      cl.grp.position.set(nd.grp.position.x, nd.grp.position.y - 0.48, nd.grp.position.z);
     } else {
       cl.grp.position.set(0, -1.3 + (reduced ? 0 : Math.sin(t * 0.3) * 0.05), 0);
     }
@@ -1934,6 +1950,7 @@ const clock = new THREE.Clock();
     u.uTime.value = t;
     u.uShow.value = (0.18 + (show8 / 8) * 0.82) * fiberCap; // 最低2割は常時見える（全結合の気配）
     u.uActive.value = THREE.MathUtils.damp(u.uActive.value, active, 6, delta);
+    u.uSympathy.value = THREE.MathUtils.damp(u.uSympathy.value, 0, 4.5, delta);
     u.uGlow.value = 0.035 + 0.012 * show8;  // 束が濃いほど1本1本も明るい
     u.uBright.value = 1 + Math.min(0.6, show8 * 0.07);
   }
@@ -1950,6 +1967,7 @@ const clock = new THREE.Clock();
       part.sp.scale.setScalar((active ? 0.07 : 0.055) + (part.phase % 0.13));
     }
   }
+  sparkShedder.update(t);
   // ブラックホール放出粒子（BH→ファイル雲/canonへ・弧を描いて飛ぶ）
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];

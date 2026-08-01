@@ -45,4 +45,8 @@ contextBridge.exposeInMainWorld('bigkiji', {
   abortTask: (id) => ipcRenderer.invoke('task:abort', id),
   knowledgeState: () => ipcRenderer.invoke('knowledge:state'),
   fastRouterStatus: () => ipcRenderer.invoke('fast-router:status'),
+  comfyStatus: () => ipcRenderer.invoke('comfy:status'),
+  comfyGenerate: (spec) => ipcRenderer.invoke('comfy:generate', spec),
+  comfyCancel: (jobId) => ipcRenderer.invoke('comfy:cancel', jobId),
+  onComfyEvent: (cb) => ipcRenderer.on('comfy:event', (_e, event) => cb(event)),
 });

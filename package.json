@@ -14,6 +14,9 @@
     "test:ui-3d": "node tools/ui-3d-selftest.js",
     "test:interaction": "node tools/interaction-selftest.mjs",
     "test:terminal-resizer": "node tools/terminal-resizer-selftest.js",
+    "test:radial-spark": "node tools/radial-spark-selftest.mjs",
+    "test:comfy": "node tools/comfy-bridge-selftest.js",
+    "test:telemetry": "node tools/telemetry-store-selftest.mjs",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },

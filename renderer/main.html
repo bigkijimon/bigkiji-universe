@@ -184,6 +184,19 @@
   aside .head { flex: none; padding: 10px 12px 7px; color: var(--label);
     font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 700;
     letter-spacing: .12em; }
+  #telemetryMirror { position: relative; flex: none; display: grid; grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center; gap: 7px; margin: 0 10px 7px; padding: 6px 8px 8px; overflow: hidden;
+    border: 1px solid rgba(0,243,255,.13); border-left-color: rgba(52,211,153,.52); border-radius: 8px;
+    background: linear-gradient(105deg, rgba(52,211,153,.065), rgba(0,243,255,.018));
+    font: 8.5px "SF Mono", Menlo, monospace; letter-spacing: .055em; }
+  #telemetryMirror .tm-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399;
+    box-shadow: 0 0 10px rgba(52,211,153,.75); }
+  #telemetryMirror b { color: rgba(226,240,234,.78); white-space: nowrap; }
+  #telemetryMirror span:not(.tm-dot) { color: var(--label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #telemetryMirror > i { position: absolute; left: 0; bottom: 0; height: 2px; width: 0;
+    background: linear-gradient(90deg, #00f3ff, #34d399); box-shadow: 0 0 8px rgba(0,243,255,.55); transition: width .35s var(--ease-out); }
+  #telemetryMirror[data-status="EXEC"] .tm-dot, #telemetryMirror[data-status="GENERATE"] .tm-dot { animation: linkPulse .8s ease-in-out infinite; }
+  #telemetryMirror[data-status="ERROR"] .tm-dot { background: #fb7185; box-shadow: 0 0 10px rgba(251,113,133,.7); }
   /* VITALS: システム実測値はログを流さず、この1行がその場で更新される */
   #vitals { flex: none; display: flex; align-items: center; gap: 9px; padding: 2px 12px 6px;
     font-family: "SF Mono", Menlo, monospace; font-size: 10px; color: var(--label);
@@ -418,11 +431,38 @@
   .meter i u { display: block; height: 100%; width: 0%; border-radius: 2px; background: var(--c);
     box-shadow: 0 0 8px color-mix(in srgb, var(--c) 70%, transparent);
     transition: width .5s var(--ease-out); }
-  /* NEURAL TRAVERSAL（左）＋ QUERY/CODEストリーム（右） */
-  #neuralRow { flex: 1; min-height: 0; display: flex; gap: 8px; }
-  #traversal { flex: 1.1; min-width: 0; border: 1px solid var(--hairline); border-radius: 8px;
-    background: rgba(3,7,14,.5); }
-  #codeStream { flex: 1; min-width: 0; overflow-y: auto; border: 1px solid var(--hairline);
+  /* ACTIVE TELEMETRY HUD（主計器）＋ QUERY/CODEストリーム（右） */
+  #neuralRow { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(250px, .82fr); gap: 8px; }
+  #telemetryHud { --thud-cyan:#00f3ff; --thud-emerald:#34d399; --thud-violet:#a78bfa; --thud-amber:#FFE81F;
+    position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(82px, 1.05fr) minmax(72px, .95fr);
+    overflow: hidden; border: 1px solid rgba(0,255,170,.25); border-radius: 10px;
+    background-color: rgba(6,10,18,.85);
+    background-image: linear-gradient(rgba(0,243,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(0,243,255,.025) 1px, transparent 1px), radial-gradient(circle at 13% 8%, rgba(52,211,153,.09), transparent 34%);
+    background-size: 22px 22px, 22px 22px, 100% 100%;
+    box-shadow: inset 0 1px rgba(255,255,255,.045), inset 0 0 40px rgba(0,0,0,.26), 0 0 24px -16px rgba(0,243,255,.7);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2); }
+  .thud-corners i { position:absolute; z-index:2; width:14px; height:14px; pointer-events:none; border-color:var(--thud-cyan); border-style:solid; filter:drop-shadow(0 0 5px rgba(0,243,255,.55)); }
+  .thud-corners i:nth-child(1){left:5px;top:5px;border-width:1px 0 0 1px}.thud-corners i:nth-child(2){right:5px;top:5px;border-width:1px 1px 0 0;border-color:var(--thud-violet)}
+  .thud-corners i:nth-child(3){left:5px;bottom:5px;border-width:0 0 1px 1px;border-color:var(--thud-emerald)}.thud-corners i:nth-child(4){right:5px;bottom:5px;border-width:0 1px 1px 0;border-color:var(--thud-violet)}
+  .thud-relay, .thud-lower { min-height:0; padding:8px 11px; }
+  .thud-relay { display:flex; flex-direction:column; border-bottom:1px solid rgba(0,243,255,.13); }
+  .thud-relay > header, .thud-roadmap > header, .thud-comfy > header { flex:none; display:flex; justify-content:space-between; align-items:center;
+    min-height:10px; padding:0; -webkit-app-region:no-drag;
+    color:rgba(205,255,237,.8); font:800 7.5px "SF Mono",Menlo,monospace; letter-spacing:.14em; }
+  .thud-relay header b, .thud-roadmap header b, .thud-comfy header b { color:rgba(159,216,194,.5); font-size:7px; }
+  .thud-live-dot { display:inline-block; width:5px; height:5px; margin-right:6px; border-radius:50%; background:var(--thud-emerald); box-shadow:0 0 8px var(--thud-emerald); animation:linkPulse 1.2s ease-in-out infinite; }
+  .thud-feed { flex:1; min-height:0; margin-top:5px; overflow-y:auto; scrollbar-width:none; }
+  .thud-feed::-webkit-scrollbar{display:none}.thud-event{display:grid;grid-template-columns:54px minmax(74px,auto) 55px minmax(0,1fr);gap:7px;align-items:baseline;padding:2px 3px;border-left:1px solid transparent;font:8.5px/1.45 "SF Mono",Menlo,monospace}
+  .thud-event time{color:rgba(226,240,234,.3)}.thud-event b{color:#dffcf0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.thud-event em{font-style:normal;font-weight:800;font-size:7px;color:var(--thud-emerald)}.thud-event span{color:rgba(192,218,208,.62);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thud-event[data-status="EXEC"]{border-left-color:rgba(0,243,255,.55)}.thud-event[data-status="EXEC"] em{color:var(--thud-cyan)}.thud-event[data-status="GENERATE"]{border-left-color:rgba(167,139,250,.6)}.thud-event[data-status="GENERATE"] em{color:var(--thud-violet)}.thud-event[data-status="ERROR"]{border-left-color:#fb7185}.thud-event[data-status="ERROR"] em{color:#fb7185}
+  .thud-empty{height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;text-align:center;font:8px "SF Mono",Menlo,monospace;color:rgba(159,216,194,.35)}.thud-empty b{color:rgba(52,211,153,.58);letter-spacing:.13em}
+  .thud-lower{display:grid;grid-template-columns:1.08fr .92fr;gap:12px}.thud-roadmap,.thud-comfy{min-width:0;display:flex;flex-direction:column}.thud-roadmap>div{flex:1;display:flex;flex-direction:column;justify-content:center;gap:5px}
+  .thud-phase{display:grid;grid-template-columns:minmax(0,1fr) 30px;gap:6px;align-items:center;color:rgba(159,216,194,.34);font:700 7.5px "SF Mono",Menlo,monospace}.thud-phase span{display:flex;align-items:center;gap:6px}.thud-phase span>i{display:grid;place-items:center;width:13px;height:13px;border:1px solid currentColor;border-radius:50%;font-style:normal;font-size:6px}.thud-phase>b{text-align:right;color:inherit}.thud-phase>u{grid-column:1/-1;height:2px;background:rgba(255,255,255,.05);text-decoration:none;overflow:hidden}.thud-phase>u>i{display:block;height:100%;background:currentColor;box-shadow:0 0 7px currentColor;transition:width .35s var(--ease-out)}.thud-phase.active{color:var(--thud-amber)}.thud-phase.done{color:var(--thud-emerald)}
+  .thud-comfy-body{flex:1;min-height:0;display:flex;align-items:center;gap:9px}.thud-comfy-orbit{--progress:0deg;flex:none;width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:conic-gradient(var(--thud-violet) var(--progress),rgba(167,139,250,.08) 0);box-shadow:0 0 18px -8px rgba(167,139,250,.8)}.thud-comfy-orbit:before{content:'';grid-area:1/1;width:36px;height:36px;border-radius:50%;background:#07101a}.thud-comfy-orbit i{grid-area:1/1;width:27px;height:27px;border:1px dashed rgba(0,243,255,.28);border-radius:45% 55% 52% 48%;animation:thudSpin 6s linear infinite}.thud-comfy-orbit img{grid-area:1/1;width:35px;height:35px;object-fit:cover;border-radius:50%;opacity:0;transition:opacity .2s}.thud-comfy-orbit img.on{opacity:.62}.thud-comfy-orbit span{grid-area:1/1;z-index:1;font:800 8px "SF Mono",Menlo,monospace;color:#e6fff6;text-shadow:0 1px 5px #000}@keyframes thudSpin{to{transform:rotate(1turn)}}
+  .thud-comfy-copy{min-width:0;display:flex;flex-direction:column;gap:3px}.thud-comfy-copy strong{color:rgba(226,240,234,.82);font:800 7.5px "SF Mono",Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.thud-comfy-copy>span{color:rgba(159,216,194,.45);font:7.5px/1.3 "SF Mono",Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.thud-comfy-actions{display:flex;gap:3px}.thud-comfy-actions button{padding:2px 5px;border:1px solid rgba(167,139,250,.22);border-radius:4px;background:rgba(167,139,250,.07);color:rgba(216,205,255,.64);font:700 6.5px "SF Mono",Menlo,monospace;cursor:pointer}.thud-comfy-actions button:disabled{opacity:.25;cursor:default}.thud-comfy-actions button:not(:disabled):hover{color:#fff;border-color:rgba(167,139,250,.55)}
+  .thud-nodegraph{display:flex;align-items:center;width:94px;height:6px}.thud-nodegraph i{width:5px;height:5px;border:1px solid rgba(167,139,250,.3);border-radius:50%;background:#070c14}.thud-nodegraph i.on{background:var(--thud-violet);box-shadow:0 0 7px var(--thud-violet)}.thud-nodegraph u{width:25px;height:1px;text-decoration:none;background:linear-gradient(90deg,rgba(167,139,250,.38),rgba(0,243,255,.25))}
+  #telemetryHud[data-comfy="RUNNING"] .thud-comfy-orbit i,#telemetryHud[data-comfy="STARTING"] .thud-comfy-orbit i{animation-duration:1.7s}#telemetryHud[data-comfy="ERROR"] .thud-comfy-orbit{filter:hue-rotate(105deg)}
+  #codeStream { min-width: 0; overflow-y: auto; border: 1px solid var(--hairline);
     border-radius: 8px; background: rgba(3,7,14,.5); padding: 4px 8px;
     font: 10px "SF Mono", Menlo, monospace; line-height: 1.65; }
   #codeStream::-webkit-scrollbar { width: 0; }
@@ -465,7 +505,8 @@
   @media (max-width: 620px) {
     #meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     #neuralRow { flex-direction: column; }
-    #traversal, #codeStream { min-height: 58px; }
+    #neuralRow { display:flex; }
+    #telemetryHud, #codeStream { min-height: 92px; }
     .term .bar { gap: 6px; padding-inline: 8px; }
     .term .bar em { display: none; }
   }
@@ -517,6 +558,7 @@
       </div>
       <aside>
         <div class="head" data-i18n="eventlog">SYNAPSE EVENT LOG</div>
+        <div id="telemetryMirror" aria-live="polite"></div>
         <div id="vitals">
           <span>load<b id="vLoad">–</b></span>
           <canvas id="vSpark" width="108" height="26"></canvas>
@@ -576,7 +618,7 @@
             <div class="mv"><b id="mFps">—</b><span>fps</span></div><i><u id="bFps"></u></i></div>
         </div>
         <div id="neuralRow">
-          <canvas id="traversal"></canvas>
+          <section id="telemetryHud" aria-label="Agent telemetry and media engine"></section>
           <div id="codeStream"></div>
         </div>
       </div>

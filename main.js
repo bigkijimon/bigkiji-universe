@@ -17,8 +17,9 @@ const governance = require('./governance'); // D1/D2: 状態圧縮とMaker–Che
 const knowledge = require('./pi-knowledge-orchestrator');
 const { TaskRunner } = require('./task-runner');
 const fastRouter = require('./fast-api-router');
+const { ComfyUIMediaBridge } = require('./comfyui-media-bridge');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'resize-manual-v5';
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'hud-radial-spark-v6';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -32,6 +33,7 @@ let mainWin = null;
 let quitting = false;
 let pty = null;
 let ptyMode = 'none'; // 'pty' | 'pipe'
+let comfy = null;
 
 if (!app.requestSingleInstanceLock()) {
   console.log('BigKiji Universe is already running in the menu bar (❖). Exiting the duplicate instance.');
@@ -812,6 +814,12 @@ ipcMain.handle('task:retry', (_e, id) => taskRunner.retry(String(id)));
 ipcMain.handle('task:abort', (_e, id) => taskRunner.abort(String(id)));
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
+ipcMain.handle('comfy:status', async () => comfy ? comfy.detect() : ({ state: 'offline', progress: 0, message: 'Media bridge is initializing' }));
+ipcMain.handle('comfy:generate', async (_event, spec) => {
+  if (!comfy) throw new Error('Media bridge is not ready');
+  return comfy.generate(spec || {});
+});
+ipcMain.handle('comfy:cancel', async (_event, jobId) => comfy ? comfy.cancel(String(jobId || '')) : ({ cancelled: false }));
 
 // PITEST="<プロンプト>" — パイプラインE2E検証: 起動→送信→実写撮影→agent_endで終了。
 // フローカード/COMMS/委任発光が実イベントで動くことをスクショ証跡として残す
@@ -893,6 +901,8 @@ ipcMain.handle('get-info', () => {
 
 // ---------- ライフサイクル ----------
 app.whenReady().then(() => {
+  comfy = new ComfyUIMediaBridge({ outputDir: path.join(app.getPath('userData'), 'generated-media') });
+  comfy.on('event', (event) => broadcast('comfy:event', event));
   if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
   createTray();
   createTrayWindow();
@@ -1021,4 +1031,4 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
