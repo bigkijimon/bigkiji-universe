@@ -6,7 +6,9 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac --dir",
+    "dist": "APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64",
+    "dist:dir": "electron-builder --mac --dir --arm64",
+    "verify:release": "node tools/verify-macos-release.js",
     "test:governance": "node tools/governance-selftest.js",
     "test:cost-policy": "node tools/cost-policy-selftest.js",
     "test:fast-router": "node tools/fast-router-selftest.js",
@@ -19,7 +21,9 @@
     "test:telemetry": "node tools/telemetry-store-selftest.mjs",
     "test:architecture": "node tools/architecture-selftest.js",
     "test:runtime-policy": "node tools/runtime-policy-selftest.js",
-    "test": "npm run test:architecture && npm run test:runtime-policy && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
+    "test:voice-engine": "node tools/voice-engine-selftest.js",
+    "test:cmux": "node tools/cmux-bridge-selftest.js",
+    "test": "npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
     "audit:delegations": "node tools/delegation-audit.js",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
   },
@@ -43,9 +47,17 @@
       }
     ],
     "mac": {
-      "target": "dir",
+      "target": ["dmg", "zip"],
       "icon": "build/icon.icns",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "forceCodeSigning": true,
+      "notarize": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "BigKiji Universe uses the microphone only for owner-directed local voice conversations."
+      }
     }
   },
   "dependencies": {

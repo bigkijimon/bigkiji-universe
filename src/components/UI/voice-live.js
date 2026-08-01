@@ -124,6 +124,7 @@
   }
   function stopPlayback() {
     playQ.length = 0;
+    if (window.BKAudio) window.BKAudio.stop('owner');
     if (st.playSrc) { try { st.playSrc.stop(); } catch (_) {} st.playSrc = null; }
     st.playing = false;
   }
@@ -182,9 +183,24 @@
           }
         } else teardown();
       });
-      window.bigkiji.onTtsChunk((c) => { // 所有窓だけが再生（二重音防止）
-        if (st.capturing && c && c.buf) { playQ.push(c.buf); playNext(); }
+      window.addEventListener('bk-audio-state', (event) => {
+        const detail = event.detail || {};
+        if (detail.track !== 'owner') return;
+        st.playing = detail.state === 'playing';
+        if (st.playing && st.phase !== 'CAPTURE') setPhase('SPEAK');
+        else if (detail.state === 'ended' && st.phase === 'SPEAK') setPhase('LISTEN');
+        if (detail.state === 'playing') window.bigkiji.voicePlaybackState({
+          state: 'playing', track: detail.track, firstAudioMs: detail.firstAudioMs,
+          engine: detail.chunk?.engine, utteranceId: detail.chunk?.utteranceId,
+        });
       });
+      window.bigkiji.onTtsChunk((c) => { // main sends only to the selected owner window
+        if (!c?.buf) return;
+        if (window.BKAudio) window.BKAudio.enqueue(c);
+        else if (st.capturing) { playQ.push(c.buf); playNext(); }
+      });
+      window.bigkiji.onVoiceStop((c) => { if (!c?.track || c.track === 'owner') stopPlayback(); });
+      window.bigkiji.onSettingsChanged((settings) => window.BKAudio?.apply(settings.audio));
     },
   };
 })();

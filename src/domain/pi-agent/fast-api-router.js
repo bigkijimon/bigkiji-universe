@@ -7,8 +7,8 @@ const knowledge = require('./pi-knowledge-orchestrator');
 
 // Front desk only. Heavy paid execution remains in TaskRunner (Claude Code/GLM).
 const PRIORITY = ['ollama', 'glm'];
-const PAID_EXECUTORS = ['claude-code', 'glm'];
-const BLOCKED_PAID = ['codex', 'kimi', 'gemini', 'openrouter'];
+const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
+const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
 const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: 'glm-4.7-flash' };
 const PLACEHOLDER = /^REPLACE_WITH|^YOUR_|^$/i;
 
@@ -27,7 +27,8 @@ async function ollamaReady(timeoutMs = 850) {
   try { const response = await fetch('http://127.0.0.1:11434/api/tags', { signal: ctrl.signal }); return response.ok; }
   catch (_) { return false; } finally { clearTimeout(timer); }
 }
-async function detect() { return { ollama: await ollamaReady(), glm: !!glmConfig(), 'claude-code': true, codex: false, kimi: false }; }
+async function detect() { return { ollama: await ollamaReady(), glm: !!glmConfig(), claude: true, codex: true,
+  gemini: usableKey(process.env.GEMINI_API_KEY), kimi: false, openrouter: false }; }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
 
 function safeJson(text) {
@@ -60,7 +61,7 @@ async function runGlm(prompt) {
 }
 function fallbackSpec(ownerText) {
   return { status: 'ready', questions: [], promptSpec: {
-    goal: knowledge.cleanText(ownerText, 900), constraints: ['Paid execution is limited to Claude Code and GLM', 'Persist approved state locally'],
+    goal: knowledge.cleanText(ownerText, 900), constraints: ['Paid execution is limited to Claude, Codex, Gemini and GLM', 'Persist approved state locally'],
     steps: ['Audit relevant code', 'Implement the requested change', 'Run proportional verification'], acceptance: ['Requested behavior works', 'Tests pass', 'No blocked paid provider is invoked'],
   } };
 }

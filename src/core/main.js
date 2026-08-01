@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell, globalShortcut, systemPreferences } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell, globalShortcut, systemPreferences, safeStorage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -22,9 +22,12 @@ const fastRouter = require('../domain/pi-agent/fast-api-router');
 const { ComfyUIMediaBridge } = require('../domain/telemetry/components/comfyui-media-bridge');
 const { FleetMetricsStore } = require('./fleet-metrics-store');
 const { RelationshipSnapshotService } = require('./relationship-snapshot-service');
-const { sanitizeOwnerSpeech } = require('./tts-policy');
+const { sanitizeOwnerSpeech, detectSpeechLanguage, StreamingSpeechFilter } = require('./tts-policy');
+const { SettingsStore } = require('./settings-store');
+const { NaturalTTSService } = require('./natural-tts-service');
+const { CmuxBridge } = require('./cmux-bridge');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'domain-fleet-graph-v7';
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'voice-cmux-local-qwen-v8';
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -43,6 +46,9 @@ let quitting = false;
 let pty = null;
 let ptyMode = 'none'; // 'pty' | 'pipe'
 let comfy = null;
+let settingsStore = null;
+let ttsService = null;
+let cmuxBridge = null;
 
 if (!app.requestSingleInstanceLock()) {
   console.log('BigKiji Universe is already running in the menu bar (❖). Exiting the duplicate instance.');
@@ -91,7 +97,13 @@ function broadcast(channel, payload) {
   }
   if (remote) remote.publish(channel, payload);
 }
-taskRunner.on('task', (task) => { fleetMetrics.ingestTask(task); broadcast('task:event', task); });
+taskRunner.on('task', (task) => {
+  fleetMetrics.ingestTask(task); broadcast('task:event', task);
+  if (['running', 'completed', 'failed', 'awaiting_approval'].includes(String(task.status || ''))) {
+    const label = String(task.agent || task.provider || 'Pi agent');
+    speakAgent(`${label}. ${String(task.status).replaceAll('_', ' ')}. ${String(task.title || task.prompt || '').slice(0, 90)}`, label);
+  }
+});
 taskRunner.on('log', (log) => broadcast('task:log', log));
 fleetMetrics.on('update', (snapshot) => broadcast('pi:fleet', snapshot));
 relationshipService.on('update', (snapshot) => {
@@ -339,88 +351,130 @@ ipcMain.on('tray:render', (_e, { dataURL, title, template }) => {
   } catch (_) {}
 });
 
-// ---------- ボイス: TTS（macOS say・日英タイ自動判定）と STT（ローカルwhisper） ----------
+// ---------- Natural multi-track voice: local Qwen3-TTS + macOS neural fallback ----------
 const { execFile } = require('child_process');
 let voiceOn = true;
-let sayProc = null;
+const liveVoice = { active: false, owner: null }; // owner = webContents.id（マイク所有は常に1窓）
+const speechQueues = { owner: [], agent: [] };
+const speechBusy = { owner: false, agent: false };
+const speechActive = { owner: null, agent: null };
+const speechFilter = new StreamingSpeechFilter();
+let ttsSeq = 0;
+let ttsDiscard = false;
+let speechUtterance = 0;
+let speechFirstQueued = false;
+let speechAnyQueued = false;
+let speechFirstPlayed = false;
+let speechRequestAt = 0;
+let speechFallbackTimer = null;
+let speechRescueTimer = null;
+let speechDeadlineTimer = null;
+const agentSpeechAt = new Map();
 
-function pickVoice(text) {
-  // 英語ベース: 日本語/タイ語が「主体」の時だけ切り替える（混在英文はSamantha）
-  const th = (text.match(/[฀-๿]/g) || []).length;
-  const ja = (text.match(/[ぁ-んァ-ヶ一-龯]/g) || []).length;
-  if (th > text.length * 0.25) return 'Kanya';
-  if (ja > text.length * 0.25) return 'Kyoko';
-  return 'Samantha';
+function audioTarget() {
+  if (liveVoice.owner) {
+    for (const w of [mainWin, trayWin]) if (w && !w.isDestroyed() && w.webContents.id === liveVoice.owner) return w;
+  }
+  if (mainWin && !mainWin.isDestroyed() && mainWin.isVisible()) return mainWin;
+  if (trayWin && !trayWin.isDestroyed() && trayWin.isVisible()) return trayWin;
+  return mainWin && !mainWin.isDestroyed() ? mainWin : trayWin;
 }
-function speak(text) {
-  if (!voiceOn || !text) return;
-  const clean = sanitizeOwnerSpeech(text, 420);
-  if (!clean) return;
-  if (sayProc) { try { sayProc.kill(); } catch (_) {} }
-  broadcast('pi:event', { kind: 'speak', text: clean.slice(0, 40) }); // 発話フェーズを可視化
-  sayProc = execFile('/usr/bin/say', ['-v', pickVoice(clean), clean], (err) => {
-    sayProc = null;
-    if (err && !/killed/i.test(err.message)) {
-      bus.push({ source: 'system', type: 'info', text: `🔇 speech error: ${err.message.slice(0, 100)}` });
-    }
+function sendAudio(result, item) {
+  const target = audioTarget();
+  if (!target || target.isDestroyed()) return false;
+  const buf = result.buffer;
+  target.webContents.send('voice:tts-chunk', {
+    seq: ++ttsSeq, owner: target.webContents.id, track: item.track, agent: result.agent,
+    first: item.first, utteranceId: item.utteranceId, requestedAt: item.requestedAt,
+    synthesizedAt: result.synthesizedAt, synthesisMs: result.synthesisMs, engine: result.engine,
+    language: result.language, speed: result.speed,
+    buf: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
   });
+  broadcast('voice:live-state', { live: liveVoice.active, state: 'SPEAK', track: item.track,
+    engine: result.engine, synthesisMs: result.synthesisMs });
+  return true;
+}
+async function processSpeech(track) {
+  if (speechBusy[track] || !speechQueues[track].length || !voiceOn || !ttsService) return;
+  const token = Symbol(track); speechActive[track] = token; speechBusy[track] = true;
+  const item = speechQueues[track].shift();
+  try {
+    const cfg = settingsStore.get().audio;
+    const age = Date.now() - item.requestedAt;
+    const result = await ttsService.synthesize({ ...item, forceSystem: item.first && age >= cfg.systemFallbackAtMs - 3000 });
+    if (speechActive[track] === token && (track === 'agent' || (!ttsDiscard && item.utteranceId === speechUtterance))) sendAudio(result, item);
+  } catch (error) {
+    bus.push({ source: 'system', type: 'info', text: `🔇 speech synthesis failed: ${String(error.message).slice(0, 120)}` });
+  } finally {
+    if (speechActive[track] === token) {
+      speechActive[track] = null; speechBusy[track] = false; processSpeech(track);
+    }
+  }
+}
+function queueSpeech(text, { track = 'owner', agent = 'codex', requestedAt = Date.now(), utteranceId = speechUtterance,
+  countsAsAnswer = true } = {}) {
+  if (!voiceOn || !text || (track === 'owner' && ttsDiscard)) return false;
+  if (speechQueues[track].length >= (track === 'owner' ? 10 : 3)) speechQueues[track].shift();
+  const first = track === 'owner' && !speechAnyQueued;
+  if (track === 'owner') speechAnyQueued = true;
+  if (track === 'owner' && countsAsAnswer) speechFirstQueued = true;
+  speechQueues[track].push({ text, track, agent, requestedAt, utteranceId, first });
+  broadcast('pi:event', { kind: 'speak', track, agent, text: sanitizeOwnerSpeech(text, 40), queuedMs: Date.now() - requestedAt });
+  processSpeech(track);
+  return true;
+}
+function speak(text, opts = {}) {
+  const clean = sanitizeOwnerSpeech(text, 900);
+  if (!clean) return;
+  const requestedAt = opts.requestedAt || Date.now(); speechFirstQueued = false; speechAnyQueued = false; speechFirstPlayed = false;
+  speechRequestAt = requestedAt; speechUtterance++;
+  queueSpeech(clean, { track: 'owner', agent: opts.agent || 'codex', requestedAt, utteranceId: speechUtterance });
+}
+function speakAgent(text, agent = 'pi') {
+  const cfg = settingsStore?.get().audio;
+  if (!cfg?.agentChatter) return;
+  const now = Date.now(); const key = String(agent || 'pi');
+  if (now - (agentSpeechAt.get(key) || 0) < 9000) return;
+  agentSpeechAt.set(key, now);
+  queueSpeech(text, { track: 'agent', agent: key, requestedAt: now, utteranceId: `agent-${now}` });
 }
 ipcMain.handle('voice:toggle', () => {
   voiceOn = !voiceOn;
-  if (!voiceOn && sayProc) { try { sayProc.kill(); } catch (_) {} }
-  if (voiceOn) speak('Voice is on.');  // ON時は必ずテスト発話＝音の疎通確認
+  if (!voiceOn) ttsKill();
+  if (voiceOn) speak('Voice is on. BigKiji is ready.', { agent: 'codex' });
   return { on: voiceOn };
 });
 
-// ---------- v12 ライブ音声（フルデュプレックス）: 所有権調停・文単位ストリーミングTTS・Barge-in ----------
-const liveVoice = { active: false, owner: null }; // owner = webContents.id（マイク所有は常に1窓）
-let ttsQueue = [];
-let ttsSynth = null;
-let ttsSeq = 0;
-let ttsDiscard = false;
-function ttsReset() { ttsDiscard = false; ttsQueue = []; }
-function ttsKill() { // Barge-in: 合成中プロセスとキューを即破棄（次のturn_startまで追補も破棄）
-  ttsQueue = [];
-  ttsDiscard = true;
-  if (ttsSynth) { try { ttsSynth.kill(); } catch (_) {} ttsSynth = null; }
-  if (sayProc) { try { sayProc.kill(); } catch (_) {} }
+// ---------- full-duplex voice: VAD + pipelined final-answer sentences + barge-in ----------
+function ttsReset(requestedAt = Date.now()) {
+  ttsDiscard = false; speechQueues.owner.length = 0; speechFilter.reset();
+  speechFirstQueued = false; speechAnyQueued = false; speechFirstPlayed = false; speechRequestAt = requestedAt; speechUtterance++;
+  clearTimeout(speechFallbackTimer); clearTimeout(speechRescueTimer); clearTimeout(speechDeadlineTimer);
 }
-function ttsEnqueue(sentence) {
+function ttsKill() { // Barge-in: 合成中プロセスとキューを即破棄（次のturn_startまで追補も破棄）
+  speechQueues.owner.length = 0;
+  speechActive.owner = null; speechBusy.owner = false;
+  ttsDiscard = true;
+  clearTimeout(speechFallbackTimer); clearTimeout(speechRescueTimer); clearTimeout(speechDeadlineTimer);
+  for (const w of [mainWin, trayWin]) if (w && !w.isDestroyed()) w.webContents.send('voice:stop', { track: 'owner' });
+}
+function ttsEnqueue(sentence, opts = {}) {
   const s = sanitizeOwnerSpeech(sentence);
   if (!s || ttsDiscard) return;
-  ttsQueue.push(s);
-  ttsSynthNext();
-}
-function ttsSynthNext() {
-  if (ttsSynth || !ttsQueue.length) return;
-  const s = ttsQueue.shift();
-  const tmp = path.join(os.tmpdir(), `bk-tts-${++ttsSeq}.wav`);
-  // ライブ中はスピーカー直吹きしない: レンダラ(WebAudio)再生ならChromiumのAECが
-  // ループバック参照を持て、TTS音声でVADが自己発火しない（Barge-in成立の要）
-  ttsSynth = execFile('/usr/bin/say', ['-v', pickVoice(s), '-o', tmp, '--data-format=LEI16@22050', s], (err) => {
-    ttsSynth = null;
-    if (!err && !ttsDiscard) {
-      try {
-        const buf = fs.readFileSync(tmp);
-        broadcast('voice:tts-chunk', {
-          seq: ttsSeq, owner: liveVoice.owner,
-          buf: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-        });
-      } catch (_) {}
-    }
-    try { fs.unlinkSync(tmp); } catch (_) {}
-    ttsSynthNext();
-  });
+  queueSpeech(s, { track: 'owner', agent: opts.agent || 'codex', requestedAt: opts.requestedAt || speechRequestAt || Date.now(), utteranceId: speechUtterance });
 }
 function ttsFlushRemainder(fullText) {
-  if (!liveVoice.active) return;
-  // Voice is emitted once, after agent_end. Streaming deltas may contain
-  // draft/internal text and are deliberately never sent to the audio path.
-  const rest = sanitizeOwnerSpeech(fullText);
-  if (rest) ttsEnqueue(rest);
+  for (const sentence of speechFilter.flush()) ttsEnqueue(sentence);
+  // If no deltas were available (provider-specific protocol), use the final
+  // owner-facing result only after agent_end.
+  if (!speechFirstQueued) {
+    const rest = sanitizeOwnerSpeech(fullText);
+    if (rest) ttsEnqueue(rest);
+  }
 }
 // WAV(16k mono PCM16)→二段STT→Pi。デスクトップIPCとモバイルPWA(/api/voice)の共用経路
 async function handleUtterance(buf, via) {
+  const requestedAt = Date.now();
   const dir = path.join(APP_ROOT, 'recordings');
   fs.mkdirSync(dir, { recursive: true });
   const wav = path.join(dir, `live-${Date.now()}.wav`);
@@ -431,7 +485,7 @@ async function handleUtterance(buf, via) {
   const text = (r.text || '').trim();
   if (text.replace(/[\s.,!?。、…]/g, '').length < 2) return { text: '', lang: r.lang }; // ノイズ/空は送らない
   liveComment(C.stt(text, r.lang));
-  piSendPrompt(text, { raw: true, via }); // 音声は会話＝分類スキップで即応答
+  piSendPrompt(text, { raw: true, via, voice: true, requestedAt }); // 音声は会話＝分類スキップで即応答
   return { text, lang: r.lang };
 }
 ipcMain.handle('voice:live-toggle', (e) => {
@@ -612,7 +666,7 @@ async function piFinalizeTurn() {
   const completedAnswer = piAnswerText;
   if (piAnswerText.trim()) { // 最終回答をログに恒久記録＋読み上げ（ライブ中は文単位TTSの残りだけ流す＝二重読み上げ防止）
     bus.push({ source: 'pi', agent: null, type: 'say', text: `Pi reply: ${piAnswerText.replace(/\s+/g, ' ').trim().slice(0, 220)}` });
-    if (liveVoice.active) ttsFlushRemainder(piAnswerText); else speak(piAnswerText);
+    ttsFlushRemainder(piAnswerText);
     piAnswerText = '';
   }
   const stats = await pi.turnStats().catch(() => null);
@@ -669,8 +723,15 @@ pi.on('event', (evt) => {
     if (d && d.type === 'text_delta' && d.delta) {
       piDeltaBuf += d.delta;
       piAnswerText += d.delta;
-      // Thinking/reasoning must never reach audio. TTS is flushed only after
-      // the assistant turn is finalized, through sanitizeOwnerSpeech().
+      clearTimeout(speechFallbackTimer);
+      // The stateful gate handles internal tags split across deltas and only
+      // releases complete owner-visible sentences. This starts natural speech
+      // while the model continues producing the remainder of its answer.
+      for (const sentence of speechFilter.push(d.delta)) {
+        const agent = /claude/i.test(pi.model) ? 'claude' : /gemini/i.test(pi.model) ? 'gemini'
+          : /glm|zai/i.test(pi.model) ? 'glm' : /codex/i.test(pi.model) ? 'codex' : 'pi';
+        ttsEnqueue(sentence, { agent });
+      }
       if (!piDeltaTimer) {
         piDeltaTimer = setTimeout(() => {
           broadcast('pi:event', { kind: 'delta', text: piDeltaBuf });
@@ -742,7 +803,7 @@ let turnToolErrors = 0; // Swarm成功判定用（このターンのtoolエラ�
 function piDispatch(text, opts = {}) { // 実送信（分類済みプロンプト）
   if (!pi.running) pi.start();
   piAnswerText = '';
-  ttsReset();
+  ttsReset(opts.requestedAt || Date.now());
   const ownerText = String(text);
   const kind = opts.kind || 'maker';
   const substantive = !opts.raw && governance.isSubstantiveTask(ownerText);
@@ -766,8 +827,38 @@ function piDispatch(text, opts = {}) { // 実送信（分類済みプロンプ�
   // 既存の120sアイドルタイマーは初イベント後にしか装填されないため、送信時点で先に装填し
   // 完全沈黙でも piFinalizeTurn → fallback降格再送 が必ず作動するようにする
   clearTimeout(piIdleTimer);
-  piIdleTimer = setTimeout(piFinalizeTurn, 90000);
+  piIdleTimer = setTimeout(piFinalizeTurn, opts.voice ? 30000 : 90000);
   pi.prompt(prompt);
+  if (opts.voice) {
+    // A silent provider gets one fast serial failover; no duplicate paid race.
+    speechFallbackTimer = setTimeout(async () => {
+      if (speechFirstQueued || piAnswerText.trim()) return;
+      const switched = await pi.fallback(1200).catch(() => false);
+      if (switched && pi.running) {
+        bus.push({ source: 'pi', type: 'warn', text: `Voice SLA: silent route switched to ${pi.model}` });
+        broadcast('voice:sla', { state: 'route-fallback', elapsedMs: Date.now() - speechRequestAt, model: pi.model });
+        pi.prompt(prompt);
+      }
+    }, 10000);
+    const audioCfg = settingsStore?.get().audio || { systemFallbackAtMs: 22000, firstSpeechDeadlineMs: 30000 };
+    const promptLanguage = detectSpeechLanguage(ownerText, 'English');
+    speechRescueTimer = setTimeout(() => {
+      if (speechFirstPlayed) return;
+      const status = promptLanguage === 'Japanese'
+        ? 'まだ処理中です。結果が準備でき次第、続けてお伝えします。'
+        : "I'm still processing that. I'll continue with the result as soon as it is ready.";
+      queueSpeech(status, { track: 'owner', agent: 'codex', requestedAt: speechRequestAt,
+        utteranceId: speechUtterance, countsAsAnswer: false });
+      broadcast('voice:sla', { state: 'spoken-progress-fallback', elapsedMs: Date.now() - speechRequestAt,
+        engine: 'system-neural' });
+    }, audioCfg.systemFallbackAtMs);
+    speechDeadlineTimer = setTimeout(() => {
+      if (!speechFirstPlayed) {
+        bus.push({ source: 'system', type: 'warn', text: 'Voice SLA missed: no owner-visible answer was available within 30 seconds' });
+        broadcast('voice:sla', { state: 'missed', elapsedMs: Date.now() - speechRequestAt, model: pi.model });
+      }
+    }, audioCfg.firstSpeechDeadlineMs);
+  }
 }
 // v12: 送信前にタスク分類（direct/cache/swarm）。raw=true は分類スキップ（内部指示・音声会話）
 function piSendPrompt(text, opts = {}) {
@@ -824,6 +915,41 @@ ipcMain.handle('knowledge:state', () => knowledge.loadState());
 ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('relationship:snapshot', () => relationshipService.snapshot());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
+ipcMain.handle('settings:get', () => settingsStore?.get());
+ipcMain.handle('settings:update', (_event, patch) => {
+  const before = settingsStore.get(); const next = settingsStore.update(patch || {});
+  if (ttsService && (before.audio.ttsEndpoint !== next.audio.ttsEndpoint || before.audio.ttsModel !== next.audio.ttsModel)) {
+    ttsService.stop(); ttsService.start();
+  }
+  broadcast('settings:changed', next);
+  return next;
+});
+ipcMain.handle('settings:secret', (_event, id, value) => settingsStore.setSecret(String(id), String(value || '')));
+ipcMain.handle('settings:secret-status', () => settingsStore.secretStatus());
+ipcMain.handle('voice:status', () => ttsService?.snapshot() || ({ state: 'offline', ready: false, engine: 'system-neural' }));
+ipcMain.handle('voice:preview', async (_event, spec = {}) => {
+  const requestedAt = Date.now();
+  speechFirstQueued = false; speechAnyQueued = false; speechFirstPlayed = false; speechRequestAt = requestedAt; speechUtterance++;
+  queueSpeech(String(spec.text || 'BigKiji Universe is ready.'), { track: 'owner', agent: String(spec.agent || 'codex'), requestedAt, utteranceId: speechUtterance });
+  return { queued: true, requestedAt };
+});
+ipcMain.on('voice:playback-state', (_event, state = {}) => {
+  if (state.state === 'playing' && state.track === 'owner') {
+    speechFirstPlayed = true;
+    clearTimeout(speechRescueTimer);
+    clearTimeout(speechDeadlineTimer);
+    const ok = Number(state.firstAudioMs) <= (settingsStore?.get().audio.firstSpeechDeadlineMs || 30000);
+    broadcast('voice:sla', { state: ok ? 'met' : 'missed', firstAudioMs: Number(state.firstAudioMs), engine: state.engine });
+    bus.push({ source: 'system', type: ok ? 'info' : 'warn', text: `Voice first-audio ${Math.round(Number(state.firstAudioMs))}ms · ${state.engine || 'audio'}` });
+  }
+});
+ipcMain.handle('cmux:snapshot', () => cmuxBridge?.snapshot() || ({ connected: false, surfaces: [], error: 'Bridge not ready' }));
+ipcMain.handle('cmux:refresh', () => cmuxBridge.refresh());
+ipcMain.handle('cmux:select', (_event, surface) => cmuxBridge.select(surface));
+ipcMain.handle('cmux:action', (_event, action, payload) => cmuxBridge.action(String(action), payload || {}));
+ipcMain.handle('cmux:open-native', (_event, surface) => cmuxBridge.openNative(surface));
+ipcMain.on('cmux:input', (_event, text, surface) => cmuxBridge.send(text, surface).catch((error) => broadcast('cmux:error', { message: error.message })));
+ipcMain.on('cmux:key', (_event, key, surface) => cmuxBridge.sendKey(key, surface).catch((error) => broadcast('cmux:error', { message: error.message })));
 ipcMain.handle('comfy:status', async () => comfy ? comfy.detect() : ({ state: 'offline', progress: 0, message: 'Media bridge is initializing' }));
 ipcMain.handle('comfy:generate', async (_event, spec) => {
   if (!comfy) throw new Error('Media bridge is not ready');
@@ -906,12 +1032,20 @@ ipcMain.handle('get-info', () => {
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
     fleet: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(),
     buildId: APP_BUILD_ID,
-    costPolicy: { planning: ['ollama', 'glm'], paid: ['claude-code', 'glm'], localOperators: ['codex'], blocked: ['gemini', 'kimi', 'openrouter', 'codex-api'] },
+    costPolicy: { planning: ['qwen-local', 'glm'], paid: ['claude', 'codex', 'gemini', 'glm'], localOperators: ['qwen'], blocked: ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'] },
     ...bus.snapshot() };
 });
 
 // ---------- ライフサイクル ----------
 app.whenReady().then(() => {
+  settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
+  ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore });
+  ttsService.on('status', (status) => broadcast('voice:engine-status', status));
+  ttsService.on('log', (text) => text && bus.push({ source: 'system', type: 'info', text: `TTS: ${String(text).slice(0, 180)}` }));
+  ttsService.start(); // asynchronous: never blocks first paint
+  cmuxBridge = new CmuxBridge({ settingsStore });
+  cmuxBridge.on('snapshot', (snapshot) => broadcast('cmux:snapshot', snapshot));
+  cmuxBridge.start();
   comfy = new ComfyUIMediaBridge({ outputDir: path.join(app.getPath('userData'), 'generated-media') });
   comfy.on('event', (event) => broadcast('comfy:event', event));
   if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
@@ -923,13 +1057,13 @@ app.whenReady().then(() => {
   router.ollamaWarmup('qwen3.5:35b-a3b');
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
-  knowledge.savePhysicalLayout({ version: 2, root: APP_ROOT, domains: {
-    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/relationship-snapshot-service.js'],
+  knowledge.savePhysicalLayout({ version: 3, root: APP_ROOT, domains: {
+    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js'],
     '3d-canvas': ['src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js', 'src/domain/3d-canvas/components/relationship-field.js', 'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/synapse-spark-shedder.js'],
-    terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js'],
+    terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js', 'src/domain/terminal/components/cmux-terminal-mirror.js'],
     telemetry: ['src/domain/telemetry/components/right-telemetry-panel.js', 'src/domain/telemetry/components/telemetry-store.js'],
     'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
-    ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/remote/mobile.html'],
+    ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js', 'src/components/UI/settings-modal.css', 'src/components/UI/remote/mobile.html'],
   } });
   relationshipService.refresh(true);
   const relationshipTimer = setInterval(() => relationshipService.refresh(false), 300000);
@@ -984,21 +1118,15 @@ app.whenReady().then(() => {
   }
   // TTSTEST=1 — final-only TTS と Thinking 除外、Barge-in切断の検証。
   if (process.env.TTSTEST) {
-    let chunks = 0;
-    const origBroadcast = broadcast;
     setTimeout(() => {
       liveVoice.active = true;
       const fake = '<thinking>never speak this draft</thinking>Final owner report. 作業は完了しました。';
       ttsFlushRemainder(fake);
-      // 合成数はttsSeq（say -o 実行回数）で数える
       setTimeout(() => {
         const seqBefore = ttsSeq;
         ttsKill();
-        const { execSync } = require('child_process');
-        let says = '';
-        try { says = execSync('pgrep -f "/usr/bin/say" || true').toString().trim(); } catch (_) {}
-        console.log(`TTSTEST synthesized=${seqBefore} queueAfterKill=${ttsQueue.length} synthProc=${!!ttsSynth} sayProcs=${says ? says.split('\n').length : 0}`);
-        console.log(`TTSTEST ${seqBefore === 1 && ttsQueue.length === 0 && !ttsSynth && !says ? 'OK' : 'FAIL'}`);
+        console.log(`TTSTEST synthesized=${seqBefore} queueAfterKill=${speechQueues.owner.length} busy=${speechBusy.owner}`);
+        console.log(`TTSTEST ${seqBefore >= 1 && speechQueues.owner.length === 0 ? 'OK' : 'FAIL'}`);
         quitting = true;
         app.exit(0);
       }, 4200);
@@ -1017,6 +1145,9 @@ app.whenReady().then(() => {
     setTimeout(() => {
       bus.push({ source: 'system', agent: 'biglama', type: 'task', text: 'SNAP visual test — local planning pulse' });
     }, 4700);
+    if (process.env.SNAP_SETTINGS) {
+      setTimeout(() => mainWin?.webContents.executeJavaScript('window.BKSettings?.open()').catch(() => {}), 3200);
+    }
     setTimeout(async () => {
       try {
         for (const [name, w] of [['tray', trayWin], ['main', mainWin]]) {
@@ -1059,4 +1190,4 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { /* 常駐継続 */ });
 app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });
+app.on('before-quit', () => { quitting = true; bus.stop(); pi.stop(); ttsService?.stop(); cmuxBridge?.stop(); relationshipService?.dispose?.(); comfy?.shutdown(); if (pty) try { pty.kill(); } catch (_) {} });

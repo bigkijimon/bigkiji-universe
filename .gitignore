@@ -7,3 +7,5 @@ src/components/UI/assets/*.bak*
 graphify-out/
 tools/selftest-result-*.json
 .playwright-mcp/
+__pycache__/
+*.py[cod]

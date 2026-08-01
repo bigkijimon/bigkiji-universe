@@ -8,12 +8,14 @@ const exists = (file) => fs.existsSync(path.join(root, file));
 
 const required = [
   'src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js',
+  'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js',
   'src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js',
   'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/viral-membrane.js',
-  'src/domain/terminal/components/multi-terminal-manager.js',
+  'src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/cmux-terminal-mirror.js',
   'src/domain/telemetry/components/right-telemetry-panel.js',
   'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
   'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
+  'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js',
 ];
 for (const file of required) assert.ok(exists(file), `missing physical target: ${file}`);
 

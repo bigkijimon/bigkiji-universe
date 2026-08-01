@@ -10,8 +10,8 @@ const crypto = require('crypto');
 const ROOT = path.join(os.homedir(), '.pi', 'agent', 'knowledge', 'bigkiji-universe');
 const STATE_PATH = path.join(ROOT, 'task_state.json');
 const GRAPH_PATH = path.join(ROOT, 'knowledge_graph.json');
-const ALLOWED_EXECUTORS = new Set(['claude-code', 'glm', 'ollama']);
-const PAID_EXECUTORS = new Set(['claude-code', 'glm']);
+const ALLOWED_EXECUTORS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm', 'qwen', 'ollama']);
+const PAID_EXECUTORS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
 function hash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
@@ -57,7 +57,7 @@ function rememberPlan(task, plan, decisions = []) {
   const state = loadState();
   const item = { taskId: task.id, promptHash: task.promptHash, planHash: hash(plan),
     plan: cleanText(plan, 5000), decisions: decisions.map((x) => cleanText(x, 300)),
-    executorPolicy: ['claude-code', 'glm'], planningPolicy: 'local-qwen-with-glm-fallback', status: 'planned',
+    executorPolicy: ['claude', 'codex', 'gemini', 'glm'], planningPolicy: 'local-qwen-with-approved-fast-fallback', status: 'planned',
     savedAt: new Date().toISOString() };
   state.plans = [...state.plans.filter((p) => p.promptHash !== item.promptHash), item].slice(-100);
   state.tasks = [...state.tasks.filter((t) => t.id !== task.id), { ...task, planHash: item.planHash }].slice(-100);
