@@ -7,19 +7,22 @@
     ? '#d97757' : provider === 'glm' ? '#8b5cf6' : '#34d399';
 
   class MultiTerminalManager {
-    constructor({ dashboard, shell, streamPane, streamTabs, neuralTab, shellTab, actionPanel, actionList, fitShell }) {
+    constructor({ dashboard, shell, livePane, streamPane, streamTabs, neuralTab, shellTab, liveTab, actionPanel, actionList, fitShell }) {
       this.dashboard = dashboard;
       this.shell = shell;
       this.streamPane = streamPane;
+      this.livePane = livePane;
       this.streamTabs = streamTabs;
       this.neuralTab = neuralTab;
       this.shellTab = shellTab;
+      this.liveTab = liveTab;
       this.actionPanel = actionPanel;
       this.actionList = actionList;
       this.fitShell = fitShell;
       this.tasks = new Map();
       this.active = 'neural';
       this.mode = 'stream';
+      this.relay = [];
     }
 
     upsert(task) {
@@ -40,6 +43,14 @@
       this.renderTabs();
     }
 
+    appendRelay(event = {}) {
+      const row = { ts: event.ts || Date.now(), source: event.source || event.agent || 'SYSTEM',
+        status: event.sev || event.kind || event.type || 'LIVE', text: event.text || '' };
+      if (!row.text) return;
+      this.relay.push(row); this.relay = this.relay.slice(-500);
+      if (this.active === 'live') this.renderRelay(true);
+    }
+
     setMode(mode) {
       this.mode = mode === 'card' ? 'card' : 'stream';
       const cards = this.mode === 'card';
@@ -57,10 +68,13 @@
       this.dashboard.classList.toggle('paneOff', which !== 'neural');
       this.shell.classList.toggle('paneOff', which !== 'shell');
       this.streamPane.classList.add('paneOff');
+      this.livePane?.classList.toggle('paneOff', which !== 'live');
       this.neuralTab.classList.toggle('on', which === 'neural');
       this.shellTab.classList.toggle('on', which === 'shell');
+      this.liveTab?.classList.toggle('on', which === 'live');
       this.renderTabs();
       if (which === 'shell') setTimeout(this.fitShell, 30);
+      if (which === 'live') this.renderRelay();
     }
 
     showTask(id) {
@@ -73,8 +87,10 @@
       this.dashboard.classList.add('paneOff');
       this.shell.classList.add('paneOff');
       this.streamPane.classList.remove('paneOff');
+      this.livePane?.classList.add('paneOff');
       this.neuralTab.classList.remove('on');
       this.shellTab.classList.remove('on');
+      this.liveTab?.classList.remove('on');
       this.renderTabs();
       this.renderActiveStream();
     }
@@ -102,6 +118,16 @@
         <span>${escapeHtml(task.provider || 'TASK')}</span><b>${escapeHtml(task.status || 'queued')}</b><code>${escapeHtml(task.id)}</code>
       </div><pre>${escapeHtml(task.output || task.error || 'Awaiting task output…')}</pre>`;
       if (wasBottom) this.streamPane.scrollTop = this.streamPane.scrollHeight;
+    }
+
+    renderRelay(stickToBottom = false) {
+      if (!this.livePane) return;
+      const wasBottom = stickToBottom || this.livePane.scrollHeight - this.livePane.scrollTop - this.livePane.clientHeight < 30;
+      this.livePane.innerHTML = `<div class="relay-head"><b>MISSION RELAY</b><span>owner-visible agent activity · live</span></div><div class="relay-lines">${this.relay.map((row) => {
+        const time = new Date(row.ts).toLocaleTimeString([], { hour12: false });
+        return `<div class="relay-line"><time>${escapeHtml(time)}</time><b>${escapeHtml(row.source)}</b><em>${escapeHtml(String(row.status).toUpperCase())}</em><span>${escapeHtml(row.text)}</span></div>`;
+      }).join('') || '<div class="relay-empty">No agent transmissions yet. Start a task or open a terminal.</div>'}</div>`;
+      if (wasBottom) this.livePane.scrollTop = this.livePane.scrollHeight;
     }
 
     renderCards() {

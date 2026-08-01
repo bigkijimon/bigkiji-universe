@@ -63,12 +63,24 @@
   .stats b { color: var(--dim); font-weight: 600; margin-left: 4px; }
   .stats .sep { margin: 0 9px; width: 1px; height: 10px; background: var(--hairline);
     align-self: center; }
-  .cmux-surface-tabs { display:flex; gap:3px; max-width:330px; overflow:hidden; }
-  .cmux-surface-tab { max-width:92px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border:0; border-radius:5px; padding:2px 6px; cursor:pointer; color:rgba(183,214,205,.45); background:rgba(255,255,255,.025); font:8px "SF Mono",Menlo,monospace; }
-  .cmux-surface-tab.on { color:#00f3ff; background:rgba(0,243,255,.08); box-shadow:inset 0 -1px rgba(0,243,255,.45); }
+  .cmux-surface-tabs { position:relative; display:flex; gap:3px; max-width:390px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; }
+  .cmux-surface-tabs:after { content:''; position:absolute; left:4px; right:4px; bottom:0; height:1px; background:linear-gradient(90deg,#00f3ff,#a78bfa 46%,#34d399); opacity:.24; }
+  .cmux-surface-tab { --workspace:#00f3ff; position:relative; z-index:1; max-width:104px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border:1px solid color-mix(in srgb,var(--workspace) 16%,transparent); border-radius:6px 6px 3px 3px; padding:3px 8px; cursor:pointer; color:rgba(183,214,205,.48); background:rgba(4,9,17,.72); font:8px "SF Mono",Menlo,monospace; }
+  .cmux-surface-tab:before { content:''; position:absolute; left:7px; right:7px; bottom:-1px; height:1px; background:var(--workspace); box-shadow:0 0 8px var(--workspace); opacity:.45; }
+  .cmux-surface-tab.on { color:#e9fffa; background:color-mix(in srgb,var(--workspace) 10%,rgba(4,9,17,.92)); box-shadow:inset 0 0 14px color-mix(in srgb,var(--workspace) 8%,transparent); }
   .cmux-controls { display:flex; align-items:center; gap:4px; }
   .cmux-controls button { border:1px solid rgba(151,218,204,.11); border-radius:5px; padding:2px 5px; color:rgba(190,220,212,.5); background:transparent; cursor:pointer; font:8px "SF Mono",Menlo,monospace; }
   .cmux-controls.connected [data-cmux-state] { color:#34d399; }
+  #liveRelay { overflow:auto; padding:0 12px 12px; color:#cce9df; background:radial-gradient(circle at 6% 0,rgba(0,243,255,.06),transparent 35%),rgba(4,8,15,.76); font-family:"SF Mono",Menlo,monospace; }
+  .relay-head { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:10px; padding:9px 0 7px; border-bottom:1px solid rgba(0,243,255,.13); background:rgba(4,8,15,.94); }
+  .relay-head b { color:#00f3ff; font-size:9px; letter-spacing:.14em; }.relay-head span{color:rgba(188,220,210,.38);font-size:8px}
+  .relay-line { display:grid; grid-template-columns:64px 94px 58px minmax(0,1fr); gap:8px; padding:4px 3px; border-left:1px solid rgba(52,211,153,.12); font-size:9px; line-height:1.4; }
+  .relay-line time{color:rgba(200,225,217,.3)}.relay-line b{color:#e5faf3;overflow:hidden;text-overflow:ellipsis}.relay-line em{color:#a78bfa;font-style:normal}.relay-line span{color:rgba(210,236,228,.66);white-space:pre-wrap}.relay-empty{padding:20px 4px;color:rgba(190,220,212,.38);font-size:10px}
+  #cmuxPalette { position:fixed; inset:0; z-index:90; display:none; place-items:center; padding:24px; background:rgba(1,4,9,.66); backdrop-filter:blur(12px); }
+  #cmuxPalette.on{display:grid}.cmux-palette-deck{width:min(820px,94vw);height:min(620px,82vh);display:grid;grid-template-rows:auto auto 1fr auto;overflow:hidden;border:1px solid rgba(0,243,255,.25);border-radius:14px;background:linear-gradient(145deg,rgba(7,14,24,.98),rgba(3,7,14,.98));box-shadow:0 28px 100px rgba(0,0,0,.65),0 0 40px -22px #00f3ff}
+  .cmux-palette-head{display:flex;align-items:center;padding:13px 15px;border-bottom:1px solid rgba(167,139,250,.16)}.cmux-palette-head b{color:#e7fff7;font:800 10px "SF Mono",Menlo,monospace;letter-spacing:.13em}.cmux-palette-head span{margin-left:9px;color:rgba(190,220,212,.4);font:8px "SF Mono",Menlo,monospace}.cmux-palette-head button{margin-left:auto;border:0;background:none;color:#829a92;font-size:20px;cursor:pointer}
+  .cmux-palette-input{display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px 15px}.cmux-palette-input input{min-width:0;padding:10px 12px;border:1px solid rgba(52,211,153,.24);border-radius:8px;background:#02070d;color:#e7fff7;outline:none;font:11px "SF Mono",Menlo,monospace}.cmux-palette-input input:focus{border-color:#34d399;box-shadow:0 0 18px rgba(52,211,153,.1)}.cmux-palette-input button{padding:0 15px;border:1px solid rgba(255,232,31,.3);border-radius:8px;background:rgba(255,232,31,.07);color:#fff4a6;font:800 9px "SF Mono",Menlo,monospace;cursor:pointer}
+  .cmux-command-list{overflow:auto;padding:0 15px 12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cmux-command-list section{min-width:0}.cmux-command-list h4{padding:6px 4px;color:#a78bfa;font:800 8px "SF Mono",Menlo,monospace;letter-spacing:.12em}.cmux-command-list section button{width:100%;display:flex;justify-content:space-between;gap:8px;padding:5px 7px;border:0;border-left:1px solid rgba(0,243,255,.13);background:transparent;color:#cfe9e1;text-align:left;cursor:pointer;font:9px "SF Mono",Menlo,monospace}.cmux-command-list section button:hover{background:rgba(0,243,255,.05);border-left-color:#00f3ff}.cmux-command-list section span{color:rgba(190,220,212,.28);overflow:hidden;text-overflow:ellipsis}.cmux-palette-output{min-height:48px;max-height:110px;overflow:auto;margin:0;padding:10px 15px;border-top:1px solid rgba(52,211,153,.12);color:rgba(204,233,223,.62);white-space:pre-wrap;font:9px/1.5 "SF Mono",Menlo,monospace}
 
   .stage { flex: 1; display: flex; min-height: 0; height: 60%; }
   #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; }
@@ -620,7 +632,8 @@
           <div class="bar">
         <div class="tabs">
           <button id="tabNeural" class="tab on">⧉ NEURAL</button>
-          <button id="tabTerm" class="tab">❯ TERMINAL</button>
+          <button id="tabLive" class="tab">◉ MISSION RELAY</button>
+          <button id="tabTerm" class="tab">❯ TERMINALS</button>
           <span id="cmuxTabs" class="cmux-surface-tabs" aria-label="cmux surfaces"></span>
           <span id="taskStreamTabs" class="task-stream-tabs" aria-label="Task terminal tabs"></span>
         </div>
@@ -628,7 +641,7 @@
           <span id="stageLine">&gt; STANDBY — AWAITING DIRECTIVE</span>
           <span id="stageTrack"><span id="stageBar"></span></span>
         </div>
-        <div id="cmuxControls" class="cmux-controls"><button data-cmux-state>PTY FALLBACK</button><button data-cmux-refresh title="Refresh cmux">↻</button><button data-cmux-split title="Split right">⊞</button><button data-cmux-native title="Open the same surface in cmux">↗</button></div>
+        <div id="cmuxControls" class="cmux-controls"><button data-cmux-state>PTY FALLBACK</button><button data-cmux-new title="New terminal tab">＋</button><button data-cmux-split title="Split right">⊞</button><button data-cmux-palette title="All cmux commands">⌘</button><button data-cmux-refresh title="Refresh cmux">↻</button><button data-cmux-native title="Open the same surface in cmux">↗</button></div>
         <em data-i18n="syncNote">…</em>
       </div>
       <div id="dashBody">
@@ -652,9 +665,15 @@
         </div>
       </div>
       <div id="terminal" class="paneOff"></div>
+      <div id="liveRelay" class="paneOff" aria-live="polite"></div>
       <div id="taskStreams" class="paneOff" aria-live="polite"></div>
     </div>
   </div>
+  <div id="cmuxPalette" aria-hidden="true"><div class="cmux-palette-deck" role="dialog" aria-modal="true" aria-label="cmux command palette">
+    <div class="cmux-palette-head"><b>CMUX OPERATIONS INDEX</b><span>all commands · argv only · destructive actions require confirmation</span><button data-palette-close aria-label="Close">×</button></div>
+    <div class="cmux-palette-input"><input spellcheck="false" placeholder='Command and arguments, e.g. workspace-action --action set-color --color Aqua'><button data-palette-run>RUN COMMAND</button></div>
+    <div class="cmux-command-list" data-command-list></div><pre class="cmux-palette-output" data-palette-output>Choose a command or type an exact cmux argv sequence.</pre>
+  </div></div>
   <div class="grain"></div>
 
   <script>
@@ -735,19 +754,22 @@
     // PTYはSHELL入力と許可済みClaude Code/GLM CLIの惑星発光の源泉。
     const dashBody = document.getElementById('dashBody');
     const termPane = document.getElementById('terminal');
-    const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm');
+    const tabN = document.getElementById('tabNeural'), tabT = document.getElementById('tabTerm'), tabL = document.getElementById('tabLive');
     const multiTerm = new window.MultiTerminalManager({
-      dashboard: dashBody, shell: termPane, streamPane: document.getElementById('taskStreams'),
-      streamTabs: document.getElementById('taskStreamTabs'), neuralTab: tabN, shellTab: tabT,
+      dashboard: dashBody, shell: termPane, livePane: document.getElementById('liveRelay'), streamPane: document.getElementById('taskStreams'),
+      streamTabs: document.getElementById('taskStreamTabs'), neuralTab: tabN, shellTab: tabT, liveTab: tabL,
       actionPanel: document.getElementById('taskPanel'), actionList: document.getElementById('taskList'), fitShell: doFit,
     });
     tabN.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('neural'); });
     tabT.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('shell'); });
+    tabL.addEventListener('click', (e) => { e.stopPropagation(); multiTerm.showBase('live'); });
     window.bkShowTerm = () => multiTerm.showBase('shell');
     document.getElementById('streamMode').addEventListener('click', () => multiTerm.setMode('stream'));
     document.getElementById('actionMode').addEventListener('click', () => multiTerm.setMode('card'));
     window.bigkiji.onTaskEvent((task) => multiTerm.upsert(task));
     window.bigkiji.onTaskLog((log) => multiTerm.append(log));
+    window.bigkiji.onCommentary((event) => multiTerm.appendRelay(event));
+    window.bigkiji.onBusEvent((event) => multiTerm.appendRelay(event));
     window.bigkiji.listTasks().then((tasks) => tasks.forEach((task) => multiTerm.upsert(task))).catch(() => {});
     window.prepareParallelTasks = async (prompt) => {
       await window.bigkiji.prepareTasks({ prompt, planHash: 'owner-confirmed-' + Date.now().toString(36) });

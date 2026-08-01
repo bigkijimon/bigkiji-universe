@@ -7,8 +7,13 @@ const fs = require('fs');
 const { expand } = require('dotenv-expand');
 const dotenv = require('dotenv');
 const APP_ROOT = path.resolve(__dirname, '..', '..');
-const UI_ROOT = path.join(APP_ROOT, 'src', 'components', 'UI');
 expand(dotenv.config({ path: path.join(APP_ROOT, '.env') }));
+const { createPathConfig, isInside } = require('./path-config');
+let savedPaths = {};
+try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}
+const PATHS = createPathConfig({ appRoot: APP_ROOT, userData: app.getPath('userData'), saved: savedPaths });
+const UI_ROOT = PATHS.uiRoot;
+if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PATHS.knowledgeRoot;
 const { Orchestrator } = require('./orchestrator');
 const { PiBridge, MODEL: PI_MODEL } = require('../domain/pi-agent/pi-bridge');
 // v13: model-routerを直接インポート（Ollamaウォームアップ等）
@@ -33,10 +38,10 @@ const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
 const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
 const bus = new Orchestrator();
-const taskRunner = new TaskRunner({ cwd: '/Users/yuma/Documents/CEOBigKiji', maxParallel: 2 });
+const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 2 });
 const fleetMetrics = new FleetMetricsStore({ knowledge });
 const relationshipService = new RelationshipSnapshotService({
-  graphPath: path.join('/Users/yuma/Documents/CEOBigKiji', 'graphify-out', 'graph.json'),
+  graphPath: PATHS.graphPath,
 });
 
 let tray = null;
@@ -59,14 +64,15 @@ if (!app.requestSingleInstanceLock()) {
 
 // ---------- pty（失敗時は pipe モードへ自動降格） ----------
 function spawnShell() {
-  const shell = process.env.SHELL || '/bin/zsh';
+  const shell = process.env.SHELL || process.env.COMSPEC || (process.platform === 'win32' ? 'powershell.exe' : '/bin/bash');
+  const loginArgs = process.platform === 'win32' ? ['-NoLogo'] : ['-l'];
   const onData = (data) => {
     broadcast('pty:data', data);
     bus.ingest(data);
   };
   try {
     const nodePty = require('node-pty');
-    pty = nodePty.spawn(shell, ['-l'], {
+    pty = nodePty.spawn(shell, loginArgs, {
       name: 'xterm-256color', cols: 100, rows: 24,
       cwd: os.homedir(), env: process.env,
     });
@@ -75,7 +81,7 @@ function spawnShell() {
     ptyMode = 'pty';
   } catch (err) {
     const { spawn } = require('child_process');
-    const child = spawn(shell, ['-i'], { cwd: os.homedir(), env: process.env });
+    const child = spawn(shell, process.platform === 'win32' ? ['-NoLogo'] : ['-i'], { cwd: os.homedir(), env: process.env });
     child.stdout.on('data', (d) => onData(d.toString()));
     child.stderr.on('data', (d) => onData(d.toString()));
     child.on('exit', () => { if (!quitting) setTimeout(spawnShell, 500); });
@@ -117,7 +123,7 @@ function liveComment(text, sev = 'info') {
 }
 
 // ---------- 成果物スキャナ（各社 成果物/ の実ファイルを監視・新着はバスイベント化） ----------
-const VAULT = '/Users/yuma/Documents/CEOBigKiji';
+const VAULT = PATHS.vaultRoot;
 const COMPANY_AGENT = {
   English_School: 'marble', Creative_Media: 'justin', Design_Studio: 'risa',
   LocalAI: 'biglama', Executive_Office: null, // Exec直轄はCore扱い
@@ -475,7 +481,7 @@ function ttsFlushRemainder(fullText) {
 // WAV(16k mono PCM16)→二段STT→Pi。デスクトップIPCとモバイルPWA(/api/voice)の共用経路
 async function handleUtterance(buf, via) {
   const requestedAt = Date.now();
-  const dir = path.join(APP_ROOT, 'recordings');
+  const dir = PATHS.recordingsRoot;
   fs.mkdirSync(dir, { recursive: true });
   const wav = path.join(dir, `live-${Date.now()}.wav`);
   fs.writeFileSync(wav, Buffer.from(buf));
@@ -517,8 +523,8 @@ ipcMain.on('voice:state', (_e, s) => {
   if (c && s.state !== 'LISTEN') liveComment(c);
 });
 
-const WHISPER_BIN = '/opt/homebrew/bin/whisper-cli';
-const WHISPER_MODEL = path.join(os.homedir(), '.bigkiji/whisper/ggml-small.bin');
+const WHISPER_BIN = PATHS.whisperBin;
+const WHISPER_MODEL = PATHS.whisperModel;
 // v12二段STT: -dl で言語検出（en/ja/th以外はenへ矯正＝-l auto のEN→JA誤検出の再発防止）→検出言語で本走。
 // 動的言語ミラー（JA入力→JA返答）に必要な入力言語判定もここで得る
 function whisperDetect(wav) {
@@ -532,7 +538,7 @@ function whisperDetect(wav) {
 }
 function whisperTranscribe(wav) {
   return new Promise((resolve) => {
-    if (!fs.existsSync(WHISPER_BIN) || !fs.existsSync(WHISPER_MODEL)) {
+    if (!fs.existsSync(WHISPER_MODEL)) {
       resolve({ error: 'whisper is not set up yet (model download pending)' });
       return;
     }
@@ -559,7 +565,7 @@ ipcMain.handle('transcribe', (_e, webmPath) => new Promise((resolve) => {
 ipcMain.handle('mic-permission', async () =>
   process.platform === 'darwin' ? systemPreferences.askForMediaAccess('microphone') : true);
 ipcMain.handle('save-recording', (_e, buf) => {
-  const dir = path.join(APP_ROOT, 'recordings');
+  const dir = PATHS.recordingsRoot;
   fs.mkdirSync(dir, { recursive: true });
   const f = path.join(dir, `rec-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`);
   fs.writeFileSync(f, Buffer.from(buf));
@@ -568,7 +574,7 @@ ipcMain.handle('save-recording', (_e, buf) => {
 });
 
 // ---------- Pi RPC（Core=Pi・計画はローカルQwen。確定実行のみClaude Code/GLM） ----------
-const pi = new PiBridge();
+const pi = new PiBridge({ cwd: PATHS.vaultRoot, piBin: PATHS.piBin });
 let piTurnOpen = false;
 let piTouched = new Set();
 let piIdleTimer = null;
@@ -588,7 +594,7 @@ const lastToolArgs = new Map();  // toolName → 直近引数（エラー構造�
 // アプリコードへの自動直書きはしない（検収ゲート＝オーナー/Claude Code承認後に適用）。
 // Piへの調査委任は実行中ターンを乗っ取らないよう、ターン終了後に送る（上限2回/セッション）。
 const ERRLOG_DIR = path.join(os.homedir(), '.bigkiji', 'logs');
-const HEAL_DIR = path.join(APP_ROOT, '..', 'Knowledge', '修復キュー');
+const HEAL_DIR = path.join(PATHS.knowledgeRoot, 'repair-queue');
 const toolFails = {};
 const healedTools = new Set();
 const healPending = [];
@@ -895,7 +901,7 @@ async function fastDispatch(text) {
   bus.push({ source: 'system', type: 'info', text: `Fast route completed in ${Date.now() - t0}ms` });
 }
 taskCache.init({
-  kbPath: path.join(APP_ROOT, '..', 'Knowledge', 'task_knowledge_base.json'),
+  kbPath: path.join(PATHS.knowledgeRoot, 'task_knowledge_base.json'),
   model: 'qwen3.5:35b-a3b',
   knowledge,
   C,
@@ -947,6 +953,7 @@ ipcMain.handle('cmux:snapshot', () => cmuxBridge?.snapshot() || ({ connected: fa
 ipcMain.handle('cmux:refresh', () => cmuxBridge.refresh());
 ipcMain.handle('cmux:select', (_event, surface) => cmuxBridge.select(surface));
 ipcMain.handle('cmux:action', (_event, action, payload) => cmuxBridge.action(String(action), payload || {}));
+ipcMain.handle('cmux:command', (_event, spec) => cmuxBridge.command(spec || {}));
 ipcMain.handle('cmux:open-native', (_event, surface) => cmuxBridge.openNative(surface));
 ipcMain.on('cmux:input', (_event, text, surface) => cmuxBridge.send(text, surface).catch((error) => broadcast('cmux:error', { message: error.message })));
 ipcMain.on('cmux:key', (_event, key, surface) => cmuxBridge.sendKey(key, surface).catch((error) => broadcast('cmux:error', { message: error.message })));
@@ -995,7 +1002,7 @@ if (process.env.PITEST) {
 ipcMain.on('pi:abort', () => pi.abort());
 
 ipcMain.on('reveal', (_e, p) => {
-  if (typeof p === 'string' && p.startsWith(VAULT)) shell.showItemInFolder(p); // Vault内のみ許可
+  if (typeof p === 'string' && isInside(VAULT, p)) shell.showItemInFolder(p); // Vault内のみ許可
 });
 ipcMain.handle('file:detail', async (_e, relPath) => {
   const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
@@ -1032,21 +1039,23 @@ ipcMain.handle('get-info', () => {
     vaultFiles, sandboxTopo: sandboxTopology(), tasks: taskRunner.snapshot(),
     fleet: fleetMetrics.snapshot(), relationships: relationshipService.snapshot(),
     buildId: APP_BUILD_ID,
-    costPolicy: { planning: ['qwen-local', 'glm'], paid: ['claude', 'codex', 'gemini', 'glm'], localOperators: ['qwen'], blocked: ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'] },
+    paths: { appRoot: APP_ROOT, vaultRoot: VAULT, knowledgeRoot: PATHS.knowledgeRoot, graphPath: PATHS.graphPath },
+    costPolicy: { planning: ['qwen-local'], paid: ['claude', 'codex', 'gemini', 'glm'], localOperators: ['qwen'], blocked: ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'] },
     ...bus.snapshot() };
 });
 
 // ---------- ライフサイクル ----------
 app.whenReady().then(() => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
+  taskRunner.setSecretProvider((provider) => settingsStore.getSecret(provider === 'claude-code' ? 'claude' : provider));
   ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore });
   ttsService.on('status', (status) => broadcast('voice:engine-status', status));
   ttsService.on('log', (text) => text && bus.push({ source: 'system', type: 'info', text: `TTS: ${String(text).slice(0, 180)}` }));
   ttsService.start(); // asynchronous: never blocks first paint
-  cmuxBridge = new CmuxBridge({ settingsStore });
+  cmuxBridge = new CmuxBridge({ settingsStore, defaultBin: PATHS.cmuxBin });
   cmuxBridge.on('snapshot', (snapshot) => broadcast('cmux:snapshot', snapshot));
   cmuxBridge.start();
-  comfy = new ComfyUIMediaBridge({ outputDir: path.join(app.getPath('userData'), 'generated-media') });
+  comfy = new ComfyUIMediaBridge({ root: PATHS.comfyRoot || undefined, outputDir: path.join(app.getPath('userData'), 'generated-media') });
   comfy.on('event', (event) => broadcast('comfy:event', event));
   if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
   createTray();
@@ -1057,12 +1066,12 @@ app.whenReady().then(() => {
   router.ollamaWarmup('qwen3.5:35b-a3b');
   bus.on('event', (evt) => broadcast('bus:event', evt));
   bus.startSystemPulse(app);
-  knowledge.savePhysicalLayout({ version: 3, root: APP_ROOT, domains: {
-    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js'],
+  knowledge.savePhysicalLayout({ version: 4, root: APP_ROOT, domains: {
+    core: ['src/core/main.js', 'src/core/preload.js', 'src/core/path-config.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js', 'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/cmux-bridge.js', 'src/core/relationship-snapshot-service.js'],
     '3d-canvas': ['src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js', 'src/domain/3d-canvas/components/relationship-field.js', 'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/synapse-spark-shedder.js'],
     terminal: ['src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/terminal-resizer.js', 'src/domain/terminal/components/cmux-terminal-mirror.js'],
     telemetry: ['src/domain/telemetry/components/right-telemetry-panel.js', 'src/domain/telemetry/components/telemetry-store.js'],
-    'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
+    'pi-agent': ['src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/task-runner.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js', 'src/domain/pi-agent/components/pi-agents-fleet-box.js'],
     ui: ['src/components/UI/main.html', 'src/components/UI/tray.html', 'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js', 'src/components/UI/settings-modal.css', 'src/components/UI/remote/mobile.html'],
   } });
   relationshipService.refresh(true);
@@ -1174,8 +1183,8 @@ app.whenReady().then(() => {
     mainWin.webContents.once('did-finish-load', () => { state.mainLoaded = true; });
     for (const [name, w] of [['tray', trayWin], ['main', mainWin]]) {
       w.webContents.on('did-fail-load', (_event, code, description) => state.errors.push(`${name}: load ${code} ${description}`));
-      w.webContents.on('console-message', (_e, level, msg) => {
-        if (level >= 3) state.errors.push(`${name}: ${msg}`);
+      w.webContents.on('console-message', (event) => {
+        if (Number(event?.level) >= 3) state.errors.push(`${name}: ${event.message}`);
       });
     }
     setTimeout(() => {

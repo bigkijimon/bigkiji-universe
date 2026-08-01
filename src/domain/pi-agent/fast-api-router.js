@@ -6,7 +6,7 @@ const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 
 // Front desk only. Heavy paid execution remains in TaskRunner (Claude Code/GLM).
-const PRIORITY = ['ollama', 'glm'];
+const PRIORITY = ['ollama'];
 const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
 const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
 const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: 'glm-4.7-flash' };

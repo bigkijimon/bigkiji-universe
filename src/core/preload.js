@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   cmuxRefresh: () => ipcRenderer.invoke('cmux:refresh'),
   cmuxSelect: (surface) => ipcRenderer.invoke('cmux:select', surface),
   cmuxAction: (action, payload) => ipcRenderer.invoke('cmux:action', action, payload),
+  cmuxCommand: (spec) => ipcRenderer.invoke('cmux:command', spec),
   cmuxOpenNative: (surface) => ipcRenderer.invoke('cmux:open-native', surface),
   cmuxInput: (text, surface) => ipcRenderer.send('cmux:input', text, surface),
   cmuxKey: (key, surface) => ipcRenderer.send('cmux:key', key, surface),

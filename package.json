@@ -2,30 +2,41 @@
   "name": "bigkiji-universe",
   "version": "1.0.0",
   "description": "BigKiji Universe OS — menu-bar orchestration synapse app",
+  "author": "BigKiji Universe Contributors",
   "main": "src/core/main.js",
   "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24 <27"
+  },
   "scripts": {
     "start": "electron .",
-    "dist": "APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64",
+    "dev": "electron . --show-main",
+    "dist": "node tools/build-host.js",
+    "dist:mac": "APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64 --x64",
+    "dist:win": "electron-builder --win nsis zip --x64 --arm64",
+    "dist:linux": "electron-builder --linux AppImage deb --x64 --arm64",
     "dist:dir": "electron-builder --mac --dir --arm64",
+    "check:imports": "node tools/import-selftest.js",
     "verify:release": "node tools/verify-macos-release.js",
     "test:governance": "node tools/governance-selftest.js",
     "test:cost-policy": "node tools/cost-policy-selftest.js",
     "test:fast-router": "node tools/fast-router-selftest.js",
     "test:particle-cluster": "node tools/particle-cluster-selftest.js",
     "test:ui-3d": "node tools/ui-3d-selftest.js",
-    "test:interaction": "node tools/interaction-selftest.mjs",
+    "test:interaction": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/interaction-selftest.mjs",
     "test:terminal-resizer": "node tools/terminal-resizer-selftest.js",
-    "test:radial-spark": "node tools/radial-spark-selftest.mjs",
+    "test:radial-spark": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/radial-spark-selftest.mjs",
     "test:comfy": "node tools/comfy-bridge-selftest.js",
-    "test:telemetry": "node tools/telemetry-store-selftest.mjs",
+    "test:telemetry": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/telemetry-store-selftest.mjs",
     "test:architecture": "node tools/architecture-selftest.js",
     "test:runtime-policy": "node tools/runtime-policy-selftest.js",
     "test:voice-engine": "node tools/voice-engine-selftest.js",
     "test:cmux": "node tools/cmux-bridge-selftest.js",
-    "test": "npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
+    "test:context": "node tools/context-routing-selftest.js",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:comfy && npm run test:telemetry",
     "audit:delegations": "node tools/delegation-audit.js",
-    "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild failed — app will fall back to pipe mode'"
+    "postinstall": "node tools/postinstall.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",
@@ -37,6 +48,7 @@
     "npmRebuild": false,
     "files": [
       "**/*",
+      "!**/.env",
       "!recordings/**",
       "!graphify-out/**"
     ],
@@ -58,6 +70,15 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "BigKiji Universe uses the microphone only for owner-directed local voice conversations."
       }
+    },
+    "win": {
+      "target": ["nsis", "zip"],
+      "icon": "build/icon.iconset/icon_512x512.png"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "icon": "build/icon.iconset"
     }
   },
   "dependencies": {
@@ -69,7 +90,7 @@
     "three": "^0.172.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.0",
+    "@electron/rebuild": "^4.2.0",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3"
   }

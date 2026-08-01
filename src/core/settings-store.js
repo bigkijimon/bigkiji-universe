@@ -33,11 +33,21 @@ const DEFAULTS = Object.freeze({
     localDefault: 'qwen',
     qwenBypassTimeoutMs: 1000,
   },
+  paths: {
+    vaultRoot: '',
+    knowledgeRoot: '',
+    graphifyGraphPath: '',
+    comfyRoot: '',
+    whisperBin: '',
+    whisperModel: '',
+  },
   cmux: {
-    enabled: true,
-    cliPath: '/Users/yuma/.local/bin/cmux',
-    pollMs: 1200,
+    enabled: process.platform === 'darwin',
+    cliPath: 'cmux',
+    pollMs: 700,
     mirrorLines: 160,
+    theme: '',
+    confirmDangerous: true,
   },
 });
 
@@ -77,6 +87,11 @@ class SettingsStore {
       clamp(next.audio.systemFallbackAtMs, 5000, 50000, 22000));
     next.routing.paidAllowlist = ['claude', 'codex', 'gemini', 'glm'];
     next.routing.localDefault = 'qwen';
+    next.cmux.enabled = process.platform === 'darwin' && next.cmux.enabled !== false;
+    next.cmux.cliPath = String(next.cmux.cliPath || 'cmux');
+    next.cmux.pollMs = clamp(next.cmux.pollMs, 350, 5000, 700);
+    next.cmux.mirrorLines = clamp(next.cmux.mirrorLines, 40, 2000, 160);
+    next.cmux.confirmDangerous = true;
     return next;
   }
   get() { return clone(this.state); }
@@ -95,7 +110,7 @@ class SettingsStore {
     const all = this._readSecrets();
     if (!value) delete all[id];
     else {
-      if (!this.safeStorage?.isEncryptionAvailable()) throw new Error('macOS Keychain encryption is unavailable');
+      if (!this.safeStorage?.isEncryptionAvailable()) throw new Error('OS secure credential storage is unavailable');
       all[id] = this.safeStorage.encryptString(String(value)).toString('base64');
     }
     fs.mkdirSync(path.dirname(this.secretFile), { recursive: true });

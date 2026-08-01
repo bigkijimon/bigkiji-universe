@@ -7,9 +7,11 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { createPathConfig } = require('../src/core/path-config');
 
-const VAULT = '/Users/yuma/Documents/CEOBigKiji';
-const PI = fs.existsSync('/Users/yuma/.npm-global/bin/pi') ? '/Users/yuma/.npm-global/bin/pi' : 'pi';
+const paths = createPathConfig({ appRoot: path.join(__dirname, '..') });
+const VAULT = paths.vaultRoot;
+const PI = paths.piBin;
 const MODEL = process.env.SELFTEST_MODEL || 'ollama/qwen3.5:35b-a3b';
 const STAMP = Date.now();
 const TMP = path.join(VAULT, 'Executive_Office', 'CompanyApp', 'BIGKIJI', 'Knowledge', `selftest-${STAMP}.txt`);

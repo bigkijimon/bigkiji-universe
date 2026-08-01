@@ -80,9 +80,11 @@ function handoffSummary(answerText, tools, fromModel) {
 }
 
 // 作業ステートの一次保存（切替・完了時に更新＝復元材料）
-const STATE_PATH = path.join(__dirname, '..', 'Knowledge', 'task_state.json');
+const STATE_PATH = path.join(path.resolve(process.env.BIGKIJI_KNOWLEDGE_ROOT || process.env.KNOWLEDGE_ROOT
+  || path.join(os.homedir(), '.pi', 'agent', 'knowledge', 'bigkiji-universe')), 'runtime_task_state.json');
 function saveTaskState(state) {
   try {
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true, mode: 0o700 });
     fs.writeFileSync(STATE_PATH, JSON.stringify({ ...state, ts: new Date().toISOString() }, null, 2));
   } catch (_) {}
 }

@@ -3,8 +3,6 @@
 // JSONL RPCで子プロセスとして持ち、指示/応答/ツール実行/実測トークンを中継する。
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
-
-const VAULT = '/Users/yuma/Documents/CEOBigKiji';
 // v13: 静的チェーン→動的チェーン（model-router.jsがキー実在を検知して可用ティアを構築。
 // GLMは確定実行時のみ参戦。quota沈黙・429検知でOllamaへ即降格する。
 const router = require('./model-router');
@@ -16,8 +14,10 @@ const MODEL = CHAIN[0].id;
 const LANG_RULE = 'Mirror the owner\'s language: reply in Japanese to Japanese input, English to English, Thai to Thai; if unclear use English. Keep code, paths and system/log text in English.';
 
 class PiBridge extends EventEmitter {
-  constructor() {
+  constructor({ cwd = process.cwd(), piBin = process.env.PI_BIN || 'pi' } = {}) {
     super();
+    this.cwd = cwd;
+    this.piBin = piBin;
     this.proc = null;
     this.buf = '';
     this.isStreaming = false;
@@ -94,10 +94,9 @@ class PiBridge extends EventEmitter {
     if (this.proc) return true;
     // No hidden shell lookup: only the approved GLM key in the process environment
     // may be used. Google/Kimi/OpenRouter credentials are never imported.
-    const PI_BIN = require('fs').existsSync('/Users/yuma/.npm-global/bin/pi') ? '/Users/yuma/.npm-global/bin/pi' : 'pi';
     try {
-      this.proc = spawn(PI_BIN, ['--mode', 'rpc', '--approve', '--model', this.model, '--append-system-prompt', LANG_RULE], {
-        cwd: VAULT, env: process.env,
+      this.proc = spawn(this.piBin, ['--mode', 'rpc', '--approve', '--model', this.model, '--append-system-prompt', LANG_RULE], {
+        cwd: this.cwd, env: process.env,
       });
     } catch (err) {
       this.emit('status', { running: false, error: err.message });
@@ -179,4 +178,4 @@ class PiBridge extends EventEmitter {
   }
 }
 
-module.exports = { PiBridge, VAULT, MODEL };
+module.exports = { PiBridge, MODEL };

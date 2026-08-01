@@ -19,6 +19,7 @@ class FleetMetricsStore extends EventEmitter {
     this.knowledge = knowledge;
     this.agents = Object.fromEntries(Object.entries(AGENTS).map(([key, meta]) => [key, emptyAgent(meta)]));
     this.persistTimer = null;
+    this.contextRecords = new Map();
   }
 
   touch(key, update = {}) {
@@ -41,6 +42,19 @@ class FleetMetricsStore extends EventEmitter {
       promptTokens: Number(task.tokens?.input) || 0, completionTokens: Number(task.tokens?.output) || 0,
       taskCount: this.agents.arch.taskCount + (task.status === 'completed' ? 1 : 0),
     });
+    if (task.id && task.context) {
+      this.contextRecords.set(task.id, {
+        saved: Math.max(0, Number(task.context.tokensSaved) || 0),
+        prompt: Math.max(0, Number(task.context.prunedContextTokens) || 0),
+        completion: Math.max(0, Number(task.tokens?.output) || 0),
+      });
+      const records = [...this.contextRecords.values()];
+      this.touch('context', { status: running ? FLEET_STATUS.ORCHESTRATING : FLEET_STATUS.IDLE,
+        tokensSaved: records.reduce((sum, row) => sum + row.saved, 0),
+        promptTokens: records.reduce((sum, row) => sum + row.prompt, 0),
+        completionTokens: records.reduce((sum, row) => sum + row.completion, 0),
+        activeTask: running ? `${task.context.includedFiles?.length || 0} relevant files` : '' });
+    }
   }
 
   ingestStats(stats = {}) {

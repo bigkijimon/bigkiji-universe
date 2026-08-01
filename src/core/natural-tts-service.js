@@ -54,8 +54,10 @@ class NaturalTTSService extends EventEmitter {
     // allocation and a misleading EADDRINUSE failure during app restarts.
     const existing = await this.health(650).catch(() => null);
     if (existing?.ready) return;
-    const venvPython = path.join(os.homedir(), '.bigkiji', 'tts', 'venv', 'bin', 'python');
-    const python = fs.existsSync(venvPython) ? venvPython : '/opt/anaconda3/bin/python';
+    const venvPython = process.platform === 'win32'
+      ? path.join(os.homedir(), '.bigkiji', 'tts', 'venv', 'Scripts', 'python.exe')
+      : path.join(os.homedir(), '.bigkiji', 'tts', 'venv', 'bin', 'python');
+    const python = fs.existsSync(venvPython) ? venvPython : (process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python.exe' : 'python3'));
     const script = path.join(this.appRoot, 'tools', 'qwen3-tts-server.py');
     const endpoint = new URL(cfg.ttsEndpoint);
     this._setStatus({ state: 'loading', ready: false, detail: `Starting local ${path.basename(cfg.ttsModel)}` });
@@ -133,14 +135,22 @@ class NaturalTTSService extends EventEmitter {
       const gender = ['pi', 'gemini'].includes(profile.key) ? 'male' : 'female';
       const voice = SYSTEM_VOICES[language]?.[gender] || 'Samantha';
       const tmp = path.join(os.tmpdir(), `bigkiji-tts-${process.pid}-${Date.now()}.wav`);
-      await execFileBuffer('/usr/bin/say', ['-v', voice, '-r', String(Math.round(175 * profile.speed)), '-o', tmp,
-        '--data-format=LEI16@22050', clean]);
+      if (process.platform === 'darwin') {
+        await execFileBuffer('/usr/bin/say', ['-v', voice, '-r', String(Math.round(175 * profile.speed)), '-o', tmp,
+          '--data-format=LEI16@22050', clean]);
+      } else if (process.platform === 'linux') {
+        await execFileBuffer(process.env.ESPEAK_BIN || 'espeak-ng', ['-s', String(Math.round(175 * profile.speed)), '-w', tmp, clean]);
+      } else {
+        const script = '$s=New-Object -ComObject SAPI.SpVoice;$f=New-Object -ComObject SAPI.SpFileStream;$f.Open($env:BIGKIJI_TTS_FILE,3,$false);$s.AudioOutputStream=$f;$s.Speak($env:BIGKIJI_TTS_TEXT);$f.Close()';
+        await new Promise((resolve, reject) => execFile(process.env.POWERSHELL_BIN || 'powershell.exe', ['-NoProfile', '-Command', script],
+          { timeout: 12000, env: { ...process.env, BIGKIJI_TTS_FILE: tmp, BIGKIJI_TTS_TEXT: clean } }, (error) => error ? reject(error) : resolve()));
+      }
       buffer = await fs.promises.readFile(tmp);
       fs.promises.unlink(tmp).catch(() => {});
     }
     const latencyMs = Date.now() - started;
     this._setStatus({ state: fallback ? 'fallback' : 'ready', ready: !fallback, engine, latencyMs,
-      detail: fallback ? 'macOS neural fallback active' : `${path.basename(payload.model)} ready` });
+      detail: fallback ? `${process.platform} system voice fallback active` : `${path.basename(payload.model)} ready` });
     return { buffer, track, agent: profile.key, language, speed: profile.speed, engine, fallback,
       requestedAt, synthesizedAt: Date.now(), synthesisMs: latencyMs, text: clean };
   }

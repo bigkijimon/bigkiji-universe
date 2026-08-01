@@ -4,8 +4,9 @@
 // R: evidence-only inventory of Pi subagent outcomes. It never changes the Vault.
 const fs = require('fs');
 const path = require('path');
+const { createPathConfig } = require('../src/core/path-config');
 
-const VAULT = '/Users/yuma/Documents/CEOBigKiji';
+const VAULT = createPathConfig({ appRoot: path.join(__dirname, '..') }).vaultRoot;
 const SKIP = new Set(['node_modules', '.git', '_archive', 'graphify-out', '.next']);
 const rows = [];
 

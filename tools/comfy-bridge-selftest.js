@@ -5,8 +5,14 @@ const os = require('os');
 const path = require('path');
 const { ComfyUIMediaBridge } = require('../src/domain/telemetry/components/comfyui-media-bridge');
 
-const root = '/Users/yuma/Documents/ComfyUI';
+const root = path.join(os.tmpdir(), 'bigkiji-comfy-root');
 const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-comfy-'));
+const workflowFile = path.join(root, 'user/default/workflows/_pro_templates/wf_realvisxl_2pass_api.json');
+fs.mkdirSync(path.dirname(workflowFile), { recursive: true });
+fs.writeFileSync(workflowFile, JSON.stringify({
+  2: { inputs: { text: '' } }, 3: { inputs: { text: '' } }, 5: { inputs: { width: 1024, height: 576 } },
+  6: { inputs: { seed: 1 } }, 8: { inputs: { seed: 1 } }, 13: { inputs: { filename_prefix: '' } },
+}));
 let spawned = false;
 const json = (body, ok = true) => ({ ok, status: ok ? 200 : 500, json: async () => body, arrayBuffer: async () => Buffer.from('png') });
 const fetchImpl = async (url, options = {}) => {
@@ -34,5 +40,6 @@ const fetchImpl = async (url, options = {}) => {
   assert(fs.existsSync(new URL(event.assetUrl)));
   assert.equal(spawned, false);
   fs.rmSync(outputDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
   console.log('comfy bridge selftest: PASS');
 })().catch((error) => { console.error(error); process.exit(1); });

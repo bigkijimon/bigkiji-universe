@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const DEFAULT_ROOT = '/Users/yuma/Documents/ComfyUI';
+const DEFAULT_ROOT = path.join(require('os').homedir(), 'ComfyUI');
 const WORKFLOWS = Object.freeze({
   'bigkiji-hud': {
     file: 'user/default/workflows/_pro_templates/wf_realvisxl_2pass_api.json',
@@ -63,7 +63,8 @@ class ComfyUIMediaBridge extends EventEmitter {
 
   startLocal() {
     if (this.child && this.child.exitCode == null) return;
-    const python = path.join(this.root, '.venv', 'bin', 'python');
+    const python = process.platform === 'win32'
+      ? path.join(this.root, '.venv', 'Scripts', 'python.exe') : path.join(this.root, '.venv', 'bin', 'python');
     const main = path.join(this.root, 'ComfyUI-clean', 'main.py');
     if (!fs.existsSync(python) || !fs.existsSync(main)) throw new Error(`ComfyUI runtime not found under ${this.root}`);
     const port = Number(process.env.COMFYUI_PORT) || 8188;
