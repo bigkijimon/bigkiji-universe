@@ -819,7 +819,7 @@ function updateCoreAwakening(now, reduced) {
       coreReveal = 0; ringMorphTarget = 0; ringMorph.reset();
       core.group.visible = false; coreLabel.visible = false;
       coreHalo.visible = false; coreAccretion.group.visible = false;
-      seq.progress = 0; seq.finaleQueued = false; seq.absorb = 1; seq.pull = 0;
+      seq.progress = 0; seq.finaleQueued = false; seq.reportRequested = false; seq.absorb = 1; seq.pull = 0;
       seqEnter('dormant', now);
     }
   }
@@ -832,11 +832,20 @@ function beginCoreFinale(now = performance.now()) {
     count: perfStage >= 1 ? 40 : 72, colors: cloudPalette(), settleRadius: 4.6 });
   seqEnter('finale', now);
 }
-// タスク完了通知（turn完了＝100%）: 定常/リング状態から爆散消滅へ
+// タスク完了通知（turn完了＝100%）: 消滅の前に必ず完了レポートをオーナーへ提示する
+// （2026-08-02オーナー指示）。レポートUIが bk:report-dismissed を返して初めて爆散する。
 function notifyCoreTaskComplete() {
-  if (coreSeq.state === 'dormant') return;
-  coreSeq.finaleQueued = true;
+  if (coreSeq.state === 'dormant' || coreSeq.reportRequested) return;
+  coreSeq.reportRequested = true;
+  window.dispatchEvent(new CustomEvent('bk:task-report', { detail: { progress: coreSeq.progress } }));
+  // レポートUIが20秒以内に表示されない場合のみ従来どおり消滅（表示されたら無期限に待つ）
+  coreSeq.reportFallbackTimer = setTimeout(() => { coreSeq.finaleQueued = true; }, 20000);
 }
+window.addEventListener('bk:task-report-shown', () => clearTimeout(coreSeq.reportFallbackTimer));
+window.addEventListener('bk:report-dismissed', () => {
+  clearTimeout(coreSeq.reportFallbackTimer);
+  coreSeq.finaleQueued = true;
+});
 window.addEventListener('bk:wake-core', triggerCoreAwakening);
 roadmap3d = new Roadmap3D(scene);
 window.bigkiji.knowledgeState?.().then((state) => roadmap3d.setPlans(state)).catch(() => {});

@@ -12,7 +12,7 @@ const path = require('path');
 // - 思考モデル（オンデマンド）: qwen3.5:35b-a3b（PiAgent起動時のみ）
 const TIERS = [
   { id: 'ollama/qwen2.5:0.5b', need: 'ollama', role: '常駐 · Fast ACK · 会話', tag: 'CHAT', keepAlive: -1 },
-  { id: 'zai/glm-4.7-flash', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
+  { id: 'zai/glm-5.2', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
   { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'PiAgentオンデマンド · 思考', tag: 'PIAGENT', keepAlive: 0 },
 ];
 
