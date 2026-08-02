@@ -1,13 +1,15 @@
 'use strict';
 
 const knowledge = require('./pi-knowledge-orchestrator');
+const { GLM_MODELS } = require('./model-router');
 
 // Front desk is deliberately local-only. External providers receive no owner
 // text until a disclosure manifest has been reviewed and approved.
 const PRIORITY = ['ollama'];
 const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
 const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
-const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: 'glm-5.2' };
+// 前受付は軽量・高速が要件なのでGLMはflash枠を使う（IDの正本はmodel-router）
+const MODELS = { ollama: 'qwen3.5:35b-a3b', glm: GLM_MODELS.flash };
 async function ollamaReady(timeoutMs = 850) {
   const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try { const response = await fetch('http://127.0.0.1:11434/api/tags', { signal: ctrl.signal }); return response.ok; }

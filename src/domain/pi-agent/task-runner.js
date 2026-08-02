@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
+const { GLM_MODELS } = require('./model-router');
 const { ContextPruner } = require('./context-pruner');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
@@ -268,7 +269,7 @@ class TaskRunner extends EventEmitter {
       args: ['--prompt', prompt, '--output-format', 'stream-json', '--approval-mode', policy.allowWrite.length ? 'default' : 'plan', '--sandbox',
         ...(runtime.geminiPolicy ? ['--admin-policy', runtime.geminiPolicy] : [])] };
     if (provider === 'glm') return { command: process.env.PI_BIN || 'pi',
-      args: ['--print', '--model', 'zai/glm-5.2', '--no-context-files', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', prompt] };
+      args: ['--print', '--model', `zai/${GLM_MODELS.flagship}`, '--no-context-files', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', prompt] };
     if (provider === 'qwen' || provider === 'ollama') return { command: process.env.OLLAMA_BIN || 'ollama',
       args: ['run', process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b', prompt] };
     throw new Error(`No task adapter for provider: ${provider}`);

@@ -827,6 +827,9 @@ function updateCoreAwakening(now, reduced) {
 function beginCoreFinale(now = performance.now()) {
   if (coreSeq.state === 'finale' || coreSeq.state === 'dormant') return;
   seqFlash(1.4);
+  // 目標を先に落とす: explode完了時のreset()後にmorphKが目標値へ再上昇し、
+  // 消滅したはずのリングが一瞬復活するのを防ぐ
+  ringMorphTarget = 0;
   ringMorph.explode(now);
   coreFx.detonationBurst(core.group.position.clone(), {
     count: perfStage >= 1 ? 40 : 72, colors: cloudPalette(), settleRadius: 4.6 });

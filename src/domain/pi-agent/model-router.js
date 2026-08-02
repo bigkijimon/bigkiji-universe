@@ -7,12 +7,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// GLMモデルIDの唯一の正本（オーナー方針: GLMは常に最新を使う）。
+// 更新時はここだけを書き換える。2026-08-02時点の現行:
+//   flagship = glm-5.2（2026-06-13リリース・743B MoE・1M文脈）
+//   flash    = glm-4.7-flash（glm-4.5-flashは2026-01-30廃止。5.2にflash派生は未発売）
+const GLM_MODELS = Object.freeze({
+  flagship: process.env.BIGKIJI_GLM_MODEL || 'glm-5.2',
+  flash: process.env.BIGKIJI_GLM_FLASH_MODEL || 'glm-4.7-flash',
+});
+
 // 役割定義（スペック§1①）。2段階モデル構造：
 // - 会話モデル（常駐）: qwen2.5:0.5b（keep_alive: -1）
 // - 思考モデル（オンデマンド）: qwen3.5:35b-a3b（PiAgent起動時のみ）
 const TIERS = [
   { id: 'ollama/qwen2.5:0.5b', need: 'ollama', role: '常駐 · Fast ACK · 会話', tag: 'CHAT', keepAlive: -1 },
-  { id: 'zai/glm-5.2', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
+  { id: `zai/${GLM_MODELS.flagship}`, need: 'zai', role: 'approved paid execution · reasoning', tag: 'GLM' },
   { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'PiAgentオンデマンド · 思考', tag: 'PIAGENT', keepAlive: 0 },
 ];
 
@@ -106,7 +115,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 }
 
 module.exports = {
-  TIERS, loadProviders, buildChain, tierOf, pickStart,
+  GLM_MODELS, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN,
   handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, ollamaWarmup, ollamaKickstart,
 };

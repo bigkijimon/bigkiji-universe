@@ -396,7 +396,9 @@ export function mountOrb(container, { segments = 160, onClick, style = 'blackhol
   const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 50);
   camera.position.set(0, 0, 4.35);
 
-  const orb = buildOrbGroup({ segments, style, diskTexUrl: './assets/accretion.png' }); // ComfyUI生成円盤
+  // tray小窓のオーブは実表示120px程度。メインキャンバスの4K円盤(67MB VRAM)を
+  // 常駐ウィンドウで二重に抱えないよう、同一アートの1K版を使う。
+  const orb = buildOrbGroup({ segments, style, diskTexUrl: './assets/accretion-sm.png' }); // ComfyUI生成円盤
   scene.add(orb.group);
   orb.group.visible = !dormant;
 
