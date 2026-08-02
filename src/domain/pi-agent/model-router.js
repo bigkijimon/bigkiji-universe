@@ -16,6 +16,34 @@ const GLM_MODELS = Object.freeze({
   flash: process.env.BIGKIJI_GLM_FLASH_MODEL || 'glm-4.7-flash',
 });
 
+// Claude model IDs, in the same single-source-of-truth shape as GLM_MODELS.
+// Owner rule: prose, design and large redesigns go to Fable; ordinary engineering
+// stays on Opus. Only these two tiers are wired — no model is used here that the
+// owner has not asked for.
+const CLAUDE_MODELS = Object.freeze({
+  design: process.env.BIGKIJI_CLAUDE_DESIGN_MODEL || 'claude-fable-5',
+  general: process.env.BIGKIJI_CLAUDE_MODEL || 'claude-opus-5',
+});
+
+const DESIGN_SIGNALS = /(?:markdown|readme|\.md\b|docs?\b|documentation|design|ux\b|ui\b|visual|layout|css|animation|typography|copy(?:writing)?|デザイン|レイアウト|見た目|文章|資料|文書|記事)/i;
+const COMPLEX_SIGNALS = /(?:architect|refactor|migrat|redesign|rebuild|overhaul|end-to-end|複雑|設計|再構築|作り直|全面)/i;
+
+// Which brain, not which vendor. Provider selection happens first (capability
+// registry); this only decides the tier once the provider is already Claude, so a
+// fallback to GLM cannot silently discard the decision.
+function pickModelTier(text, role = '') {
+  const value = String(text || '');
+  if (role === 'ui' || DESIGN_SIGNALS.test(value) || COMPLEX_SIGNALS.test(value) || value.length > 6000) return 'design';
+  return 'general';
+}
+
+// '' means "the adapter already pins the model" (GLM) or "there is nothing to pin"
+// (local Ollama), which keeps the disclosure manifest honest rather than inventing an id.
+function resolveModel(provider, text, role = '') {
+  if (provider !== 'claude' && provider !== 'claude-code') return '';
+  return CLAUDE_MODELS[pickModelTier(text, role)];
+}
+
 // 役割定義（スペック§1①）。2段階モデル構造：
 // - 会話モデル（常駐）: qwen2.5:0.5b（keep_alive: -1）
 // - 思考モデル（オンデマンド）: qwen3.5:35b-a3b（PiAgent起動時のみ）
@@ -117,7 +145,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 }
 
 module.exports = {
-  GLM_MODELS, TIERS, loadProviders, buildChain, tierOf, pickStart,
+  GLM_MODELS, CLAUDE_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN,
   handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, ollamaWarmup, ollamaKickstart,
 };

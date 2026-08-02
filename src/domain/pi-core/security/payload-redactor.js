@@ -1,7 +1,16 @@
 'use strict';
 
+// Order matters: the vendor-specific patterns run before the generic `sk-` one, so a
+// finding is labelled with the provider it actually belongs to. The generic pattern
+// would swallow `sk-ant-…` and report it as an OpenAI key, which sends the owner to
+// the wrong console when a disclosure report says a key leaked.
 const SECRET_PATTERNS = Object.freeze([
   { type: 'private-key', critical: true, re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g },
+  { type: 'anthropic-key', re: /\bsk-ant-[A-Za-z0-9_-]{16,}\b/g },
+  // Z.ai / Zhipu issue `<id>.<secret>` rather than a prefixed token, so there is no
+  // marker to key off — this matches the shape, which is why it is anchored tightly
+  // (32 hex, one dot, 16 alphanumerics) instead of accepting any dotted pair.
+  { type: 'zai-key', re: /\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b/g },
   { type: 'openai-key', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g },
   { type: 'google-key', re: /\bAIza[0-9A-Za-z_-]{20,}\b/g },
   { type: 'github-token', re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g },

@@ -35,21 +35,52 @@ class ModelCapabilityRegistry {
     };
     atomic(this.capabilityFile, this.capabilities); atomic(this.performanceFile, this.performance);
   }
-  score(provider, role) {
+  // Performance is recorded per (provider, model), because "claude-code was slow" is
+  // not a fact about Claude Code — it is a fact about the tier that ran. Priors stay
+  // per provider; only observations are split.
+  static key(provider, model = '') { return model ? `${provider}::${model}` : String(provider || ''); }
+
+  score(provider, role, model = '') {
     const prior = Number(this.capabilities.models[provider]?.roles?.[role] || .35);
-    const perf = this.performance.models[provider]; if (!perf?.samples) return prior;
-    return prior * .55 + Number(perf.successRate || 0) * .3 + Math.max(0, 1 - Number(perf.ewmaLatencyMs || 30000) / 120000) * .15;
+    const penalty = Number(this.capabilities.models[provider]?.penalties?.[role] || 0);
+    const perf = this.performance.models[ModelCapabilityRegistry.key(provider, model)] || this.performance.models[provider];
+    if (!perf?.samples) return Math.max(0, prior - penalty);
+    return Math.max(0, prior * .55 + Number(perf.successRate || 0) * .3
+      + Math.max(0, 1 - Number(perf.ewmaLatencyMs || 30000) / 120000) * .15 - penalty);
   }
   choose(role, candidates) { return [...candidates].sort((a, b) => this.score(b, role) - this.score(a, role))[0] || null; }
-  record({ provider, role, ok, durationMs = 0, tokens = {} } = {}) {
+
+  record({ provider, role, ok, durationMs = 0, tokens = {}, model = '' } = {}) {
     if (!provider) return;
-    const row = this.performance.models[provider] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
-    row.samples += 1; ok ? row.successes += 1 : row.failures += 1; row.successRate = row.successes / row.samples;
-    row.ewmaLatencyMs = row.samples === 1 ? durationMs : row.ewmaLatencyMs * .7 + durationMs * .3;
-    const roleRow = row.roles[role || 'general'] || { samples: 0, successes: 0 }; roleRow.samples += 1; if (ok) roleRow.successes += 1;
-    roleRow.successRate = roleRow.successes / roleRow.samples; row.roles[role || 'general'] = roleRow;
-    row.lastTokens = { input: Number(tokens.input || 0), output: Number(tokens.output || 0) }; row.updatedAt = new Date().toISOString();
-    this.performance.models[provider] = row; atomic(this.performanceFile, this.performance);
+    for (const id of [...new Set([provider, ModelCapabilityRegistry.key(provider, model)])]) {
+      const row = this.performance.models[id] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
+      row.provider = provider; if (model) row.model = model;
+      row.samples += 1; ok ? row.successes += 1 : row.failures += 1; row.successRate = row.successes / row.samples;
+      row.ewmaLatencyMs = row.samples === 1 ? durationMs : row.ewmaLatencyMs * .7 + durationMs * .3;
+      const roleRow = row.roles[role || 'general'] || { samples: 0, successes: 0 }; roleRow.samples += 1; if (ok) roleRow.successes += 1;
+      roleRow.successRate = roleRow.successes / roleRow.samples; row.roles[role || 'general'] = roleRow;
+      row.lastTokens = { input: Number(tokens.input || 0), output: Number(tokens.output || 0) }; row.updatedAt = new Date().toISOString();
+      this.performance.models[id] = row;
+    }
+    atomic(this.performanceFile, this.performance);
+    return this.learn({ provider, role, model, durationMs, ok });
+  }
+
+  // The owner's rule: when a delegated agent is slow, teach PiAgent then and there
+  // rather than re-picking it next time. A penalty is written into the capability file
+  // — the same file the priors live in — so the next choose() routes around it. It
+  // decays on a fast success, so one bad afternoon does not retire a provider.
+  learn({ provider, role = 'general', model = '', durationMs = 0, ok = true, slowMs = Number(process.env.BIGKIJI_SLOW_TASK_MS || 180000) } = {}) {
+    const entry = this.capabilities.models[provider]; if (!entry) return null;
+    entry.penalties ||= {};
+    const before = Number(entry.penalties[role] || 0);
+    const slow = durationMs > slowMs;
+    const after = slow || !ok ? Math.min(.45, before + (slow && !ok ? .12 : .06)) : Math.max(0, before - .04);
+    if (after === before) return null;
+    entry.penalties[role] = Number(after.toFixed(3)); entry.penaltyUpdatedAt = new Date().toISOString();
+    atomic(this.capabilityFile, this.capabilities);
+    return { provider, model, role, penalty: entry.penalties[role], previous: before, durationMs, slow, ok,
+      reason: slow ? `exceeded ${slowMs}ms` : (ok ? 'recovered' : 'assignment failed') };
   }
   needsResearch(provider, maxAgeDays = 30) {
     const item = this.capabilities.models[provider]; if (!item?.source || item.sourceType !== 'official') return provider !== 'qwen';

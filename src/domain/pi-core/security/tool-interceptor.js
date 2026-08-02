@@ -1,7 +1,7 @@
 'use strict';
 
 const { SecurityPolicy } = require('./security-policy');
-const { sanitizeSearchQuery } = require('./payload-redactor');
+const { ResearchBroker } = require('./research-broker');
 
 const READ_TOOLS = /^(?:Read|Glob|Grep|read_file|list_directory|glob|grep_search)$/i;
 const WRITE_TOOLS = /^(?:Write|Edit|write_file|replace)$/i;
@@ -13,7 +13,7 @@ function candidatePaths(input = {}) {
 }
 
 class ToolInterceptor {
-  constructor({ security = new SecurityPolicy() } = {}) { this.security = security; }
+  constructor({ security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) { this.security = security; this.broker = broker; }
   decide(event, policy) {
     const tool = String(event.tool_name || event.toolName || ''); const input = event.tool_input || event.input || {};
     try {
@@ -40,7 +40,11 @@ class ToolInterceptor {
       throw new Error(`SECURITY_UNKNOWN_TOOL:${tool}`);
     } catch (error) { return { allow: false, reason: String(error.message || error) }; }
   }
-  sanitizeResearch(query) { return sanitizeSearchQuery(query); }
+  // One path to the network, so a query cannot reach it by taking a different door.
+  sanitizeResearch(query, options = {}) {
+    try { return { ...this.broker.prepare(query, options), blocked: false }; }
+    catch (error) { return { query: '', redactions: [], blocked: true, reason: String(error.message || error) }; }
+  }
 }
 
 module.exports = { ToolInterceptor, READ_TOOLS, WRITE_TOOLS, WEB_TOOLS, SHELL_TOOLS, candidatePaths };

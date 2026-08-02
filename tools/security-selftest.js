@@ -43,6 +43,17 @@ function fakeChild() {
   assert(redactPayload('-----BEGIN PRIVATE KEY-----\nSECRET\n-----END PRIVATE KEY-----').blocked);
   assert(sanitizeSearchQuery('search /Users/owner/private/file.js function secret(){ return 1; }').blocked);
 
+  // The two providers BigKiji actually spends money on had no pattern of their own.
+  // The label matters as much as the catch: a finding reported as an OpenAI key sends
+  // the owner to the wrong console to rotate it.
+  const anthropic = redactPayload('key: sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345');
+  assert(!anthropic.text.includes('sk-ant-api03'));
+  assert(anthropic.findings.some((item) => item.type === 'anthropic-key'), 'sk-ant- must not be reported as an OpenAI key');
+  const zai = redactPayload(`ZAI_API_KEY=${'a1b2c3d4'.repeat(4)}.ABCDEFGHIJKLMNOP`);
+  assert(zai.findings.some((item) => item.type === 'zai-key'));
+  assert(!zai.text.includes('ABCDEFGHIJKLMNOP'));
+  assert.equal(redactPayload('commit a1b2c3d4e5f6a7b8.js').findings.length, 0, 'the shape match must not fire on ordinary text');
+
   const pruned = new ContextPruner().prepare({ prompt: 'Review secureFeature in src/target.js', policy });
   assert(pruned.metrics.includedFiles.includes('src/target.js')); assert(!pruned.prompt.includes('owner@example.com'));
   assert(!pruned.prompt.includes('ABCDEFGHIJKLMNOPQRSTUV')); assert(!pruned.prompt.includes('never-send'));
@@ -78,6 +89,36 @@ function fakeChild() {
   const policyBlocked = policyRunner.approve(stalePolicy.id, { disclosureHash: stalePolicy.disclosure.disclosureHash });
   assert.equal(policyBlocked.status, 'blocked'); assert.match(policyBlocked.error, /STALE_SECURITY_POLICY/);
 
+  // ---- brokered external tools reach the manifest ------------------------------
+  // externalTools used to be a hardcoded [], so the owner approved "no external calls"
+  // no matter what the assignment intended to look up.
+  const brokerRunner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: () => fakeChild() });
+  const researched = brokerRunner.plan({ id: 'research', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project,
+    metadata: { research: ['latest electron release cadence', { tool: 'docs', query: 'node-pty resize semantics' }] } });
+  assert.equal(researched.status, 'awaiting_approval');
+  assert.equal(researched.disclosure.externalTools.length, 2);
+  assert(researched.disclosure.externalTools.every((item) => item.query && !item.query.includes('/')));
+  const blockedResearch = brokerRunner.plan({ id: 'research-blocked', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project,
+    metadata: { research: ['why does /Users/owner/private/file.js fail'] } });
+  assert.equal(blockedResearch.status, 'blocked');
+  assert.match(blockedResearch.error, /SECURITY_RESEARCH_QUERY_BLOCKED/);
+  assert.equal(new ToolInterceptor().sanitizeResearch('/Users/owner/private/file.js').blocked, true);
+
+  // ---- the model is part of what gets approved ---------------------------------
+  const { resolveModel, CLAUDE_MODELS } = require('../src/domain/pi-agent/model-router');
+  assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'leader'), CLAUDE_MODELS.design);
+  assert.equal(resolveModel('claude-code', 'fix the null check in the daemon', 'debug'), CLAUDE_MODELS.general);
+  assert.equal(resolveModel('claude-code', 'anything at all', 'ui'), CLAUDE_MODELS.design, 'the UI role is design work by definition');
+  assert.equal(resolveModel('glm', 'Rewrite the README markdown', 'leader'), '', 'only Claude has a tier to pick here');
+  const claudeArgs = brokerRunner.adapter('claude-code', 'p', project, policy, {}, CLAUDE_MODELS.design).args;
+  assert.deepStrictEqual(claudeArgs.slice(0, 4), ['--print', 'p', '--model', CLAUDE_MODELS.design]);
+  assert(!brokerRunner.adapter('claude-code', 'p', project, policy, {}, '').args.includes('--model'),
+    'no model id is invented when none was resolved');
+  const tiered = brokerRunner.plan({ id: 'tiered', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project });
+  assert.equal(tiered.disclosure.model, tiered.model);
+  const untiered = brokerRunner.get('tiered'); untiered.model = 'claude-opus-5';
+  assert.match(brokerRunner.approve('tiered', { disclosureHash: tiered.disclosure.disclosureHash }).error, /STALE_MODEL_SELECTION/);
+
   delete process.env.BIGKIJI_CANARY_SECRET; fs.rmSync(root, { recursive: true, force: true });
-  console.log('security selftest: PASS · path/symlink deny · payload redaction · tool gate · minimal env · stale disclosure/policy');
+  console.log('security selftest: PASS · path/symlink deny · payload redaction · vendor-labelled keys · brokered external tools · model bound to approval · tool gate · minimal env · stale disclosure/policy');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

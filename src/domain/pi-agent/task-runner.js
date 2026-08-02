@@ -6,21 +6,23 @@ const fs = require('fs');
 const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
-const { GLM_MODELS } = require('./model-router');
+const { GLM_MODELS, resolveModel } = require('./model-router');
 const { ContextPruner } = require('./context-pruner');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
 const { createDisclosureManifest, verifyDisclosureManifest } = require('../pi-core/security/disclosure-manifest');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
+const { ResearchBroker } = require('../pi-core/security/research-broker');
 
 // Providers are spawned only after PiAgent approval and are never kept resident.
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy() } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
     this.tasks = new Map();
     this.spawnImpl = spawnImpl;
+    this.broker = broker;
     this.secretProvider = null;
     this.security = security; this.policy = new SandboxPolicyResolver({ vaultRoot, security });
     this.pruner = new ContextPruner({ graphPath }); this.localPruner = new ContextPruner({ graphPath, maxFiles: 7, maxChars: 32000, maxTokens: 8192 });
@@ -40,10 +42,11 @@ class TaskRunner extends EventEmitter {
     }));
   }
 
-  plan({ id, provider, prompt, cwd = this.cwd, planHash = null, metadata = {} }) {
+  plan({ id, provider, prompt, cwd = this.cwd, planHash = null, metadata = {}, model = null }) {
     knowledge.assertExecutor(provider);
     if (this.tasks.has(id)) throw new Error(`Task already exists: ${id}`);
-    const task = { id, provider, prompt: knowledge.cleanText(prompt, 20000), promptHash: knowledge.hash(prompt),
+    const task = { id, provider, model: model == null ? resolveModel(provider, prompt, metadata.role) : String(model || ''),
+      prompt: knowledge.cleanText(prompt, 20000), promptHash: knowledge.hash(prompt),
       planHash, cwd, status: 'awaiting_approval', output: '', error: '', tokens: { input: 0, output: 0 },
       metadata: { ...metadata }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     this.tasks.set(id, task);
@@ -124,11 +127,14 @@ class TaskRunner extends EventEmitter {
       if (!['qwen', 'ollama'].includes(task.provider)) this.policy.assertProvider(policy, task.provider);
       if (policy.security?.policyHash !== task.disclosure?.policyHash) throw new Error('STALE_SECURITY_POLICY');
       if (!verifyDisclosureManifest(task.disclosure, policy, task.preparedPrompt)) throw new Error('STALE_DISCLOSURE_MANIFEST');
+      // The owner approved a specific brain on specific files. Re-tiering between
+      // approval and launch would run a model they never saw.
+      if ((task.disclosure.model || '') !== (task.model || '')) throw new Error('STALE_MODEL_SELECTION');
       prepared = { prompt: task.preparedPrompt, metrics: task.context };
       task.runtime = this.security.createRuntime(task.id);
       fs.writeFileSync(task.runtime.policyFile, JSON.stringify(policy, null, 2), { mode: 0o600 });
       this.writeProviderPolicies(task.provider, task.runtime, policy);
-      ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy, task.runtime));
+      ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy, task.runtime, task.model));
     } catch (error) {
       this.cleanupRuntime(task);
       task.status = 'blocked'; task.error = String(error.message || error); task.updatedAt = new Date().toISOString();
@@ -216,9 +222,14 @@ class TaskRunner extends EventEmitter {
       : pruner.prepare({ prompt: task.prompt, policy, maxTokens: local ? this.qwenGuardrails.budget() : this.pruner.maxTokens });
     task.context = { ...prepared.metrics, policySource: policy.source };
     task.preparedPrompt = prepared.prompt; task.securityPolicy = policy;
+    // A blocked research query blocks the task rather than being dropped: the specialist
+    // asked for that fact, and running it without the fact — and without saying so — is
+    // how a plausible but uninformed answer gets produced.
+    const externalTools = this.broker.prepareAll(task.metadata?.research || []);
     task.disclosure = createDisclosureManifest({ runId: task.metadata?.runId || task.id, provider: task.provider,
-      purpose: task.metadata?.title || task.prompt.slice(0, 240), policy, slices: prepared.slices,
-      redactions: prepared.redactions, estimatedTokens: prepared.metrics.prunedContextTokens, payload: prepared.prompt });
+      model: task.model, purpose: task.metadata?.title || task.prompt.slice(0, 240), policy, slices: prepared.slices,
+      redactions: prepared.redactions, estimatedTokens: prepared.metrics.prunedContextTokens, payload: prepared.prompt,
+      externalTools });
     this.emit('security', { taskId: task.id, provider: task.provider, decision: 'MANIFEST', disclosure: task.disclosure, at: new Date().toISOString() });
     return task;
   }
@@ -252,10 +263,11 @@ class TaskRunner extends EventEmitter {
     }
   }
 
-  adapter(provider, prompt, cwd, policy, runtime = {}) {
+  adapter(provider, prompt, cwd, policy, runtime = {}, model = '') {
     if (provider === 'claude' || provider === 'claude-code') return {
       command: process.env.CLAUDE_BIN || 'claude',
-      args: ['--print', prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', policy.allowWrite.length ? 'acceptEdits' : 'plan',
+      args: ['--print', prompt, ...(model ? ['--model', model] : []),
+        '--output-format', 'stream-json', '--verbose', '--permission-mode', policy.allowWrite.length ? 'acceptEdits' : 'plan',
         '--no-chrome', '--disable-slash-commands', '--no-session-persistence', '--strict-mcp-config',
         ...(runtime.mcpConfig ? ['--mcp-config', runtime.mcpConfig] : []), ...(runtime.claudeSettings ? ['--settings', runtime.claudeSettings, '--setting-sources', 'user'] : []),
         '--allowed-tools', 'Read,Edit,Write,Bash,Grep,Glob', '--disallowed-tools', 'WebSearch,WebFetch,mcp__.*',

@@ -5,6 +5,7 @@ const knowledge = require('./pi-knowledge-orchestrator');
 const { ModelCapabilityRegistry } = require('./model-capability-registry');
 const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
 const { SkillRegistry } = require('./skill-registry');
+const { resolveModel } = require('./model-router');
 
 const ROLE_BLUEPRINT = Object.freeze([
   { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'gemini', title: 'Requirements and acceptance trace', write: false },
@@ -83,21 +84,26 @@ class CoreExecutionCoordinator extends EventEmitter {
     };
     const maxAgents = Math.max(1, Math.min(5, Number(routing.maxAgents || 3)));
     const selectedRoles = selectRoles(text, { ...routing, qualityGate: settings.quality?.gate, facilitationComplete: !!promptSpec });
-    const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, maxAgents).map((item) => ({ ...item,
-      provider: this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider }));
+    const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, maxAgents).map((item) => {
+      // Provider first, then tier. Doing it in this order means a fallback to GLM
+      // cannot carry a Claude model id along with it.
+      const provider = this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider;
+      return { ...item, provider, model: resolveModel(provider, `${run.prompt} ${item.title}`, item.role) };
+    });
     run.planHash = planHash || knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
-      assignments: blueprint.map(({ role, provider, write, title }) => ({ role, provider, write, title })) }));
+      assignments: blueprint.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
     run.assignments = blueprint.map((item, index) => {
       const task = this.taskRunner.plan({
         id: `${run.id}-${item.role}`,
         provider: item.provider,
+        model: item.model,
         prompt: this._assignmentPrompt(run, item),
         cwd: run.cwd,
         planHash: run.planHash,
         metadata: { runId: run.id, role: item.role, agent: item.agent, title: item.title, write: item.write, order: index },
       });
       this.taskToRun.set(task.id, run.id);
-      return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, title: item.title,
+      return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, model: item.model, title: item.title,
         write: item.write, status: task.status, fallbackIndex: 0, disclosureHash: task.disclosure?.disclosureHash || '' };
     });
     run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
@@ -160,12 +166,22 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (!run) return;
     const assignment = run.assignments.find((item) => item.taskId === task.id);
     if (!assignment) return;
-    assignment.status = task.status; assignment.provider = task.provider; assignment.updatedAt = task.updatedAt;
+    assignment.status = task.status; assignment.provider = task.provider; assignment.model = task.model || '';
+    assignment.updatedAt = task.updatedAt;
     if (task.error) assignment.error = task.error;
     if (['completed', 'failed', 'blocked'].includes(task.status) && !assignment.learned) {
-      assignment.learned = true; this.registry.record({ provider: task.provider, role: assignment.role, ok: task.status === 'completed',
-        durationMs: task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0,
-        tokens: task.tokens });
+      assignment.learned = true;
+      const durationMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0;
+      const lesson = this.registry.record({ provider: task.provider, model: task.model, role: assignment.role,
+        ok: task.status === 'completed', durationMs, tokens: task.tokens });
+      // Surface what PiAgent learned. A routing change the owner cannot see is
+      // indistinguishable from the router being erratic.
+      if (lesson) {
+        run.lessons = [...(run.lessons || []), lesson].slice(-12);
+        knowledge.recordEvent(run.id, { type: 'routing-lesson', status: run.status, provider: task.provider,
+          evidence: `${lesson.role}: ${lesson.reason} → penalty ${lesson.previous} → ${lesson.penalty}` });
+        this.emit('lesson', { runId: run.id, ...lesson });
+      }
     }
     run.updatedAt = new Date().toISOString();
     const terminal = run.assignments.every((item) => ['completed', 'failed', 'blocked'].includes(item.status));
@@ -178,7 +194,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       if (restarted) {
         run.revision += 1;
         run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
-          assignments: run.assignments.map(({ role, provider, write, title }) => ({ role, provider, write, title })) }));
+          assignments: run.assignments.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
         run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
         run.disclosureHash = aggregateDisclosureHash(run.disclosures);
         run.status = 'AWAITING_APPROVAL'; this._emit(run, 'repair-awaiting-approval'); return;
@@ -201,14 +217,19 @@ class CoreExecutionCoordinator extends EventEmitter {
     const next = candidates[assignment.fallbackIndex++] || null;
     if (!next) return false;
     const oldTask = this.taskRunner.get(assignment.taskId);
+    const model = resolveModel(next, `${run.prompt} ${assignment.title}`, assignment.role);
     const task = this.taskRunner.plan({
       id: `${assignment.taskId}-repair-${run.repairCycle}`,
-      provider: next, cwd: run.cwd, planHash: run.planHash,
+      provider: next, model, cwd: run.cwd, planHash: run.planHash,
       prompt: `${oldTask?.prompt || run.prompt}\nPrevious provider failed: ${knowledge.cleanText(oldTask?.error, 500)}\nContinue only unfinished work and verify the repair.`,
       metadata: { ...(oldTask?.metadata || {}), runId: run.id, repairCycle: run.repairCycle, fallbackFrom: assignment.provider },
     });
-    this.taskToRun.set(task.id, run.id); assignment.taskId = task.id; assignment.provider = next; assignment.status = task.status;
+    this.taskToRun.set(task.id, run.id); assignment.taskId = task.id; assignment.provider = next; assignment.model = model; assignment.status = task.status;
     assignment.disclosureHash = task.disclosure?.disclosureHash || '';
+    // The replacement provider has to be judged on its own result; leaving this set
+    // meant every fallback ran unrecorded, so the registry only ever learned about
+    // first attempts.
+    assignment.learned = false;
     return true;
   }
 

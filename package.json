@@ -49,13 +49,14 @@
     "test:conversation": "node tools/conversation-selftest.js",
     "test:audio-wave": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/audio-wave-selftest.js",
     "test:tools": "node tools/tool-registry-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:skills && npm run test:tools && npm run test:cli-render && npm run test:cli-theme",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:skills && npm run test:tools && npm run test:cli-render && npm run test:cli-theme",
     "audit:delegations": "node tools/delegation-audit.js",
     "index:memory": "node tools/index-system-memory.js",
     "postinstall": "node tools/postinstall.js",
     "test:skills": "node tools/skill-registry-selftest.js",
     "test:workspaces": "node tools/workspace-registry-selftest.js",
-    "test:cli-render": "node tools/cli-render-selftest.js"
+    "test:cli-render": "node tools/cli-render-selftest.js",
+    "test:routing": "node tools/routing-learning-selftest.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",
