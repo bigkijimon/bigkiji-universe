@@ -21,9 +21,18 @@ const initial = (meta) => ({ ...meta, status: meta.id === 'pi-agent-core' ? 'IDL
     tokensPerSecond: null, vramUsage: null, apiHealth: 'unknown' } });
 
 class ModelStatusStore extends EventEmitter {
-  constructor({ knowledge } = {}) {
+  constructor({ knowledge, piAgentName = '' } = {}) {
     super(); this.knowledge = knowledge; this.models = Object.fromEntries(Object.values(MODELS).map((meta) => [meta.id, initial(meta)]));
     this.taskRecords = new Map(); this.persistTimer = null; this.swarmSaved = 0;
+    if (piAgentName) this.setPiAgentName(piAgentName);
+  }
+  // The owner names their PiAgent in Settings; this store is the single source the
+  // fleet HUD, the tray card and completion reports all read from.
+  setPiAgentName(name) {
+    const clean = String(name || '').trim().slice(0, 32);
+    if (!clean) return;
+    this.models['pi-agent-core'] = { ...this.models['pi-agent-core'], displayName: clean };
+    this.emit('update', this.snapshot());
   }
   // Pi↔model bridge: context-pruner savings belong to the model that received the instruction.
   _savedFor(id) {

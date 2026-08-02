@@ -84,9 +84,11 @@ export class Roadmap3D {
           new THREE.LineBasicMaterial({ color, transparent: true, opacity: phase.status === 'pending' ? 0.07 : 0.2,
             blending: THREE.AdditiveBlending, depthWrite: false }));
         grid.position.copy(plane.position); grid.rotation.copy(plane.rotation); laneGroup.add(grid);
-        const label = this.text(`${index + 1} ${phase.label}`, 0.095, color, phase.status === 'pending' ? 0.28 : 0.75);
-        label.position.set(x - 0.34, -0.76, 0.08); laneGroup.add(label);
-        const item = { ...phase, index, laneIndex, laneGroup, plane, grid, label, pulse: 0,
+        const labelSprite = this.text(`${index + 1} ${phase.label}`, 0.095, color, phase.status === 'pending' ? 0.28 : 0.75);
+        labelSprite.position.set(x - 0.34, -0.76, 0.08); laneGroup.add(labelSprite);
+        // Keep `label` as the phase's text (from ...phase). Storing the Sprite under the
+        // same key made setState() call toUpperCase() on a Sprite and throw on every call.
+        const item = { ...phase, index, laneIndex, laneGroup, plane, grid, labelSprite, pulse: 0,
           baseOpacity: phase.status === 'pending' ? 0.045 : 0.16, x };
         laneItems.push(item); this.items.push(item);
       });
@@ -119,7 +121,9 @@ export class Roadmap3D {
   }
 
   setState(name, state) {
-    const item = this.items.find((entry) => entry.index === name || entry.label === name || entry.label?.toUpperCase().includes(String(name).toUpperCase()));
+    const wanted = String(name).toUpperCase();
+    const item = this.items.find((entry) => entry.index === name || entry.label === name
+      || (typeof entry.label === 'string' && entry.label.toUpperCase().includes(wanted)));
     if (item) this.applyState(item, state);
   }
 
@@ -129,7 +133,7 @@ export class Roadmap3D {
     item.status = state; item.pulse = state === 'completed' ? 1 : state === 'in-progress' ? 0.72 : 0;
     item.baseOpacity = state === 'pending' ? 0.045 : 0.18;
     const color = COLORS[state] ?? COLORS.pending;
-    item.plane.material.color.setHex(color); item.grid.material.color.setHex(color); item.label.material.color.setHex(color);
+    item.plane.material.color.setHex(color); item.grid.material.color.setHex(color); item.labelSprite.material.color.setHex(color);
     if (changed) this.spawnTransit(item, color);
   }
 

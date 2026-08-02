@@ -3,6 +3,14 @@
 const fs = require('fs');
 const path = require('path');
 
+// Owner-facing PiAgent name. Kept short so it fits every HUD label without truncation.
+const PI_AGENT_NAME_MAX = 32;
+const PI_AGENT_NAME_FALLBACK = 'PiAgent';
+// Render priority: 'auto' keeps the adaptive FPS tuner, the other two pin a fixed tier.
+const RENDER_PRIORITIES = ['auto', 'performance', 'graphics'];
+// Sound-effect buses. Each one is an independent gain node in the renderer audio engine.
+const SFX_CATEGORIES = ['ui', 'alert', 'ambient'];
+
 const DEFAULTS = Object.freeze({
   audio: {
     enabled: true,
@@ -22,6 +30,8 @@ const DEFAULTS = Object.freeze({
     qwenTtsTimeoutMs: 9000,
     firstSpeechDeadlineMs: 30000,
     systemFallbackAtMs: 22000,
+    sfxEnabled: true,
+    sfx: { ui: 0.5, alert: 0.6, ambient: 0.3 },
     profiles: {
       claude: { speaker: 'Serena', label: 'Bright warm female', speed: 1.08 },
       codex: { speaker: 'Vivian', label: 'Grounded professional female', speed: 1.06 },
@@ -69,6 +79,10 @@ const DEFAULTS = Object.freeze({
     textScale: 1,
     reducedGlow: true,
     reduceMotion: false,
+    renderPriority: 'auto',
+  },
+  piAgent: {
+    displayName: PI_AGENT_NAME_FALLBACK,
   },
   terminal: {
     pinnedSession: true,
@@ -127,6 +141,11 @@ class SettingsStore {
     next.audio.firstSpeechDeadlineMs = clamp(next.audio.firstSpeechDeadlineMs, 10000, 60000, 30000);
     next.audio.systemFallbackAtMs = Math.min(next.audio.firstSpeechDeadlineMs - 1000,
       clamp(next.audio.systemFallbackAtMs, 5000, 50000, 22000));
+    next.audio.sfxEnabled = next.audio.sfxEnabled !== false;
+    if (!next.audio.sfx || typeof next.audio.sfx !== 'object') next.audio.sfx = clone(DEFAULTS.audio.sfx);
+    for (const category of SFX_CATEGORIES) {
+      next.audio.sfx[category] = clamp(next.audio.sfx[category], 0, 1, DEFAULTS.audio.sfx[category]);
+    }
     next.routing.paidAllowlist = ['claude', 'codex', 'gemini', 'glm'];
     next.routing.localDefault = 'qwen';
     next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
@@ -150,6 +169,12 @@ class SettingsStore {
     next.preview.viewport = ['desktop', 'tablet', 'mobile'].includes(next.preview.viewport) ? next.preview.viewport : 'desktop';
     next.appearance.theme = 'studio';
     next.appearance.textScale = clamp(next.appearance.textScale, 0.85, 1.25, 1);
+    next.appearance.renderPriority = RENDER_PRIORITIES.includes(next.appearance.renderPriority)
+      ? next.appearance.renderPriority : 'auto';
+    // The owner names their own PiAgent. Trim, cap the length and fall back when it is emptied.
+    if (!next.piAgent || typeof next.piAgent !== 'object') next.piAgent = clone(DEFAULTS.piAgent);
+    next.piAgent.displayName = String(next.piAgent.displayName ?? '').trim().slice(0, PI_AGENT_NAME_MAX)
+      || PI_AGENT_NAME_FALLBACK;
     next.terminal.maxTabs = clamp(next.terminal.maxTabs, 2, 16, 8); next.terminal.pinnedSession = true;
     next.cmux.enabled = process.platform === 'darwin' && next.cmux.enabled !== false;
     next.cmux.cliPath = String(next.cmux.cliPath || 'cmux');
@@ -192,4 +217,4 @@ class SettingsStore {
   }
 }
 
-module.exports = { SettingsStore, DEFAULTS };
+module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, SFX_CATEGORIES };

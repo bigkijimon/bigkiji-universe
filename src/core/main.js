@@ -61,6 +61,7 @@ const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
 const fleetMetrics = new ModelStatusStore({ knowledge });
+// settingsStore is not constructed until app.whenReady(); the name is applied there.
 const { FleetMetricsStore } = require('./fleet-metrics-store');
 const piFleet = new FleetMetricsStore({}); // 13 Pi agents — persistence stays with fleetMetrics (same knowledge slot)
 const relationshipService = new RelationshipSnapshotService({
@@ -1138,6 +1139,7 @@ ipcMain.handle('settings:update', (_event, patch) => {
     if (coordinator) coordinator.preview = previewServer;
     if (next.preview.enabled) previewServer.start().catch((error) => broadcast('preview:error', { message: error.message }));
   }
+  if (next?.piAgent?.displayName !== before?.piAgent?.displayName) fleetMetrics.setPiAgentName(next?.piAgent?.displayName || '');
   broadcast('settings:changed', next);
   return next;
 });
@@ -1268,6 +1270,7 @@ ipcMain.handle('get-info', () => {
 // ---------- ライフサイクル ----------
 app.whenReady().then(async () => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
+  fleetMetrics.setPiAgentName(settingsStore.get()?.piAgent?.displayName || '');
   remoteAccess = new TailscaleRemoteAccess({ port: 8777, configFile: PATHS.remoteConfigFile });
   if (!SMOKE) {
     try {

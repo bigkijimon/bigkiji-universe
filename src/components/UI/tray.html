@@ -324,6 +324,18 @@
       'pi-agent-core': { short:'PiAgent', color:'#d946ef', glyph:'π' },
       'local-qwen': { short:'Local Qwen', color:'#38bdf8', glyph:'◈' },
     };
+    // The tray is its own renderer, so it cannot see the main window's globals. The
+    // owner's PiAgent name arrives here the same way every other setting does.
+    window.bigkiji?.settingsGet?.().then((s) => applyPiAgentName(s?.piAgent?.displayName)).catch(() => {});
+    window.bigkiji?.onSettingsChanged?.((s) => applyPiAgentName(s?.piAgent?.displayName));
+    function applyPiAgentName(name) {
+      const clean = String(name || '').trim().slice(0, 32);
+      MODEL_CARDS['pi-agent-core'].short = clean || 'PiAgent';
+      // cardMap is filled synchronously below; both callers here resolve after that.
+      const card = cardMap['pi-agent-core'];
+      const name = card?.el?.querySelector('.an');
+      if (name) name.textContent = MODEL_CARDS['pi-agent-core'].short;
+    }
     const CHAT_MODELS = {
       'claude-code': MODEL_CARDS['claude-code'], claude: MODEL_CARDS['claude-code'], codex: MODEL_CARDS.codex,
       'pi-agent-core': MODEL_CARDS['pi-agent-core'], pi: MODEL_CARDS['pi-agent-core'],

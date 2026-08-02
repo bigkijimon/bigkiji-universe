@@ -63,8 +63,18 @@ window.bigkiji.onTaskEvent((task) => { telemetryStore.upsertTask(task); roadmap3
 window.bigkiji.onRunEvent((run) => telemetryStore.upsertRun(run));
 window.bigkiji.onTaskLog((log) => telemetryStore.ingest({ ...log, source: log.provider || 'task', kind: 'exec' }, 'task-log'));
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 3)); // “4K”精細（オーナー指示）
+// ---------- Render priority (appearance.renderPriority: auto | performance | graphics) ----------
+// Everything below reacts live to settings, EXCEPT antialias: it is fixed when the
+// WebGLRenderer is constructed and cannot be changed without re-creating the renderer and
+// every GPU resource on it. Settings arrive asynchronously over IPC, so the last known
+// priority is cached in localStorage and read here; a switch into or out of "performance"
+// changes antialias on the NEXT launch only. Pixel ratio, LOD tier and glow apply instantly.
+const RENDER_PRIORITIES = ['auto', 'performance', 'graphics'];
+let renderPriority = 'auto';
+try { const cached = localStorage.getItem('bk.renderPriority'); if (RENDER_PRIORITIES.includes(cached)) renderPriority = cached; } catch (_) {}
+let glowScale = 1; // appearance.reducedGlow multiplier for the additive glow surfaces
+const renderer = new THREE.WebGLRenderer({ antialias: renderPriority !== 'performance', alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, renderPriority === 'performance' ? 1.5 : 3)); // “4K”精細（オーナー指示）
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 wrap.appendChild(renderer.domElement);
 
@@ -662,6 +672,7 @@ const SEQ = { foreshock: 900, infall: 2600, detonation: 430, capture: 1400, fina
 const coreSeq = {
   state: 'dormant', enteredAt: 0, rings: [], flash: null,
   progress: 0, steadyAt: 0, finaleQueued: false, lastInfallSpawn: 0,
+  reportRequested: false, reportFallbackTimer: 0,
   pull: 0,      // ファイル雲を中心へ引く係数(0..1)
   absorb: 1,    // 葉粒の残存率（吸引で暗転→捕獲で復帰）
 };
@@ -704,7 +715,10 @@ function triggerCoreAwakening() {
   if (coreSeq.state !== 'dormant') return;
   const reduced = reducedMq.matches;
   coreActivity = 1.5;
-  coreSeq.progress = 0; coreSeq.finaleQueued = false;
+  // reportRequested must be cleared here too: if the core ever leaves 'finale' without
+  // completing it, a stale true would suppress every later legitimate completion report.
+  coreSeq.progress = 0; coreSeq.finaleQueued = false; coreSeq.reportRequested = false;
+  clearTimeout(coreSeq.reportFallbackTimer);
   core.group.visible = true; coreLabel.visible = true; coreHalo.visible = true; coreAccretion.group.visible = true;
   core.group.scale.setScalar(0.025); coreAccretion.group.scale.setScalar(0.025);
   if (reduced) { // reduced: 演出を畳み、静かに0.5秒で顕現
@@ -1570,7 +1584,10 @@ window.bigkiji.onPhaseUpdate?.((phase) => {
   if (phase?.phase === 'COMPLETED' || coreSeq.progress >= 100) notifyCoreTaskComplete();
 });
 window.bigkiji.onPiStats((s) => {
-  coreSeq.progress = 100; notifyCoreTaskComplete(); // ターン完了＝100%: 爆散消滅へ
+  // A conversation turn is NOT task completion. The daemon publishes `stats` for every
+  // turn including plain chat, so treating it as progress=100 made a greeting pop the
+  // MISSION COMPLETE report (owner-reported 2026-08-02). Completion is decided solely by
+  // the phase channel: phase === 'COMPLETED'.
   roadmap3d.setState('VERIFY', 'completed'); roadmap3d.pulse(3);
   flowFinish(s.turn ? `in ${s.turn.input} · out ${s.turn.output} tok` : 'done');
   { // TOKEN VELOCITY（実測）: ターン実消費 ÷ 実所要時間
@@ -2020,11 +2037,34 @@ setInterval(() => {
     const d = tip.querySelector('.d');
     if (d) d.innerHTML = '<b>' + c.count + '</b> events · last ' + window.relTime(c.last);
   }
-  fpsLow.push(fps);
-  if (fpsLow.length > 3) fpsLow.shift();
-  if (fpsLow.length === 3 && fpsLow.every((f) => f < 28) && perfStage < 2) { perfStage++; fpsLow.length = 0; }
-  else if (fpsLow.length === 3 && fpsLow.every((f) => f > 45) && perfStage > 0) { perfStage--; fpsLow.length = 0; }
+  // The adaptive tuner only runs in "auto". performance / graphics pin the tier the owner chose.
+  if (renderPriority === 'auto') {
+    fpsLow.push(fps);
+    if (fpsLow.length > 3) fpsLow.shift();
+    if (fpsLow.length === 3 && fpsLow.every((f) => f < 28) && perfStage < 2) { perfStage++; fpsLow.length = 0; }
+    else if (fpsLow.length === 3 && fpsLow.every((f) => f > 45) && perfStage > 0) { perfStage--; fpsLow.length = 0; }
+  }
 }, 1000);
+
+// ---------- Live settings: render priority + reduced glow ----------
+function applyAppearanceSettings(appearance = {}) {
+  const next = RENDER_PRIORITIES.includes(appearance.renderPriority) ? appearance.renderPriority : 'auto';
+  renderPriority = next;
+  try { localStorage.setItem('bk.renderPriority', next); } catch (_) {} // read back at startup for antialias
+  fpsLow.length = 0;
+  // performance pins the reduced tier, graphics pins full quality, auto hands control back
+  // to the FPS tuner starting from the full-quality tier.
+  if (next === 'performance') perfStage = 2;
+  else perfStage = 0;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, next === 'performance' ? 1.5 : 3));
+  resize(); // setPixelRatio only reaches the drawing buffer on the next setSize
+  // reducedGlow is a real lever now: ACES exposure plus a multiplier on every additive surface.
+  const reducedGlow = appearance.reducedGlow !== false;
+  glowScale = reducedGlow ? 0.62 : 1;
+  renderer.toneMappingExposure = reducedGlow ? 0.82 : 1;
+}
+window.bigkiji.settingsGet?.().then((settings) => applyAppearanceSettings(settings?.appearance)).catch(() => {});
+window.bigkiji.onSettingsChanged?.((settings) => applyAppearanceSettings(settings?.appearance));
 
 // ---------- メインループ（LODクロスフェード込み） ----------
 function resize() {
@@ -2207,7 +2247,7 @@ const clock = new THREE.Clock();
       ru.uTime.value = t;
       const act = streams[k] && streams[k].until > now ? 1 : 0;
       ru.uShow.value = 0.5 + act * 0.5;
-      ru.uGlow.value = 0.045 + galaxyO * 0.03 + act * 0.09;
+      ru.uGlow.value = (0.045 + galaxyO * 0.03 + act * 0.09) * glowScale;
       ru.uActive.value = act;
     }
     if (!reduced) cl.grp.rotation.y += delta * 0.008 * hybridOrbit.motionScale * (k === 'core' ? 1 : -1); // Obsidian風の緩い漂い
@@ -2255,7 +2295,7 @@ const clock = new THREE.Clock();
   core.group.scale.multiplyScalar(Math.max(0.025, coreReveal) * (1 - morphK * 0.42));
   coreAccretion.update(t, (coreActivity + galaxyO * 0.18) * (1 - morphK * 0.85), reduced || perfStage >= 2, delta);
   coreAccretion.group.visible = coreSeq.state !== 'dormant' && morphK < 0.92;
-  coreHalo.material.opacity = (0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04)) * coreReveal * (1 - morphK * 0.7);
+  coreHalo.material.opacity = (0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04)) * coreReveal * (1 - morphK * 0.7) * glowScale;
   coreHalo.scale.setScalar((4.8 + Math.min(coreActivity, 1) * 0.8) * Math.max(0.08, coreReveal));
 
   for (const id of ids) {
@@ -2324,13 +2364,13 @@ const clock = new THREE.Clock();
     u.uShow.value = (0.18 + (show8 / 8) * 0.82) * fiberCap * coreReveal;
     u.uActive.value = THREE.MathUtils.damp(u.uActive.value, active, 6, delta);
     u.uSympathy.value = THREE.MathUtils.damp(u.uSympathy.value, 0, 4.5, delta);
-    u.uGlow.value = 0.035 + 0.012 * show8;  // 束が濃いほど1本1本も明るい
+    u.uGlow.value = (0.035 + 0.012 * show8) * glowScale;  // 束が濃いほど1本1本も明るい
     u.uBright.value = 1 + Math.min(0.6, show8 * 0.07);
   }
   for (const fp of fiberPulses) {
     const nd = nodes[fp.id];
     const active = streams[fp.id] && streams[fp.id].until > now;
-    const pulseOpacity = (active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0)) * coreReveal;
+    const pulseOpacity = (active ? 0.38 : (perfStage === 0 ? 0.16 : perfStage === 1 ? 0.09 : 0)) * coreReveal * glowScale;
     for (const part of fp.parts) {
       const s = (t * part.speed + part.phase) % 1;
       const source = fileClouds[fp.id]?.grp.position || nd.grp.position;

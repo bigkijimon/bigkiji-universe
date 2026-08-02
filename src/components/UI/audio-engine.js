@@ -1,25 +1,84 @@
 'use strict';
 
 (() => {
+  // Sound-effect buses. Mirrors SFX_CATEGORIES in src/core/settings-store.js.
+  const SFX_CATEGORIES = ['ui', 'alert', 'ambient'];
+  const SFX_DEFAULTS = { ui: 0.5, alert: 0.6, ambient: 0.3 };
+  // Assets are produced in a later phase; the folder may not exist yet.
+  const SFX_DIR = './assets/sfx/';
+
   class BigKijiAudioEngine {
     constructor() {
       this.ctx = null; this.ownerGain = null; this.agentGain = null;
+      // Single playback analyser. Every playback bus is routed through it so a background
+      // wave visualization can call getByteFrequencyData on window.BKAudio.analyser.
+      // NOTE: microphone capture (voice-live.js) runs on its OWN AudioContext, so this
+      // analyser only ever sees output. The two contexts are intentionally not merged.
+      this.analyser = null;
+      this.sfxGains = {};
+      this.sfxBuffers = new Map();   // name → decoded AudioBuffer
+      this.sfxUnavailable = new Set(); // names already reported as missing (log once)
       this.queues = { owner: [], agent: [] }; this.active = { owner: null, agent: null };
-      this.settings = { ownerVolume: 0.6, agentVolume: 0.3, attentionChime: true, chimeTone: 'arrival', telephonyEnabled: true, handsetCue: true };
+      this.settings = { ownerVolume: 0.6, agentVolume: 0.3, attentionChime: true, chimeTone: 'arrival', telephonyEnabled: true, handsetCue: true, sfxEnabled: true, sfx: { ...SFX_DEFAULTS } };
     }
     async ensure() {
       if (!this.ctx) {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.analyser = this.ctx.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.analyser.smoothingTimeConstant = 0.72;
+        this.analyser.connect(this.ctx.destination);
         this.ownerGain = this.ctx.createGain(); this.agentGain = this.ctx.createGain();
-        this.ownerGain.connect(this.ctx.destination); this.agentGain.connect(this.ctx.destination);
+        this.ownerGain.connect(this.analyser); this.agentGain.connect(this.analyser);
+        for (const category of SFX_CATEGORIES) {
+          const gain = this.ctx.createGain();
+          gain.connect(this.analyser);
+          this.sfxGains[category] = gain;
+        }
         this.apply(this.settings);
       }
       if (this.ctx.state === 'suspended') await this.ctx.resume().catch(() => {});
     }
     apply(settings = {}) {
-      this.settings = { ...this.settings, ...settings };
-      if (this.ownerGain) this.ownerGain.gain.setTargetAtTime(Number(this.settings.ownerVolume ?? 0.6), this.ctx.currentTime, 0.02);
-      if (this.agentGain) this.agentGain.gain.setTargetAtTime(Number(this.settings.agentVolume ?? 0.3), this.ctx.currentTime, 0.02);
+      this.settings = { ...this.settings, ...settings, sfx: { ...SFX_DEFAULTS, ...this.settings.sfx, ...settings.sfx } };
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      if (this.ownerGain) this.ownerGain.gain.setTargetAtTime(Number(this.settings.ownerVolume ?? 0.6), now, 0.02);
+      if (this.agentGain) this.agentGain.gain.setTargetAtTime(Number(this.settings.agentVolume ?? 0.3), now, 0.02);
+      const sfxOn = this.settings.sfxEnabled !== false;
+      for (const category of SFX_CATEGORIES) {
+        const gain = this.sfxGains[category];
+        if (!gain) continue;
+        const level = sfxOn ? Number(this.settings.sfx?.[category] ?? SFX_DEFAULTS[category]) : 0;
+        gain.gain.setTargetAtTime(Number.isFinite(level) ? level : SFX_DEFAULTS[category], now, 0.02);
+      }
+    }
+    // Play a one-shot effect from ./assets/sfx/<name>.wav on the given category bus.
+    // Resolves to false (never throws) when effects are off or the asset is not shipped yet.
+    async play(name, category = 'ui') {
+      const key = String(name || '').replace(/[^a-zA-Z0-9._-]/g, '');
+      const bus = SFX_CATEGORIES.includes(category) ? category : 'ui';
+      if (!key || this.settings.sfxEnabled === false || this.sfxUnavailable.has(key)) return false;
+      try {
+        await this.ensure();
+        let buffer = this.sfxBuffers.get(key);
+        if (!buffer) {
+          const response = await fetch(`${SFX_DIR}${key}.wav`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          buffer = await this.ctx.decodeAudioData(await response.arrayBuffer());
+          this.sfxBuffers.set(key, buffer);
+        }
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.sfxGains[bus] || this.analyser || this.ctx.destination);
+        source.start();
+        return true;
+      } catch (error) {
+        // The asset pack ships later. Report each missing name once and stay silent after that.
+        this.sfxUnavailable.add(key);
+        console.info(`[BKAudio] sfx "${key}" unavailable (${error.message}) — effect skipped.`);
+        return false;
+      }
     }
     async chime() {
       if (!this.settings.attentionChime) return;
@@ -95,5 +154,9 @@
       }
     }
   }
+  // window.BKAudio.analyser is null until the first ensure()/play()/chime(): AudioContext
+  // creation is deferred until a real sound is needed. Visualizations should await
+  // BKAudio.ensure() once, then read BKAudio.analyser every frame.
   window.BKAudio = new BigKijiAudioEngine();
+  window.BKAudio.SFX_CATEGORIES = SFX_CATEGORIES;
 })();

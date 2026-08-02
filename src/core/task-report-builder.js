@@ -162,9 +162,10 @@ class TaskReportBuilder {
     const byId = new Map((snapshot.models || []).map((m) => [m.id, m]));
     const models = REPORT_MODELS.map(({ id, label, primary }) => {
       const metrics = byId.get(id)?.metrics || {};
+      const shown = byId.get(id)?.displayName || label;
       const used = Number(metrics.tokensUsed || 0);
       const saved = Number(metrics.tokensSaved || 0);
-      return { id, label, primary, tokensUsed: used, tokensSaved: saved, savedPct: savedPct(used, saved) };
+      return { id, label: shown, primary, tokensUsed: used, tokensSaved: saved, savedPct: savedPct(used, saved) };
     });
     const totalsUsed = Number(snapshot.totals?.tokensUsed || 0);
     const totalsSaved = Number(snapshot.totals?.tokensSaved || 0);
