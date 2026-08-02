@@ -5,7 +5,7 @@ disable-model-invocation: true
 allowed-tools: Bash(bash *), Bash(launchctl *), Bash(kill *), Bash(pgrep *), Bash(ps *), Bash(curl *)
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/gpu-mem-switch/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/gpu-mem-switch/SKILL.md`. The Japanese file remains the source of truth.
 
 # 🔀 GPU Memory Switch (Ollama ↔ ComfyUI/LTX)
 

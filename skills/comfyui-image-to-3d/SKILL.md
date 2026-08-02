@@ -3,7 +3,7 @@ name: comfyui-image-to-3d
 description: Generate game-ready 3D assets locally & free with ComfyUI + Hunyuan3D-2 (image→3D→GLB), driven via the ComfyUI HTTP API, then import into Unreal. Covers pro input-image prompt design, background removal, resolution/mesh settings, multi-view, and the GLB→UE pipeline. Trigger when generating 3D props/objects for the なつやすみ game or any local image-to-3D task. Avoid paid Fab/APIs — this is the free local route.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/comfyui-image-to-3d/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/comfyui-image-to-3d/SKILL.md`. The Japanese file remains the source of truth.
 
 # Local image→3D (ComfyUI + Hunyuan3D-2), professional operation
 
@@ -46,7 +46,7 @@ Whether Hunyuan3D runs on Mac (MPS) has to be measured (3D things have a track r
 
 ## Measured log (verified 2026-07-22)
 - **★It runs to completion on MPS = yes**: successfully generated a vending machine with `hunyuan3d-dit-v2-0-fp16`(4.9GB). **About 368 seconds each** (res3072, steps30, octree256). GPU utilisation measured at 100% = it is alive on the Mac's MPS (unlike the earlier case [[seedvr2-unusable-on-mps]], it does not fall over). Output = a real mesh with 709,200 vertices / 354,600 faces. **The core of free local 3D conversion is proven.**
-- **★Input-directory trap**: the running ComfyUI's cwd is `ComfyUI/ComfyUI-clean/`, so inputs go in `ComfyUI-clean/input/` (in `ComfyUI/input/` LoadImage returns 400 "Invalid image file"). To check where the running process reads from: `lsof -a -p <pid> -d cwd`. Output is `--output-directory /Users/yuma/Documents/ComfyUI/output`.
+- **★Input-directory trap**: the running ComfyUI's cwd is `ComfyUI/ComfyUI-clean/`, so inputs go in `ComfyUI-clean/input/` (in `ComfyUI/input/` LoadImage returns 400 "Invalid image file"). To check where the running process reads from: `lsof -a -p <pid> -d cwd`. Output is `--output-directory ~/Documents/ComfyUI/output`.
 - **★Background baked into the mesh (needs a countermeasure)**: even on a white background, **the floor under the object got solidified into a feather-shaped fin** (visible in the side/top views). Cause = the object touches the bottom edge of the frame and the floor is mistaken for ground.
   - **Free countermeasures** (background-removal models are not installed = the `LoadBackgroundRemovalModel` list is empty, and `BriaRemoveImageBackground`/`Recraft...` are paid APIs = rejected [[no-paid-gen-api-without-approval]]):
     1. **Generate the input image floating** (floating, centered, ~55% size, not touching the edges, strengthen no ground/floor/shadow/reflection in the negative).

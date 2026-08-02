@@ -5,7 +5,7 @@ disable-model-invocation: true
 allowed-tools: Bash(ollama *), Bash(curl *)
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/ollama-qwen/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/ollama-qwen/SKILL.md`. The Japanese file remains the source of truth.
 
 # 💻 Ollama QwenCoder Offloading (:11434)
 

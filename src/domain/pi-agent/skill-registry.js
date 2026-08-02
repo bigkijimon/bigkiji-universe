@@ -58,15 +58,42 @@ const MAX_DEPTH = 6;
 const MAX_DIGEST_CHARS = 1400;
 
 // Frontmatter is a small, fixed YAML subset here: `key: value` lines between --- fences.
+// Line-based on purpose — a skill file is not general YAML — but it has to handle the
+// two forms real skill files use. A folded (`>`) or literal (`|`) block scalar parsed
+// line-by-line yields the literal string ">", which is what a skill's whole description
+// became: one term, matching nothing, silently never selected.
 function parseFrontmatter(text) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (!match) return {};
   const out = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const kv = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(line);
-    if (kv) out[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, '');
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const kv = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(lines[i]);
+    if (!kv) continue;
+    const value = kv[2].trim();
+    if (value === '>' || value === '|' || value === '>-' || value === '|-') {
+      const folded = [];
+      while (i + 1 < lines.length && (lines[i + 1].trim() === '' || /^\s+\S/.test(lines[i + 1]))) {
+        i += 1; folded.push(lines[i].trim());
+      }
+      out[kv[1]] = folded.join(value.startsWith('>') ? ' ' : '\n').trim();
+      continue;
+    }
+    out[kv[1]] = value.replace(/^["']|["']$/g, '');
   }
   return out;
+}
+
+// A skill with no frontmatter at all is still a skill. Falling back to its first
+// heading and first paragraph is the difference between indexing one term and
+// indexing the document — the file is otherwise present but unreachable.
+function describeWithoutFrontmatter(text) {
+  const body = String(text || '').replace(/^---\r?\n[\s\S]*?\r?\n---/, '');
+  const heading = /^#{1,3}\s+(.+)$/m.exec(body);
+  const paragraph = body.split(/\r?\n\s*\r?\n/).map((block) => block.trim())
+    .find((block) => block && !block.startsWith('#') && !block.startsWith('```'));
+  return [heading ? heading[1].trim() : '', (paragraph || '').replace(/\s+/g, ' ').slice(0, 400)]
+    .filter(Boolean).join(' — ');
 }
 
 // Terms come from the explicit `Trigger:` list when present, plus the description.
@@ -138,7 +165,7 @@ function readSkill(dir) {
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return null; }
   const meta = parseFrontmatter(text);
   const name = meta.name || path.basename(dir);
-  const description = meta.description || '';
+  const description = meta.description || describeWithoutFrontmatter(text);
   const body = text.slice(text.indexOf('---', 3) + 3);
   return {
     id: name,
@@ -288,4 +315,5 @@ class SkillRegistry {
   }
 }
 
-module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, EXCLUDE, parseFrontmatter, extractTerms, buildDigest, versionOf };
+module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, EXCLUDE, parseFrontmatter,
+  describeWithoutFrontmatter, extractTerms, buildDigest, versionOf };

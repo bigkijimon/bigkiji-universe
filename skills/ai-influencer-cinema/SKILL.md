@@ -3,7 +3,7 @@ name: ai-influencer-cinema
 description: A prompt-design skill for making the video (I2V) of AI influencers / AI idol units cinematic and character-consistent. It projects the CTRL Hunters cinema-worldbuilder method (Frame Map→Subject Lock per shot→Cross-Frame Rules→Movement timeline→ambient sound only→Camera Capture) onto local I2V (Wan2.2/LTX-2 etc., to be chosen in Phase3). Required reading before starting a product commercial, a music MV, a brand ad or a multi-character group-dance piece. Trigger: AIインフルエンサー動画, MV, 商品CM動画, cinema-worldbuilder, I2V, 群舞, アイドルユニット動画, ブランド広告動画.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/ai-influencer-cinema/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/ai-influencer-cinema/SKILL.md`. The Japanese file remains the source of truth.
 
 # ai-influencer-cinema — cinema worldbuilder (local I2V edition)
 
@@ -46,7 +46,7 @@ Reference = the structure of the rainy-hero prompt. Consistency across shots is 
 - **Product commercial (the v1 type)**: 15s. The face-consistent model holds/uses the product/appears via a mirror → finish on a hero shot of the product. The 1-word-per-1-cut telop (the rapid-fire style referenced from ElevenLabs) is added in the edit.
 - **Music MV (the v4 type)**: the unit or Elena performing to a MusicStudioKakao track. Set design such as a mirror maze + group dance + the hero shot of the product (the song).
 - **Fashion editorial (the v2 type)**: the brand's world, artistry, hero shot of the product.
-- **Trial-lesson ad for the school (the A line)**: wholesome, G-rated. If a 3D character is used, render from the rig → edit. Pricing and campaigns need Satomi + the owner's LINE approval.
+- **Trial-lesson ad for the school (the A line)**: wholesome, G-rated. If a 3D character is used, render from the rig → edit. Pricing and campaign claims need the account owner's approval before publishing.
 
 ## Append rule
 Winning patterns, failures and measured results for the models we pick get appended each time to this skill and to `InfluencerStudioCoco/knowledge/` (never delete anything).

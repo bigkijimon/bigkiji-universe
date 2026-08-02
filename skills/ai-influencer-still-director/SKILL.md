@@ -3,7 +3,7 @@ name: ai-influencer-still-director
 description: A prompt-design skill for shooting AI influencer stills with "zero AI smell and a consistent face". It projects the CTRL Hunters banana-pro method (Frame Map→Subject Lock→lighting = physics→camera in 1 line→anti-plastic skin→mid-grey background→volumetric light) onto our local Flux+PuLID pipeline. Required reading before producing a character reference sheet, a product commercial still or a brand editorial cut. Trigger: AIインフルエンサー静止画, 参照シート, banana-pro, Frame Map, Subject Lock, 商品カット, キャラ一貫.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/ai-influencer-still-director/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/ai-influencer-still-director/SKILL.md`. The Japanese file remains the source of truth.
 
 # ai-influencer-still-director — stills director (Flux+PuLID edition)
 

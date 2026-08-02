@@ -3,7 +3,7 @@ name: "Blender Gamedev (headless bpy → UE)"
 description: "Drive Blender 5.2 headless (bpy) on Mac to procedurally generate the THIN/LATTICE assets Hunyuan3D can't (fences, window grilles, handrails, power lines, rails, torii crossbars, truss), AND to clean Hunyuan3D GLBs (UV/normals/LOD/scale) for Unreal Engine 5.8. Use when making linear/wire/lattice props for the なつやすみ game, prepping any GLB for UE, or batch-generating assets from JSON specs. Free & local — complements comfyui-image-to-3d (chunky props). All operators verified on Blender 5.2.0 LTS."
 ---
 
-> Translated from the owner's original at /Users/yuma/.claude/skills/blender-gamedev/SKILL.md, which is already largely in English. Only the Japanese heading and gloss were translated; that file remains the source of truth.
+> Translated from the owner's original at `~/.claude/skills/blender-gamedev/SKILL.md`, which is already largely in English. Only the Japanese heading and gloss were translated; that file remains the source of truth.
 
 # Blender Gamedev — headless bpy for thin/lattice assets + GLB cleanup → UE5.8
 

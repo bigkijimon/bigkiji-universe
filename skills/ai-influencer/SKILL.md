@@ -1,4 +1,4 @@
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/ai-influencer/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/ai-influencer/SKILL.md`. The Japanese file remains the source of truth.
 
 # ai-influencer — AI influencer production and operations skill
 

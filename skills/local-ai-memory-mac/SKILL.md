@@ -3,7 +3,7 @@ name: local-ai-memory-mac
 description: Prevent Unreal Engine (and other heavy GPU apps) from freezing on this 64GB Apple-Silicon Mac by freeing unified memory before use. Unreal + Ollama + ComfyUI cannot run at full load concurrently — they share RAM/VRAM. Run `ue-prep` before opening UE; alternate generation (ComfyUI) and building (UE) instead of running both. Trigger on: UE freeze/beachball/hang, "固まる", ComfyUI+UE+Ollama together, out-of-memory, before opening Unreal.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/local-ai-memory-mac/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/local-ai-memory-mac/SKILL.md`. The Japanese file remains the source of truth.
 
 # Mac shared-memory operations (keeping UE / ComfyUI / Ollama from fighting each other)
 
@@ -18,7 +18,7 @@ Unreal Editor (needs 10〜20GB) / Ollama (model resident; with keep_alive=Foreve
    - Assembly-in-UE day → UE ON / ComfyUI and Ollama released
 3. Keep UE itself light: **work in an empty/Basic level** (the 405-actor `Lvl_IntroRoom` is heavy), and lower Scalability if needed.
 
-## Tool: `ue-prep` (`/Users/yuma/.local/bin/ue-prep`)
+## Tool: `ue-prep` (`~/.local/bin/ue-prep`)
 Frees memory non-destructively (Ollama models auto-reload on next use / ComfyUI is not closed, only its VRAM is released).
 - `ue-prep` … run the release + show free memory before and after (measured: recovered 4.3GB→19GB)
 - `ue-prep status` … only check the current state (memory/Ollama/ComfyUI) without releasing anything

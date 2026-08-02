@@ -3,7 +3,7 @@ name: unreal-mcp-gamedev
 description: Connect Claude Code to Unreal Engine 5.8+ via the official "Unreal MCP" (ModelContextProtocol) plugin so Claude can drive the editor, and build games (esp. the なつやすみ project). Covers server start, the port-8000/ComfyUI conflict gotcha, client registration, and reconnect. Trigger when working on the Unreal game, connecting Claude to UE, or seeing UE MCP connection failures.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/unreal-mcp-gamedev/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/unreal-mcp-gamedev/SKILL.md`. The Japanese file remains the source of truth.
 
 # Game development with Unreal MCP (connection and practice)
 
@@ -13,7 +13,7 @@ Project background is in memory [[natsuyasumi-game-project]]. Operating rules ar
 ## Connection procedure (established by measurement 2026-07-22)
 
 0. **Free memory with `ue-prep` before opening UE** (mandatory). If the 64GB shared memory is exhausted by Ollama/ComfyUI, UE freezes. Details: [[local-ai-memory-mac]].
-1. **Open the project in UE** (e.g. `UEIntroProject`). The engine itself is at `/Users/yuma/UE_5.8` (not under Shared).
+1. **Open the project in UE** (e.g. `UEIntroProject`). The engine itself is at `~/UE_5.8` (not under Shared).
 2. **In the `Cmd` (Enter Console Command) field at the bottom of UE**, start the server:
    - `ModelContextProtocol.StartServer <port>` … specifying the port explicitly is recommended (avoids the conflict described below)
    - Example: `ModelContextProtocol.StartServer 55557`
@@ -36,7 +36,7 @@ Project background is in memory [[natsuyasumi-game-project]]. Operating rules ar
 
 **Always start it with command-line flags.** Do not rely on config files:
 ```
-"/Users/yuma/UE_5.8/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \
+"~/UE_5.8/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \
   "<project>.uproject" -ModelContextProtocolStartServer -ModelContextProtocolPort=55557
 ```
 - ❌ **Writing it in `DefaultEngine.ini` is not read.** The settings class is `UCLASS(config=EditorPerProjectUserSettings)`,
@@ -108,7 +108,7 @@ Calls come in 3 stages: `list_toolsets` → `describe_toolset` → `call_tool`.
 
 ## How to make terrain (Landscape) (established by measurement; MCP has no sculpting API)
 Creating/sculpting a Landscape via MCP is impossible. The reliable procedure is **generate a 16bit heightmap → import it in UE**:
-1. Claude generates a 16bit greyscale heightmap (RAW with pure python `array('H')`; PNG too if PIL is available). Hills = add a Gaussian, rivers = subtract a Gaussian valley, rolling = sin composition. Value 32768 = sea level. Example: `/Users/yuma/Documents/natsu_heightmap_505.png` (505×505).
+1. Claude generates a 16bit greyscale heightmap (RAW with pure python `array('H')`; PNG too if PIL is available). Hills = add a Gaussian, rivers = subtract a Gaussian valley, rolling = sin composition. Value 32768 = sea level. Example: `~/Documents/natsu_heightmap_505.png` (505×505).
 2. **User operation** (not possible over MCP): New Level(Basic) → save → set the top-left mode to **Landscape** → **New → Import from File** → pick the PNG → **Scale X/Y=100, Z=40** (height adjustment) → **Import** → back to Selection Mode → save.
 3. Post-processing on the Claude side: get `Landscape_0` with `find_actors(name="Landscape")`. **Greening** = `ObjectTools.set_properties(Landscape_0, {"LandscapeMaterial":"/Game/.../M_Grass.M_Grass"})`. Delete Basic's `Floor_0` with `remove_from_scene`.
 4. Placing things on the terrain: use `snap_to_ground:true` on `add_to_scene_from_asset`, or get the ground height with `SceneTools.trace_world(start_up, end_down)` and place accordingly.

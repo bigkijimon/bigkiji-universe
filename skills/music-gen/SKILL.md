@@ -3,7 +3,7 @@ name: music-gen
 description: Local music generation (ACE-Step 1.5, songs with vocals). Required reading before starting any music production, vocal song generation, BGM production or teaching-material song task. Accumulates the startup procedure, switching to local, design principles for children's songs, and technical lessons (append-only). Trigger: 音楽制作, 歌, ソング, BGM, music generation, ACE-Step.
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/music-gen/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/music-gen/SKILL.md`. The Japanese file remains the source of truth.
 
 # music-gen — local music generation skill (created 2026-07-10)
 

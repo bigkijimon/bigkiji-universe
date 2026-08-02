@@ -72,7 +72,11 @@
       "**/*",
       "!**/.env",
       "!recordings/**",
-      "!graphify-out/**"
+      "!graphify-out/**",
+      "!**/*.bak-*",
+      "!**/*.bak",
+      "!fixtures/**",
+      "!tools/__pycache__/**"
     ],
     "extraResources": [
       {

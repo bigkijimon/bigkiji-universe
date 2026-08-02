@@ -5,7 +5,7 @@ disable-model-invocation: true
 allowed-tools: Bash(curl *), Bash(bash *)
 ---
 
-> Translated from the owner's Japanese original at /Users/yuma/.claude/skills/comfyui-workflow/SKILL.md. The Japanese file remains the source of truth.
+> Translated from the owner's Japanese original at `~/.claude/skills/comfyui-workflow/SKILL.md`. The Japanese file remains the source of truth.
 
 # 🤖 ComfyUI API Control (:8000)
 

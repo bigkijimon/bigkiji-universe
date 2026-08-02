@@ -82,5 +82,20 @@ assert.ok(!sandbox.filesystem.allowWrite.some((entry) => /node_modules|dist|\.en
 assert.ok(Array.isArray(sandbox.models.allowPaid));
 assert.ok(sandbox.skills.roots.includes('./skills'), 'app-shipped English skills must be declared first');
 
+// ---- the two frontmatter shapes that made a skill silently unreachable -------
+// Both were found in real skill files. A skill that indexes one term is not "weakly
+// matched", it is invisible — and it looks exactly like a skill that simply never fits.
+const { describeWithoutFrontmatter } = require('../src/domain/pi-agent/skill-registry');
+const folded = parseFrontmatter(['---', 'name: phaser-gamedev', 'description: >',
+  '  Build 2D browser games with Phaser 3.', '  Use for arcade physics and tilemaps.', 'license: MIT', '---'].join('\n'));
+assert.strictEqual(folded.description, 'Build 2D browser games with Phaser 3. Use for arcade physics and tilemaps.',
+  'a folded scalar parsed line-by-line yields the literal ">" as the whole description');
+assert.strictEqual(folded.license, 'MIT', 'the key after a folded block must still parse');
+assert.strictEqual(parseFrontmatter('---\ndescription: |\n  line one\n  line two\n---').description, 'line one\nline two');
+assert.strictEqual(parseFrontmatter('---\ndescription: plain value\n---').description, 'plain value');
+assert.strictEqual(describeWithoutFrontmatter('# AI Influencer\n\nKeep one face consistent across shots with PuLID.\n'),
+  'AI Influencer — Keep one face consistent across shots with PuLID.',
+  'a skill with no frontmatter is still a skill');
+
 fs.rmSync(root, { recursive: true, force: true });
-console.log('skill registry selftest: PASS · CJK bigram matching · frontmatter over body · text-only brief · explicit sandbox');
+console.log('skill registry selftest: PASS · CJK bigram matching · frontmatter over body · folded/literal scalars · no-frontmatter fallback · text-only brief · explicit sandbox');
