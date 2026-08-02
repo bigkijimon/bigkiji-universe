@@ -301,9 +301,48 @@
     }
   }
 
+  // How much of the workspace this run has actually changed.
+  //
+  // The status bar has carried an empty `#diffStat` since this window was built.
+  // The CLI has rendered real diffs the whole time (transcript.js formatDiff),
+  // so the owner could see the shape of a change in the terminal and nothing at
+  // all in the window they approve from — which is the wrong way round.
+  //
+  // This is a counter, not a second diff renderer: one number for added lines
+  // and one for removed, so "approve" is not a blind yes. A provider only starts
+  // being counted once it emits a hunk header, because a bare '+' at the start
+  // of a line is ordinary prose far more often than it is a patch.
+  const diffs = new Map(); // taskId -> { patching, added, removed }
+  const HUNK = /^(@@ |diff --git |Index: )/;
+
+  function countDiff(taskId, text) {
+    let seen = diffs.get(taskId);
+    for (const line of String(text).split('\n')) {
+      if (HUNK.test(line)) { seen = seen || { added: 0, removed: 0 }; seen.patching = true; continue; }
+      if (!seen?.patching) continue;
+      if (line.startsWith('+++') || line.startsWith('---')) continue; // file headers, not content
+      if (line.startsWith('+')) seen.added += 1;
+      else if (line.startsWith('-')) seen.removed += 1;
+    }
+    if (seen) diffs.set(taskId, seen);
+    renderDiffStat();
+  }
+
+  function renderDiffStat() {
+    let added = 0; let removed = 0;
+    for (const entry of diffs.values()) { added += entry.added; removed += entry.removed; }
+    els.diff.textContent = '';
+    if (!added && !removed) return;
+    const plus = document.createElement('span'); plus.className = 'plus'; plus.textContent = `+${added}`;
+    const minus = document.createElement('span'); minus.className = 'minus'; minus.textContent = `−${removed}`;
+    els.diff.append(plus, minus);
+    els.diff.title = `${added} line${added === 1 ? '' : 's'} added, ${removed} removed across this run`;
+  }
+
   function appendLog(taskId, text, isError) {
     const pane = paneFor(taskId);
     if (!pane) return;
+    if (!isError) countDiff(taskId, text);
     const log = pane.querySelector('.pane-log');
     const idle = log.querySelector('.idle');
     if (idle) idle.remove();
@@ -335,6 +374,10 @@
 
   function ingestRun(run) {
     if (!run || !run.id) return;
+    // A new run starts a new count. Carrying the previous run's tally forward
+    // would make the number the owner approves against wrong in the one
+    // direction that matters — larger than what is about to happen.
+    if (state.run?.id !== run.id) { diffs.clear(); renderDiffStat(); }
     state.run = run;
     renderPanes(run);
     showApproval(run);

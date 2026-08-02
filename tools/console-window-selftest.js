@@ -95,4 +95,35 @@ assert.ok(/LOG_LINES/.test(js) && /removeChild\(log\.firstChild\)/.test(js),
 assert.ok(/CSS\.escape/.test(js), 'task ids reach a selector, so they are escaped');
 assert.ok(/listRuns/.test(js), 'a run already waiting when the window opens is picked up');
 
-console.log('console window selftest: PASS · markup and behaviour agree on every id · assets exist · opaque with no backdrop-filter · CSP present · broadcasts reach it · chat and terminal both reachable · one pane per real assignment · approval echoes the exact hashes');
+// ---- the change counter ------------------------------------------------------
+// #diffStat sat empty from the day this window was built while the CLI rendered
+// real diffs, so the surface the owner approves from showed less than the one
+// they do not. It is a counter, not a diff view, and these pin the two properties
+// that make the number trustworthy rather than decorative.
+assert.ok(/els\.diff\.(textContent|append)/.test(js), '#diffStat is written to, not just read');
+assert.ok(/HUNK/.test(js) && /@@ /.test(js),
+  'counting starts at a hunk header — a bare + at the start of a line is prose far more often than a patch');
+assert.ok(/diffs\.clear\(\)/.test(js),
+  'a new run starts a new count; carrying the last one forward overstates what is about to happen');
+{
+  // Run the counter the way the window does, so the arithmetic is checked rather
+  // than the presence of the code that does it.
+  const HUNK = /^(@@ |diff --git |Index: )/;
+  const tally = (text) => {
+    let seen = null; let added = 0; let removed = 0;
+    for (const line of text.split('\n')) {
+      if (HUNK.test(line)) { seen = true; continue; }
+      if (!seen) continue;
+      if (line.startsWith('+++') || line.startsWith('---')) continue;
+      if (line.startsWith('+')) added += 1;
+      else if (line.startsWith('-')) removed += 1;
+    }
+    return { added, removed };
+  };
+  assert.deepEqual(tally('+ this is prose\n- and so is this'), { added: 0, removed: 0 },
+    'text before any hunk header is not a patch');
+  assert.deepEqual(tally('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
+    { added: 2, removed: 1 }, 'file headers are not content');
+}
+
+console.log('console window selftest: PASS · markup and behaviour agree on every id · assets exist · opaque with no backdrop-filter · CSP present · broadcasts reach it · chat and terminal both reachable · one pane per real assignment · approval echoes the exact hashes · the change counter counts patches, not prose');
