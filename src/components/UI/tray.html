@@ -106,9 +106,9 @@
     background: rgba(255,255,255,.045);
     border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
     border-left: 2px solid var(--c); border-radius: 8px;
-    transform: translateY(-4px) scale(.98); opacity: 0;
+    transform: translate(var(--fx,0px), -4px) rotate(var(--fr,0deg)) scale(.98); opacity: 0;
     animation: fcdIn .22s cubic-bezier(.2,.8,.2,1) forwards; }
-  @keyframes fcdIn { to { transform: none; opacity: 1; } }
+  @keyframes fcdIn { to { transform: translate(var(--fx,0px), 0) rotate(var(--fr,0deg)); opacity: 1; } }
   .fcd .fi { flex: none; }
   .fcd .ft { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fcd .st { flex: none; color: var(--c); }
@@ -118,7 +118,8 @@
   .fcd.gone { opacity: 0; transform: translateY(-3px); transition: opacity .3s, transform .3s; }
 
   /* エージェント別アクティビティ・ミニカード（それぞれの動きを小さく表示） */
-  #cards { flex: none; display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px;
+  /* 不規則配置: 均等グリッドをやめ2種幅の非対称カラム。散らしはJSがseedから--tx/--ty/--rxを決定的に割当てる */
+  #cards { flex: none; display: grid; grid-template-columns: 1.18fr .82fr; gap: 5px;
     padding: 8px 12px 9px; border-top: 1px solid var(--hairline); }
   .acard { display: flex; align-items: center; gap: 5px; min-width: 0;
     background: rgba(255,255,255,.05); border: 1px solid var(--hairline);
@@ -175,13 +176,18 @@
   .utilityRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:7px; }
   .utilityRow select,.utilityRow button { min-width:0; border:1px solid rgba(255,255,255,.10); border-radius:8px; color:#fff; background:rgba(4,10,18,.7); padding:6px 8px; font:9px "SF Mono",Menlo,monospace; }
   .utilityRow button { color:#00f3ff; cursor:pointer; font-weight:700; }
-  #cards { padding:10px 9px 11px; border-top:1px solid rgba(255,255,255,.1); gap:8px; overflow:visible; }
+  #cards { padding:12px 15px 13px; border-top:1px solid rgba(255,255,255,.1); gap:12px 8px; overflow:visible; }
   .acard { min-height:38px; padding:6px 8px; border-color:color-mix(in srgb,var(--c) 35%,transparent); background:rgba(2,7,15,.62); box-shadow:inset 0 0 15px color-mix(in srgb,var(--c) 5%,transparent); }
-  .acard:nth-child(1){--tx:2px;--ty:-3px;--rx:-.65deg}.acard:nth-child(2){--tx:-3px;--ty:4px;--rx:.7deg}.acard:nth-child(3){--tx:7px;--ty:0px;--rx:.45deg}.acard:nth-child(4){--tx:-5px;--ty:5px;--rx:-.55deg}
-  .acard { position:relative; transform:translate(var(--tx),var(--ty)) rotate(var(--rx)); animation:cardDrift 7s ease-in-out infinite; }
-  .acard:nth-child(2){animation-delay:-1.7s}.acard:nth-child(3){animation-delay:-3.4s}.acard:nth-child(4){animation-delay:-5.1s}
+  /* 散らし: --tx/--ty/--rx はJSがカードIDのseedハッシュから決定的に割当（枚数可変・Math.random不使用）
+     漂い: --amp(会話余韻で3.5→10px) を body から継承し、周期--dp・位相--dd はカード毎に別 */
+  .acard { position:relative; transform:translate(var(--tx,0px),var(--ty,0px)) rotate(var(--rx,0deg));
+    animation:cardDrift var(--dp,9s) ease-in-out var(--dd,0s) infinite; }
   .acard::after{content:"";position:absolute;right:8px;bottom:-4px;width:20px;height:1px;background:linear-gradient(90deg,transparent,var(--c));opacity:.42}
-  @keyframes cardDrift { 0%,100%{transform:translate(var(--tx),var(--ty)) rotate(var(--rx))}50%{transform:translate(var(--tx),calc(var(--ty) - 2px)) rotate(var(--rx))} }
+  @keyframes cardDrift {
+    0%,100% { transform:translate(var(--tx,0px),var(--ty,0px)) rotate(var(--rx,0deg)); }
+    33% { transform:translate(calc(var(--tx,0px) + var(--amp,4px)*.7), calc(var(--ty,0px) - var(--amp,4px))) rotate(calc(var(--rx,0deg) + .35deg)); }
+    66% { transform:translate(calc(var(--tx,0px) - var(--amp,4px)*.6), calc(var(--ty,0px) + var(--amp,4px)*.6)) rotate(calc(var(--rx,0deg) - .3deg)); }
+  }
   .acard .an { color:#fff; text-shadow:0 0 8px color-mix(in srgb,var(--c) 45%,transparent); }
   .acard .ac { color:var(--c); font-size:8px; text-transform:uppercase; }
   .acard .ad { opacity:.55; }
@@ -190,9 +196,27 @@
   .streamCard .logHead span { color:#00f3ff; }
   .streamCard #log { height:58px; padding:0 3px; overflow:hidden; -webkit-mask-image:none; line-height:1.7; }
   .streamCard .row time { color:#ec4899; } .streamCard .row .txt { color:#fff; }
+  /* 「積み木がわずかに崩れた」交互の微オフセット（--sx/--sy/--sr）。headerと入力欄は基準線として水平のまま */
+  .utilityRow { --sx:-4px; --sy:1px; --sr:-.5deg; }
+  #orbWrap { --sx:3px; --sy:-2px; --sr:.4deg; }
+  #piAnswer { --sx:4px; --sy:0px; --sr:.4deg; }
+  #feed { --sx:-3px; --sy:0px; --sr:-.35deg; }
+  .streamCard { --sx:-5px; --sy:2px; --sr:-.45deg; }
+  .utilityRow, #feed, .streamCard, #piAnswer {
+    transform:translate(var(--sx,0px),var(--sy,0px)) rotate(var(--sr,0deg));
+    animation:shellSway var(--dp,13s) ease-in-out var(--dd,0s) infinite; }
+  #feed { --dp:15s; --dd:-6s; } .utilityRow { --dp:17s; --dd:-3s; } #piAnswer { --dp:14s; --dd:-9s; }
+  @keyframes shellSway {
+    0%,100% { transform:translate(var(--sx,0px),var(--sy,0px)) rotate(var(--sr,0deg)); }
+    50% { transform:translate(calc(var(--sx,0px) + 2px), calc(var(--sy,0px) - var(--amp,4px)*.5)) rotate(var(--sr,0deg)); }
+  }
+  /* 入力欄は画面最下部に固定（DOMも最後へ移動済み）。Pi応答は入力欄の直上に寄り添う */
+  .composer { margin-top:auto; }
+  #piAnswer.on { margin-top:auto; }
+  #piAnswer.on + .composer { margin-top:0; }
   #agentBubbles { position:absolute; z-index:18; top:118px; right:14px; width:min(240px,calc(100% - 28px)); display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
   .agentBubble { display:flex; align-items:flex-end; gap:7px; max-width:100%; opacity:0; transform:translate3d(12px,7px,0) scale(.96); animation:bubbleIn .28s var(--ease-out) forwards; }
-  .agentBubble.leaving { animation:bubbleOut .34s ease-in forwards; }
+  .agentBubble.leaving { animation:bubbleOut .62s var(--ease-out) forwards; }
   .agentAvatar { flex:none; width:26px; height:26px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--c) 48%,transparent); border-radius:9px 9px 4px 9px; color:var(--c); background:rgba(8,13,20,.9); box-shadow:0 8px 22px rgba(0,0,0,.42),0 0 13px color-mix(in srgb,var(--c) 20%,transparent); font:800 11px "SF Mono",Menlo,monospace; }
   .agentSay { min-width:0; max-width:198px; padding:7px 9px; border:1px solid color-mix(in srgb,var(--c) 25%,rgba(255,255,255,.08)); border-radius:12px 12px 3px 12px; color:#f5faf7; background:rgba(9,15,24,.9); box-shadow:0 14px 30px rgba(0,0,0,.48); }
   .agentSay b { display:block; margin-bottom:3px; color:var(--c); font:750 8px -apple-system,sans-serif; letter-spacing:.04em; }
@@ -208,7 +232,7 @@
   #ideaDisclosure { display:none; grid-column:1/-1; padding-top:7px; border-top:1px solid rgba(255,255,255,.08); color:#aebbb4; font:7.5px/1.5 "SF Mono",Menlo,monospace; }
   #ideaDisclosure.on { display:flex; justify-content:space-between; gap:8px; align-items:center; } #ideaDisclosure button { flex:none; border:1px solid rgba(168,85,247,.4); border-radius:7px; padding:5px 8px; color:#fff; background:rgba(168,85,247,.15); font:700 7px -apple-system,sans-serif; cursor:pointer; }
   @keyframes draftReveal { from{opacity:0;transform:translateY(5px) rotate(-.2deg)}to{opacity:1;transform:translateY(0) rotate(-.2deg)} }
-  @keyframes bubbleIn { to{opacity:1;transform:translate3d(0,0,0) scale(1)} } @keyframes bubbleOut { to{opacity:0;transform:translate3d(8px,-5px,0) scale(.96)} }
+  @keyframes bubbleIn { to{opacity:1;transform:translate3d(0,0,0) scale(1)} } @keyframes bubbleOut { to{opacity:0;transform:translate3d(6px,-9px,0) scale(.97)} }
   #remotePanel { position:absolute; inset:8px; z-index:20; display:none; padding:16px; border:1px solid rgba(0,243,255,.35); border-radius:16px; background:rgba(4,9,18,.94); box-shadow:0 24px 60px rgba(0,0,0,.75),0 0 24px rgba(0,243,255,.16); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
   #remotePanel.on { display:flex; flex-direction:column; align-items:center; gap:10px; }
   #remotePanel img { width:220px; height:220px; border-radius:12px; background:#f4fff9; padding:5px; }
@@ -220,11 +244,12 @@
   #remotePanel button { border:1px solid rgba(255,255,255,.14); border-radius:8px; color:#fff; background:rgba(255,255,255,.06); padding:7px 11px; cursor:pointer; }
   .grain { display:none; }
 
-  header, #orbWrap, .composer, .logHead, #log { opacity: 0; transform: translateY(5px);
+  header, #orbWrap, .composer, .logHead, #log { opacity: 0;
+    transform: translate(var(--sx,0px), calc(var(--sy,0px) + 5px)) rotate(var(--sr,0deg));
     animation: boot 420ms var(--ease-out) forwards; }
-  #orbWrap { animation-delay: 80ms; } .composer { animation-delay: 150ms; }
+  #orbWrap { animation-delay: 80ms; } .composer { animation-delay: 300ms; }
   .logHead { animation-delay: 210ms; } #log { animation-delay: 260ms; }
-  @keyframes boot { to { opacity: 1; transform: translateY(0); } }
+  @keyframes boot { to { opacity: 1; transform: translate(var(--sx,0px), var(--sy,0px)) rotate(var(--sr,0deg)); } }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -246,6 +271,13 @@
       <div class="bgHero"></div>
       <div class="hint" data-i18n="hint">…</div>
     </div>
+    <div id="ideaDraft" aria-live="polite"><div class="ideaCopy"><span class="ideaEyebrow">LOCAL IDEA DRAFT</span><strong id="ideaTitle"></strong><small id="ideaMeta"></small></div><div class="ideaActions"><button data-action="enhance">Gemini polish</button><button data-action="plan">Make plan</button><button data-action="promote">Adopt</button><button data-action="archive">×</button></div><div id="ideaDisclosure"><span></span><button type="button">Review &amp; send</button></div></div>
+    <div id="feed"></div>
+    <div id="cards"></div>
+    <div class="streamCard"><div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
+      <em id="tvitals" style="margin-left:8px;color:rgba(226,240,234,.4);letter-spacing:0">–</em>
+      <em id="count">0</em></div><div id="log"></div></div>
+    <div id="piAnswer"></div>
     <div class="composer">
       <input id="cmd" type="text" spellcheck="false"
         data-i18n-ph="ph_ai" placeholder="" />
@@ -256,13 +288,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
       </button>
     </div>
-    <div id="piAnswer"></div>
-    <div id="ideaDraft" aria-live="polite"><div class="ideaCopy"><span class="ideaEyebrow">LOCAL IDEA DRAFT</span><strong id="ideaTitle"></strong><small id="ideaMeta"></small></div><div class="ideaActions"><button data-action="enhance">Gemini polish</button><button data-action="plan">Make plan</button><button data-action="promote">Adopt</button><button data-action="archive">×</button></div><div id="ideaDisclosure"><span></span><button type="button">Review &amp; send</button></div></div>
-    <div id="feed"></div>
-    <div id="cards"></div>
-    <div class="streamCard"><div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
-      <em id="tvitals" style="margin-left:8px;color:rgba(226,240,234,.4);letter-spacing:0">–</em>
-      <em id="count">0</em></div><div id="log"></div></div>
     <div id="remotePanel" role="dialog" aria-live="polite"><h2>TAILSCALE PHONE LINK</h2><img id="remoteQRImage" alt="BigKiji Tailscale connection QR code"><p id="remoteHelp">Checking Tailscale…</p><code id="remoteURL"></code><a id="remoteSetup" target="_blank" rel="noreferrer">Enable Tailscale Serve</a><button id="remoteClose" type="button">Close</button></div>
     <div class="grain"></div>
   </div>
@@ -291,6 +316,35 @@
       'local-qwen': MODEL_CARDS['local-qwen'], qwen: MODEL_CARDS['local-qwen'], biglama: MODEL_CARDS['local-qwen'],
       gemini: { short:'Gemini', color:'#4e8cff', glyph:'✦' }, glm: { short:'GLM', color:'#a855f7', glyph:'✳' },
     };
+    // ---- seedベースの決定的散らし（FNV-1aハッシュ→PRNG。描画毎のMath.random禁止・枚数可変対応） ----
+    function seedRand(key) {
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return () => {
+        h = Math.imul(h ^ (h >>> 15), 2246822519);
+        h = Math.imul(h ^ (h >>> 13), 3266489917);
+        return ((h ^= h >>> 16) >>> 0) / 4294967296;
+      };
+    }
+    function scatterAgentCard(el, key, index) {
+      const r = seedRand('acard:' + key);
+      const col = index % 2; // 左列は左へ・右列は右へ逃がして重なりすぎを防ぐ
+      const tx = (col === 0 ? -1 : 1) * (10 + r() * 7);      // ±10〜17px（明確に判る散らし）
+      const ty = (r() < .5 ? -1 : 1) * (7 + r() * 5);        // ±7〜12px
+      const rx = (r() < .5 ? -1 : 1) * (1.2 + r() * 1.2);    // ±1.2〜2.4deg
+      el.style.setProperty('--tx', tx.toFixed(1) + 'px');
+      el.style.setProperty('--ty', ty.toFixed(1) + 'px');
+      el.style.setProperty('--rx', rx.toFixed(2) + 'deg');
+      el.style.setProperty('--dp', (8 + r() * 6).toFixed(2) + 's');  // 漂い周期をカード毎にずらす
+      el.style.setProperty('--dd', (-r() * 10).toFixed(2) + 's');    // 位相もずらす
+    }
+    // ---- 会話の余韻: 発話イベントで漂い振幅が強まり、時間とともに静まる（transformのみ） ----
+    let driftEnergy = 0;
+    function exciteDrift(v) { driftEnergy = Math.min(1, driftEnergy + v); }
+    setInterval(() => {
+      driftEnergy = driftEnergy > .02 ? driftEnergy * .93 : 0; // 半減期 ~3.8s → 約20秒で凪へ
+      document.body.style.setProperty('--amp', (3.5 + driftEnergy * 6.5).toFixed(2) + 'px');
+    }, 400);
     const bubbleDeck = document.getElementById('agentBubbles');
     const bubbles = [];
     function cleanBubbleText(text) {
@@ -303,20 +357,22 @@
       el.innerHTML = `<div class="agentSay"><b>${model.short}</b><span></span></div><div class="agentAvatar">${model.glyph}</div>`;
       el.querySelector('span').textContent = clean; bubbleDeck.appendChild(el);
       const item = { el, timer:null }; bubbles.push(item);
-      // Two stacked messages fit inside the orb stage. Older messages leave in
-      // arrival order, so controls and the composer are never covered.
-      while (bubbles.length > 2) { const old = bubbles.shift(); clearTimeout(old.timer); old.el.classList.add('leaving'); setTimeout(() => old.el.remove(), 340); }
-      item.timer = setTimeout(() => { el.classList.add('leaving'); setTimeout(() => { el.remove(); const index=bubbles.indexOf(item); if(index>=0)bubbles.splice(index,1); }, 360); }, 4700 + bubbles.length * 450);
+      exciteDrift(0.6); // 会話が起きるとカードの漂いがしばらく強まる（余韻）
+      // チャット風スタック最大3件。古いものから順にゆっくりフェードアウトして消える
+      // （pointer-events:none なので入力欄や操作は覆われても塞がれない）
+      while (bubbles.length > 3) { const old = bubbles.shift(); clearTimeout(old.timer); old.el.classList.add('leaving'); setTimeout(() => old.el.remove(), 640); }
+      item.timer = setTimeout(() => { el.classList.add('leaving'); setTimeout(() => { el.remove(); const index=bubbles.indexOf(item); if(index>=0)bubbles.splice(index,1); }, 660); }, 5600 + bubbles.length * 600);
     }
-    for (const [id, m] of Object.entries(MODEL_CARDS)) {
+    Object.entries(MODEL_CARDS).forEach(([id, m], index) => {
       const c = document.createElement('div');
       c.className = 'acard';
       c.style.setProperty('--c', m.color);
       c.innerHTML = '<span class="ai" style="color:' + m.color + '">' + m.glyph + '</span>' +
         '<span class="an">' + m.short + '</span><span class="ac">sleeping</span><i class="ad"></i>';
+      scatterAgentCard(c, id, index); // IDのseedから決定的に散らす（nth-child固定を廃止）
       cards.appendChild(c);
       cardMap[id] = { el: c, count: c.querySelector('.ac'), timer: null };
-    }
+    });
     function updateSecurity(security = {}) {
       const badge = document.getElementById('securityBadge'); const blocked = Number(security.blocked || 0);
       badge.textContent = blocked ? `${blocked} BLOCKED` : (security.status === 'ENFORCED' ? 'SECURE' : 'DEGRADED');
@@ -392,6 +448,10 @@
       const el = document.createElement('div');
       el.className = 'fcd' + (running ? ' running' : '');
       el.style.setProperty('--c', color || '#34d399');
+      const sr = seedRand('fcd:' + key); // 進行カードもseedで微散らし
+      el.style.setProperty('--fx', ((sr() < .5 ? -1 : 1) * (4 + sr() * 6)).toFixed(1) + 'px');
+      el.style.setProperty('--fr', ((sr() < .5 ? -1 : 1) * (.4 + sr() * .6)).toFixed(2) + 'deg');
+      if (running) exciteDrift(0.2);
       el.innerHTML = '<span class="fi"></span><span class="ft"></span><span class="st">' + (running ? '●' : '✓') + '</span>';
       el.querySelector('.fi').textContent = icon;
       el.querySelector('.ft').textContent = text;
