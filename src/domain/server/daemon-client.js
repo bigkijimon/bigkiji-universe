@@ -89,14 +89,34 @@ class DaemonClient extends EventEmitter {
   connect() {
     this.closed = false;
     if (this.controller) return; this.controller = new AbortController();
-    this._socket(this.controller.signal).catch(() => this._stream(this.controller.signal))
-      .catch((error) => { this.connected = false; this.emit('disconnect', error); });
+    const controller = this.controller;
+    this._socket(controller.signal).catch(() => this._stream(controller.signal))
+      // Both transports failing has to release the controller. Leaving it set made
+      // connect() return at the guard forever, so a daemon that was slow to bind or a
+      // token that was stale at launch wedged the client with no way back — and the
+      // retry below only fires for a connection that had already opened.
+      .then(() => this._ended(controller, null), (error) => this._ended(controller, error));
+  }
+  // Reaching here means the transport is finished, however it finished. An SSE stream
+  // that ends normally used to leave `connected === true` with a dead reader, and
+  // main.js gates roughly fifteen IPC handlers on that flag.
+  _ended(controller, error) {
+    if (this.controller !== controller) return; // a newer attempt already owns the field
+    this.controller = null; this.connected = false;
+    if (error) this.emit('disconnect', error);
+    if (this.closed || controller.signal.aborted || this.retryTimer) return;
+    // Backoff, because this now also covers the daemon simply not being up yet. A flat
+    // 2 s would open a socket every two seconds forever against a port nobody is on.
+    this.attempts = (this.attempts || 0) + 1;
+    const delay = Math.min(30000, 2000 * (2 ** (this.attempts - 1)));
+    this.retryTimer = setTimeout(() => { this.retryTimer = null; if (!this.closed) this.connect(); }, delay);
+    this.retryTimer.unref?.();
   }
   // `closed` is separate from `controller` because reconnection clears the controller
   // on its way out. Without it a disconnect during shutdown is undone two seconds later
   // by a retry that was already in flight, and the app never exits.
   disconnect() {
-    this.closed = true;
+    this.closed = true; this.attempts = 0;
     clearTimeout(this.retryTimer); this.retryTimer = null;
     this.controller?.abort(); this.controller = null; this.connected = false;
   }
@@ -125,22 +145,14 @@ class DaemonClient extends EventEmitter {
       let opened = false;
       const abort = () => { try { socket.close(); } catch (_) {} resolve(); };
       signal.addEventListener('abort', abort, { once: true });
-      socket.once('open', () => { opened = true; this.connected = true; this.emit('connect', { transport: 'websocket' }); });
+      socket.once('open', () => { opened = true; this.attempts = 0; this.connected = true; this.emit('connect', { transport: 'websocket' }); });
       socket.on('message', (raw) => { try { const message = JSON.parse(String(raw)); this.emit('event', message); } catch (_) {} });
       socket.once('error', (error) => { if (!opened) reject(error); });
+      // Resolving hands the outcome to _ended(), which is the single place that clears
+      // the controller and schedules the retry. Two retry paths meant two timers.
       socket.once('close', () => {
         signal.removeEventListener('abort', abort);
         this.connected = false;
-        if (opened && !signal.aborted && !this.closed) {
-          this._isReconnecting = true;
-          // This never reconnected and crashed while not doing it: connect() returns
-          // undefined, so `.catch` threw a TypeError inside a timer with no handler,
-          // and connect() would have returned early anyway because this.controller was
-          // still set from the connection that just died.
-          this.controller = null;
-          this.retryTimer = setTimeout(() => { this.retryTimer = null; this._isReconnecting = false; if (!this.closed) this.connect(); }, 2000);
-          this.retryTimer.unref?.();
-        }
         resolve();
       });
     });

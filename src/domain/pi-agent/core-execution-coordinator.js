@@ -214,6 +214,11 @@ class CoreExecutionCoordinator extends EventEmitter {
     const run = this.runs.get(id);
     if (!run) throw new Error(`Unknown run: ${id}`);
     if (['FAILED', 'COMPLETED'].includes(run.status)) return publicRun(run);
+    // taskRunner.abort() emits 'task' synchronously, so _ingestTask runs mid-loop. On the
+    // last assignment the run looks terminal, and a deliberation stage would conclude —
+    // planning a fresh set of execution tasks and broadcasting an approval prompt for the
+    // run the owner just killed. Mark the intent before touching any task.
+    run.aborting = true;
     for (const assignment of run.assignments) {
       const task = this.taskRunner.get(assignment.taskId);
       if (task && ['running', 'queued', 'awaiting_approval'].includes(task.status)) this.taskRunner.abort(task.id);
@@ -274,6 +279,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     run.updatedAt = new Date().toISOString();
     const terminal = run.assignments.every((item) => ['completed', 'failed', 'blocked'].includes(item.status));
     if (!terminal) { this._emit(run, 'assignment'); return; }
+    if (run.aborting || ['FAILED', 'COMPLETED'].includes(run.status)) { this._emit(run, 'assignment'); return; }
     if (run.stage === 'deliberation') { this._concludeDeliberation(run); return; }
     const failed = run.assignments.filter((item) => item.status !== 'completed');
     if (failed.length && run.repairCycle < run.maxRepairCycles) {

@@ -41,11 +41,30 @@ assert.strictEqual(registry.choose('leader', ['claude-code', 'codex']), 'codex',
   'after repeated slow failures PiAgent must stop sending leader work to the same provider');
 
 // ---- and it decays, so one bad afternoon does not retire a provider ----------
+// Recovery takes a streak, not one good run. A provider that alternates fast and slow
+// would otherwise look healthy on every other sample and never lose its slot.
 const punished = registry.snapshot().capabilities.models['claude-code'].penalties.leader;
-for (let i = 0; i < 12; i += 1) registry.record({ provider: 'claude-code', role: 'leader', ok: true, durationMs: FAST });
-const recovered = registry.snapshot().capabilities.models['claude-code'].penalties.leader;
-assert(recovered < punished, 'recovery has to be possible');
-assert.strictEqual(recovered, 0, 'sustained fast success clears the penalty entirely');
+registry.record({ provider: 'claude-code', role: 'leader', ok: true, durationMs: FAST });
+assert.strictEqual(registry.snapshot().capabilities.models['claude-code'].penalties.leader, punished,
+  'one fast success is not recovery');
+registry.record({ provider: 'claude-code', role: 'leader', ok: true, durationMs: FAST });
+const afterStreak = registry.snapshot().capabilities.models['claude-code'].penalties.leader;
+assert(afterStreak < punished, 'two in a row is');
+registry.record({ provider: 'claude-code', role: 'leader', ok: true, durationMs: FAST });
+registry.record({ provider: 'claude-code', role: 'leader', ok: false, durationMs: SLOW });
+assert(registry.snapshot().capabilities.models['claude-code'].penalties.leader > afterStreak,
+  'a failure mid-streak restarts the count and costs more');
+for (let i = 0; i < 40; i += 1) registry.record({ provider: 'claude-code', role: 'leader', ok: true, durationMs: FAST });
+assert.strictEqual(registry.snapshot().capabilities.models['claude-code'].penalties.leader, 0,
+  'sustained fast success clears the penalty entirely');
+
+// ---- the model that ran is penalised, not just the provider -----------------
+registry.record({ provider: 'codex', model: 'codex-slow-tier', role: 'ui', ok: false, durationMs: SLOW });
+const codex = registry.snapshot().capabilities.models.codex.penalties;
+assert(codex['codex-slow-tier::ui'] > 0, 'the tier that ran carries its own penalty');
+assert(codex.ui > 0, 'and the provider key still moves, because choose() runs before the tier is picked');
+assert(registry.score('codex', 'ui', 'codex-slow-tier') <= registry.score('codex', 'ui'),
+  'scoring with the model must not be more generous than scoring without it');
 
 // ---- it survives a restart ---------------------------------------------------
 registry.record({ provider: 'glm', role: 'debug', ok: false, durationMs: SLOW });

@@ -8,7 +8,7 @@ const { expand } = require('dotenv-expand');
 const dotenv = require('dotenv');
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 expand(dotenv.config({ path: path.join(APP_ROOT, '.env') }));
-const { createPathConfig, isInside } = require('./path-config');
+const { createPathConfig } = require('./path-config');
 let savedPaths = {};
 try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}
 const PATHS = createPathConfig({ appRoot: APP_ROOT, userData: app.getPath('userData'), saved: savedPaths });
@@ -187,10 +187,22 @@ let vaultFiles = [];
 // With nothing registered this is exactly the previous single-root behaviour — same
 // paths, same clusters — so the map cannot change shape until the owner asks it to.
 function scanRoots() {
-  const registered = workspaces.list().filter((root) => root.status === 'ok');
-  if (!registered.length) return [{ path: VAULT, label: path.basename(VAULT), prefix: '' }];
-  return registered.map((root) => ({ path: root.path, label: root.label,
-    prefix: registered.length > 1 ? `${root.label}/` : '', exclude: root.exclude || [] }));
+  const all = workspaces.list();
+  const usable = all.filter((root) => root.status === 'ok');
+  // "Nothing registered" and "everything registered is unreachable" are different
+  // answers. Treating them the same silently re-pointed every read at the built-in
+  // vault the moment an external volume was unmounted — the exact behaviour the
+  // Settings copy promises does not happen.
+  if (!all.length) return [{ path: VAULT, label: path.basename(VAULT), prefix: '' }];
+  if (!usable.length) return [];
+  // Two roots can share a basename (~/A/app and ~/B/app). An ambiguous prefix makes
+  // the map resolve a click to whichever one happens to hold a file of that name.
+  const seen = new Map();
+  for (const root of usable) seen.set(root.label, (seen.get(root.label) || 0) + 1);
+  const labelOf = (root) => (seen.get(root.label) > 1
+    ? `${path.basename(path.dirname(root.path))}/${root.label}` : root.label);
+  return usable.map((root) => ({ path: root.path, label: labelOf(root),
+    prefix: usable.length > 1 ? `${labelOf(root)}/` : '', exclude: root.exclude || [] }));
 }
 
 async function scanVaultFiles() {
@@ -234,7 +246,7 @@ function sandboxTopology() {
 }
 
 // fs.watch（FSEvents・再帰）: 実際に触られたファイルをリアルタイムで可視化へ
-const touchQueue = new Set();
+const touchQueue = new Map();
 async function refreshVaultPaths(paths, root = scanRoots()[0]) {
   let changed = false;
   for (const raw of paths) {
@@ -275,22 +287,26 @@ function startVaultWatch() {
         if (!fname || VAULT_EXCLUDE.test(fname)) return;
         const base = path.basename(fname);
         if (base.startsWith('.') || base.endsWith('.tmp')) return;
-        touchQueue.add(`${key} ${fname}`);
+        // Keyed by a Map, not by packing the root into the string. The delimiter used
+        // to be a NUL — correct, since a POSIX path cannot contain one, but invisible:
+        // every tool that reads this file renders it as a space, so the encode/decode
+        // pair reads as an obvious bug that it is not. No delimiter, nothing to misread.
+        if (!touchQueue.has(key)) touchQueue.set(key, new Set());
+        touchQueue.get(key).add(String(fname));
       }));
     } catch (_) { /* an unreadable root is reported in Settings, not retried in a loop */ }
   }
   if (vaultWatchFlush) return;
   vaultWatchFlush = setInterval(() => {
     if (!touchQueue.size) return;
-    const queued = [...touchQueue].slice(0, 6);
-    touchQueue.clear();
     const byRoot = new Map();
-    for (const entry of queued) {
-      const cut = entry.indexOf(' ');
-      const key = entry.slice(0, cut); const relative = entry.slice(cut + 1);
-      if (!byRoot.has(key)) byRoot.set(key, []);
-      byRoot.get(key).push(relative);
+    let budget = 6;
+    for (const [key, names] of touchQueue) {
+      if (budget <= 0) break;
+      const taken = [...names].slice(0, budget);
+      if (taken.length) { byRoot.set(key, taken); budget -= taken.length; }
     }
+    touchQueue.clear();
     const roots = new Map(scanRoots().map((root) => [root.path, root]));
     const shown = [];
     for (const [key, paths] of byRoot) {
@@ -1250,12 +1266,12 @@ const { isSensitivePath } = require('../domain/pi-core/security/security-policy'
 function resolveWorkspaceFile(target) {
   const value = String(target || '').replace(/\\/g, '/').replace(/^\/+/, '');
   if (!value) return '';
-  const registered = workspaces.list().filter((root) => root.status === 'ok');
+  const registered = workspaces.list().length > 0;
   for (const root of scanRoots()) {
     const stripped = root.prefix && value.startsWith(root.prefix) ? value.slice(root.prefix.length) : value;
     const absolute = path.resolve(root.path, stripped);
     if (!absolute.startsWith(path.resolve(root.path) + path.sep)) continue;
-    if (registered.length && !workspaces.allows(absolute)) continue;
+    if (registered && !workspaces.allows(absolute)) continue;
     if (isSensitivePath(absolute)) continue;
     if (!fs.existsSync(absolute)) continue;
     return absolute;
@@ -1385,10 +1401,15 @@ ipcMain.on('pi:abort', () => { if (daemonClient?.connected) daemonClient.post('/
 // the registered workspaces, which is what makes the Settings copy — "adding a folder
 // is what grants access" — actually true.
 ipcMain.on('reveal', (_e, p) => {
-  const file = typeof p === 'string' && (path.isAbsolute(p) ? p : resolveWorkspaceFile(p));
-  if (file && (workspaces.list().some((root) => root.status === 'ok') ? workspaces.allows(file) : isInside(VAULT, file))) {
-    shell.showItemInFolder(file);
-  }
+  // One resolver, no absolute shortcut. The shortcut skipped resolveWorkspaceFile, which
+  // is the only place isSensitivePath() is applied — allows() checks containment and
+  // directory exclusions, so reveal('<registered root>/.env') was honoured.
+  const relative = typeof p === 'string' && path.isAbsolute(p)
+    ? (scanRoots().map((root) => (p.startsWith(path.resolve(root.path) + path.sep)
+      ? `${root.prefix || ''}${path.relative(root.path, p)}` : '')).find(Boolean) || '')
+    : String(p || '');
+  const file = relative && resolveWorkspaceFile(relative);
+  if (file) shell.showItemInFolder(file);
 });
 ipcMain.handle('file:detail', async (_e, relPath) => {
   const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');

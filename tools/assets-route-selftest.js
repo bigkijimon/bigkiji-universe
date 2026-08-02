@@ -81,8 +81,38 @@ fs.writeFileSync(path.join(dataRoot, 'secret.json'), '{"token":"must-not-escape"
   assert.strictEqual(head.status, 200);
   assert.strictEqual(head.headers.get('content-length'), String(clip.length));
 
+  // ---- a symlink is not a way out of the media root ---------------------------
+  // path.resolve is lexical and statSync follows links, so containment has to be
+  // re-checked against the real target or a link dropped here by a generation pipeline
+  // serves whatever it points at.
+  const outside = path.join(dataRoot, 'outside.png');
+  fs.writeFileSync(outside, Buffer.alloc(64, 3));
+  try { fs.symlinkSync(outside, path.join(media, 'escape.png')); } catch (_) {}
+  if (fs.existsSync(path.join(media, 'escape.png'))) {
+    assert.strictEqual((await fetch(`${base}/assets/escape.png`, { headers: auth })).status, 403,
+      'a symlink out of the media root must be refused');
+  }
+
+  // ---- a file that vanishes mid-request must not take the engine down ---------
+  // pipe() does not forward source errors and this process exits on an uncaught
+  // exception, so an ENOENT between statSync and open killed the whole daemon — and a
+  // generation pipeline replacing its own output while the phone fetches it is the
+  // normal case, not an edge case.
+  const doomed = path.join(media, 'doomed.png');
+  fs.writeFileSync(doomed, Buffer.alloc(2048, 9));
+  const originalCreate = fs.createReadStream;
+  fs.createReadStream = (file, options) => {
+    fs.createReadStream = originalCreate;
+    return originalCreate(path.join(media, 'this-file-does-not-exist.png'), options);
+  };
+  const vanished = await fetch(`${base}/assets/doomed.png`, { headers: auth }).catch(() => null);
+  fs.createReadStream = originalCreate;
+  assert.notStrictEqual(vanished, undefined);
+  assert.strictEqual((await fetch(`${base}/health`)).status, 200,
+    'the daemon has to still be alive after a read that failed');
+
   listener.server.close(); engine.shutdown();
   fs.rmSync(dataRoot, { recursive: true, force: true });
-  console.log('assets route selftest: PASS · authenticated · Range + 416 + HEAD · traversal refused (raw and encoded) · type from a fixed map');
+  console.log('assets route selftest: PASS · authenticated · Range + 416 + HEAD · traversal refused (raw, encoded and symlinked) · type from a fixed map · a failed read does not kill the daemon');
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });

@@ -42,7 +42,12 @@ class ModelCapabilityRegistry {
 
   score(provider, role, model = '') {
     const prior = Number(this.capabilities.models[provider]?.roles?.[role] || .35);
-    const penalty = Number(this.capabilities.models[provider]?.penalties?.[role] || 0);
+    // Penalties are keyed by (provider, model, role) and by (provider, role). choose()
+    // runs before the model tier is picked, so it can only consult the provider-level
+    // key — but the per-model key is what an assignment carrying a model is judged on,
+    // and the provider key carries the worst of its tiers so a bad tier is still felt.
+    const penalties = this.capabilities.models[provider]?.penalties || {};
+    const penalty = Number(penalties[model ? `${model}::${role}` : role] || penalties[role] || 0);
     const perf = this.performance.models[ModelCapabilityRegistry.key(provider, model)] || this.performance.models[provider];
     if (!perf?.samples) return Math.max(0, prior - penalty);
     return Math.max(0, prior * .55 + Number(perf.successRate || 0) * .3
@@ -68,18 +73,37 @@ class ModelCapabilityRegistry {
 
   // The owner's rule: when a delegated agent is slow, teach PiAgent then and there
   // rather than re-picking it next time. A penalty is written into the capability file
-  // — the same file the priors live in — so the next choose() routes around it. It
-  // decays on a fast success, so one bad afternoon does not retire a provider.
-  learn({ provider, role = 'general', model = '', durationMs = 0, ok = true, slowMs = Number(process.env.BIGKIJI_SLOW_TASK_MS || 180000) } = {}) {
+  // — the same file the priors live in — so the next choose() routes around it.
+  //
+  // Recovery needs a streak, not one good run. A single fast success undoing a penalty
+  // makes a provider that alternates fast and slow look healthy on every other sample.
+  learn({ provider, role = 'general', model = '', durationMs = 0, ok = true, slowMs = Number(process.env.BIGKIJI_SLOW_TASK_MS || 180000),
+    recoveryStreak = 2 } = {}) {
     const entry = this.capabilities.models[provider]; if (!entry) return null;
-    entry.penalties ||= {};
-    const before = Number(entry.penalties[role] || 0);
+    entry.penalties ||= {}; entry.streaks ||= {};
     const slow = durationMs > slowMs;
-    const after = slow || !ok ? Math.min(.45, before + (slow && !ok ? .12 : .06)) : Math.max(0, before - .04);
+    // Both keys move together: choose() can only see the provider-level one, but an
+    // assignment that carries a model is scored on the specific tier that ran.
+    const keys = model ? [role, `${model}::${role}`] : [role];
+    const before = Number(entry.penalties[role] || 0);
+    if (slow || !ok) {
+      entry.streaks[role] = 0;
+    } else {
+      entry.streaks[role] = Number(entry.streaks[role] || 0) + 1;
+      if (entry.streaks[role] < recoveryStreak) return null;
+      entry.streaks[role] = 0;
+    }
+    let after = before;
+    for (const key of keys) {
+      const current = Number(entry.penalties[key] || 0);
+      const next = slow || !ok ? Math.min(.45, current + (slow && !ok ? .12 : .06)) : Math.max(0, current - .04);
+      entry.penalties[key] = Number(next.toFixed(3));
+      if (key === role) after = entry.penalties[key];
+    }
     if (after === before) return null;
-    entry.penalties[role] = Number(after.toFixed(3)); entry.penaltyUpdatedAt = new Date().toISOString();
+    entry.penaltyUpdatedAt = new Date().toISOString();
     atomic(this.capabilityFile, this.capabilities);
-    return { provider, model, role, penalty: entry.penalties[role], previous: before, durationMs, slow, ok,
+    return { provider, model, role, penalty: after, previous: before, durationMs, slow, ok,
       reason: slow ? `exceeded ${slowMs}ms` : (ok ? 'recovered' : 'assignment failed') };
   }
   needsResearch(provider, maxAgeDays = 30) {

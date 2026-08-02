@@ -154,6 +154,34 @@ function fakeChild() {
   assert.strictEqual(direct.stage, 'execution');
   assert.strictEqual(direct.deliberation, undefined);
 
+  // ---- aborting during the discussion must not resurrect the run --------------
+  // TaskRunner.abort() emits 'task' synchronously, so _ingestTask runs inside abort()'s
+  // own loop. On the last assignment the run looked terminal, the deliberation stage
+  // concluded, and a fresh set of execution tasks was planned and broadcast as awaiting
+  // approval — for the run the owner had just killed.
+  const killable = new CoreExecutionCoordinator({
+    taskRunner: new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: () => {
+      const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null;
+      child.kill = () => { child.exitCode = 1; queueMicrotask(() => child.emit('close', 1, 'SIGTERM')); };
+      return child; // never finishes on its own
+    } }),
+    registry: new ModelCapabilityRegistry({ root: path.join(root, 'capability-abort') }),
+    memory: new deliberate.DeliberationMemory({ root: path.join(root, 'coordinator-abort') }),
+    skills: { scan() {}, brief() { return ''; } },
+    settingsProvider: () => ({ routing: { deliberationLenses: 2 }, quality: { gate: 'strict' } }),
+  });
+  const doomed = killable.submit({ prompt: goal, cwd: project });
+  assert.strictEqual(doomed.stage, 'deliberation');
+  killable.approve(doomed.id, { disclosureHash: doomed.disclosureHash, planHash: doomed.planHash, revision: doomed.revision });
+  const killed = killable.abort(doomed.id);
+  assert.strictEqual(killed.status, 'FAILED');
+  assert.strictEqual(killed.stage, 'deliberation', 'an aborted run must not advance to execution');
+  assert.strictEqual(killed.revision, doomed.revision, 'and must not re-plan');
+  assert.strictEqual(killable.taskRunner.snapshot().filter((task) => task.status === 'awaiting_approval').length, 0,
+    'no orphan tasks left waiting for an approval that can never come');
+  assert.strictEqual(new deliberate.DeliberationMemory({ root: path.join(root, 'coordinator-abort') }).lookup(goal), null,
+    'a plan harvested from an aborted run must not be recalled later');
+
   // ---- a provider that cannot start should not win the role ------------------
   // Scoring used to ignore availability entirely, so a provider with no credential
   // took the assignment and died at spawn — a full plan-approve-fail-repair cycle
@@ -176,5 +204,5 @@ function fakeChild() {
     'with nothing available, plan anyway and fail loudly — never silently produce no run');
 
   fs.rmSync(root, { recursive: true, force: true });
-  console.log('deliberation selftest: PASS · marker parsing survives cleanText · code-merged consensus · recall dedup · degrades when mute · off means off · unstartable providers deprioritised');
+  console.log('deliberation selftest: PASS · marker parsing survives cleanText · code-merged consensus · recall dedup · degrades when mute · abort stays aborted · off means off · unstartable providers deprioritised');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

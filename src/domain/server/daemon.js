@@ -49,6 +49,18 @@ const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out
 // file cannot be served as something it is not. An extension that is absent here is a
 // 415 rather than a download — the media root holds generated output, and anything in
 // it that is not an image, a video or a sound is not something the phone should fetch.
+// pipe() does not forward source errors, and this process exits on an uncaught
+// exception — so a file that vanishes between statSync and open (a generation pipeline
+// replacing its own output while the phone is fetching it) took the whole engine down.
+// An aborted range request, which is what a phone does on every seek, also has to close
+// the descriptor or they accumulate one per seek.
+function sendFile(res, file, options = {}) {
+  const stream = fs.createReadStream(file, options);
+  stream.on('error', () => { if (!res.headersSent) res.writeHead(500); res.end(); stream.destroy(); });
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
+}
+
 const ASSET_TYPES = Object.freeze({
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
   '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif',
@@ -124,10 +136,7 @@ class DaemonEngine extends EventEmitter {
       blocked: 0, manifests: 0, recent: [], policyHash: initialPolicy.security?.policyHash || '',
       credentials: Object.fromEntries(['claude', 'codex', 'gemini', 'glm'].map((provider) => [provider, this.secrets.has(provider)])) };
     this.inventory = { root: this.workspace, files: [], folders: [], scannedAt: 0, truncated: false };
-    this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => ({
-      routing: { executionMode: 'plan', maxAgents: 3, sessionLeader: 'auto', facilitationComplete: true },
-      quality: { gate: 'strict', maxRepairCycles: 2 },
-    }),
+    this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => this.ownerSettings(),
     // Local providers need no credential; a paid one without a key cannot start, and
     // finding that out at spawn costs a whole plan-approve-fail-repair cycle.
     available: (provider) => ['qwen', 'ollama'].includes(provider)
@@ -168,6 +177,27 @@ class DaemonEngine extends EventEmitter {
   }
 
   publish(event, data) { this.emit('event', { event, channel: EVENT_CHANNEL[event] || event, data, ts: Date.now() }); }
+
+  // The coordinator used to be handed a hardcoded literal, so every routing control in
+  // Settings — maxAgents, the session leader, and the deliberation switch added in
+  // V2.5 — moved a value that nothing downstream read. The daemon does not own settings
+  // and must not write them; it reads the same file the store writes atomically, cached
+  // on mtime so a per-run read costs one stat.
+  ownerSettings() {
+    const file = path.join(PATHS.userData, 'settings.json');
+    let mtime = 0; try { mtime = fs.statSync(file).mtimeMs; } catch (_) {}
+    if (!this._settings || this._settingsAt !== mtime) {
+      let saved = {}; try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
+      this._settingsAt = mtime;
+      this._settings = {
+        // executionMode stays pinned to 'plan' here: the daemon is the surface a phone
+        // talks to, and a mode that could skip approval must not be reachable from it.
+        routing: { ...(saved.routing || {}), executionMode: 'plan', facilitationComplete: true },
+        quality: { gate: 'strict', maxRepairCycles: 2, ...(saved.quality || {}) },
+      };
+    }
+    return this._settings;
+  }
 
   sessionSeed(sessionId) {
     const session = sessionId && this.sessions.read(sessionId); if (!session) return [];
@@ -465,8 +495,16 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/assets/')) {
         const relative = decodeURIComponent(url.pathname.slice('/assets/'.length));
         const root = path.resolve(PATHS.generatedMediaRoot);
-        const file = path.resolve(root, relative);
-        if (file !== root && !file.startsWith(root + path.sep)) return json(res, 403, { error: 'outside the media root' });
+        const lexical = path.resolve(root, relative);
+        if (lexical !== root && !lexical.startsWith(root + path.sep)) return json(res, 403, { error: 'outside the media root' });
+        // path.resolve is lexical; statSync follows links. Without realpath, a symlink
+        // dropped in the media root by one of the generation pipelines serves whatever it
+        // points at. Resolve the real target and re-check, so containment is a fact about
+        // the file rather than about the string.
+        let file; let realRoot;
+        try { file = fs.realpathSync.native(lexical); realRoot = fs.realpathSync.native(root); }
+        catch (_) { return json(res, 404, { error: 'not found' }); }
+        if (file !== realRoot && !file.startsWith(realRoot + path.sep)) return json(res, 403, { error: 'outside the media root' });
         let stat; try { stat = fs.statSync(file); } catch (_) { return json(res, 404, { error: 'not found' }); }
         if (!stat.isFile()) return json(res, 404, { error: 'not found' });
         const type = ASSET_TYPES[path.extname(file).toLowerCase()];
@@ -483,11 +521,11 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
           }
           res.writeHead(206, { ...base, 'content-range': `bytes ${start}-${end}/${stat.size}`, 'content-length': end - start + 1 });
           if (req.method === 'HEAD') { res.end(); return; }
-          fs.createReadStream(file, { start, end }).pipe(res); return;
+          sendFile(res, file, { start, end }); return;
         }
         res.writeHead(200, { ...base, 'content-length': stat.size });
         if (req.method === 'HEAD') { res.end(); return; }
-        fs.createReadStream(file).pipe(res); return;
+        sendFile(res, file); return;
       }
       if (req.method === 'GET' && url.pathname === '/api/assets') {
         const root = PATHS.generatedMediaRoot;
