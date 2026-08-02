@@ -72,6 +72,14 @@
         source.buffer = buffer;
         source.connect(this.sfxGains[bus] || this.analyser || this.ctx.destination);
         source.start();
+        // Announce which cue is playing. The background wave needs the cue id to pick
+        // its hue from the sfx manifest: at fftSize 512 the bins are ~86 Hz wide, which
+        // cannot resolve these pitches, so every cue would collapse onto the same few
+        // hues if the colour were derived from the spectrum. Emitting here means no
+        // consumer has to monkey-patch this method to find out.
+        window.dispatchEvent(new CustomEvent('bk-sfx-cue', {
+          detail: { id: key, category: bus, durationMs: Math.round(buffer.duration * 1000) },
+        }));
         return true;
       } catch (error) {
         // The asset pack ships later. Report each missing name once and stay silent after that.

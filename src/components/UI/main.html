@@ -92,8 +92,22 @@
 
   /* 左ペイン: リアルタイムシナプス映像 */
   .stage { flex: 1; min-width: 0; min-height: 0; display: flex; }
-  #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; background: var(--bg-0); }
+  #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; background: var(--bg-0);
+    isolation: isolate; }
   #canvasWrap canvas { display: block; }
+
+  /* AUDIO WAVE FIELD — faint cymatic disc whose wavelength follows the sound that is
+     actually playing (audio-wave-field.js). It must read as texture behind the data,
+     never as decoration: near-invisible when silent, capped low when loud.
+     isolation:isolate above makes #canvasWrap a stacking context, so this z-index:-1
+     layer paints ABOVE the pane's own background but BELOW the synapse canvas.
+     opacity only — no backdrop-filter anywhere (it breaks Electron vibrancy). */
+  #audioWaveField { position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    opacity: 0; transition: opacity 620ms var(--ease-out); }
+  /* Asymmetric: in fast enough that a 153ms one-shot cue is actually seen, out slowly so
+     the field relaxes back to invisible instead of blinking. */
+  #audioWaveField.on { opacity: .62; transition-duration: 140ms; }
+  @media (prefers-reduced-motion: reduce) { #audioWaveField { display: none; } }
 
   /* 右ペイン: ターミナル / カード。幅駆動（縦ではなく横に伸縮する）。
      220px の予約枠 = シナプス映像に必ず残す最小幅。
@@ -967,6 +981,13 @@
         if (overlay.classList.contains('on') && (event.key === 'Enter' || event.key === 'Escape')) dismiss();
       });
     })();
+  </script>
+  <script type="module">
+    // AUDIO WAVE FIELD: faint background wave behind the synapse canvas. Its ring spacing
+    // (= wavelength) and hue follow what window.BKAudio is actually playing; it stops its
+    // own rAF loop while the app is silent. Never throws — returns null when unavailable.
+    import { mountAudioWaveField } from '../../domain/3d-canvas/components/audio-wave-field.js';
+    window.bkAudioWave = mountAudioWaveField(document.getElementById('canvasWrap'));
   </script>
   <script type="module" src="../../domain/3d-canvas/components/synapse.js"></script>
 </body>
