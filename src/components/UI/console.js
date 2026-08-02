@@ -23,10 +23,13 @@
     segChat: $('segChat'), segTerm: $('segTerm'),
     viewChat: $('viewChatPane'), viewTerm: $('viewTermPane'),
     title: $('winTitle'), sub: $('winSub'), agentMark: $('agentMark'), emptyTitle: $('emptyTitle'),
-    quick: $('quickActions'), termHost: $('termHost'),
+    quick: $('quickActions'), termHost: $('termHost'), panes: $('panes'),
+    approval: $('approval'), approvalTitle: $('approvalTitle'), approvalDetail: $('approvalDetail'),
+    approvalGo: $('approvalGo'), approvalAbort: $('approvalAbort'),
   };
 
-  const state = { busy: false, startedAt: 0, ticker: null, agentName: 'PiAgent', view: 'chat', sessions: [], activeSession: null };
+  const state = { busy: false, startedAt: 0, ticker: null, agentName: 'PiAgent', view: 'chat',
+    sessions: [], activeSession: null, run: null };
 
   // ---------- helpers ---------------------------------------------------------
   const atBottom = () => els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 40;
@@ -250,10 +253,119 @@
       // so the current session is the head. Taking the tail selected the oldest one,
       // which then sat off the end of the strip with nothing appearing selected.
       state.sessions = Array.isArray(list) ? list : (list?.items || []);
+      // Follow the session the daemon says is current, so a turn started anywhere —
+      // this window, the tray, the phone — highlights the tab the owner is watching.
+      // Falling back to the head keeps it sane before the daemon answers.
+      if (!state.sessions.some((session) => session.id === state.activeSession)) state.activeSession = null;
       if (!state.activeSession && state.sessions.length) state.activeSession = state.sessions[0].id;
       renderTabs();
     } catch (_) { /* the daemon may not be up yet; the tab strip stays empty */ }
   }
+
+  // ---------- specialist panes ------------------------------------------------
+  // When the coordinator plans a run it assigns roles to separate provider processes —
+  // leader to Claude Code, ui to Codex, debug to GLM, and so on. Each of those is a real
+  // process with its own model and its own output, so each gets a pane. This is the one
+  // place in the app where "several models are working at once" stops being a claim in a
+  // status line and becomes something the owner can watch.
+  const LOG_LINES = 400;
+  const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+  function paneFor(taskId) { return document.querySelector(`[data-task="${CSS.escape(taskId)}"]`); }
+
+  function renderPanes(run) {
+    const assignments = Array.isArray(run?.assignments) ? run.assignments : [];
+    const wanted = new Set(assignments.map((item) => item.taskId));
+    for (const pane of els.panes.querySelectorAll('.pane-agent')) {
+      if (!wanted.has(pane.dataset.task)) pane.remove();
+    }
+    for (const item of assignments) {
+      let pane = paneFor(item.taskId);
+      if (!pane) {
+        pane = document.createElement('div');
+        pane.className = 'pane pane-agent';
+        pane.dataset.task = item.taskId;
+        pane.innerHTML = '<div class="pane-head"><span class="role"></span><span class="who"></span>'
+          + '<span class="grow"></span><span class="state"></span></div>'
+          + '<div class="pane-log"><span class="idle">Waiting for approval…</span></div>';
+        els.panes.appendChild(pane);
+      }
+      pane.querySelector('.role').textContent = item.role || 'agent';
+      // Provider and model together: "which brain" is part of what was approved, and a
+      // fallback can move the work to a different provider mid-run.
+      pane.querySelector('.who').textContent = [item.provider, item.model].filter(Boolean).join(' · ');
+      const state = pane.querySelector('.state');
+      state.textContent = String(item.status || '').replace(/_/g, ' ') || '—';
+      state.dataset.state = item.status || '';
+      pane.title = item.title || '';
+    }
+  }
+
+  function appendLog(taskId, text, isError) {
+    const pane = paneFor(taskId);
+    if (!pane) return;
+    const log = pane.querySelector('.pane-log');
+    const idle = log.querySelector('.idle');
+    if (idle) idle.remove();
+    const line = document.createElement('span');
+    if (isError) line.className = 'err';
+    line.textContent = `${String(text).replace(ANSI, '')}\n`;
+    const stuck = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+    log.appendChild(line);
+    while (log.childNodes.length > LOG_LINES) log.removeChild(log.firstChild);
+    if (stuck) log.scrollTop = log.scrollHeight;
+  }
+
+  // The approval gate. Nothing that can mutate anything starts without passing through
+  // here, and the hashes have to be echoed back exactly — the coordinator rejects a
+  // stale revision, plan or disclosure rather than running something the owner did not
+  // see (core-execution-coordinator.js approve()).
+  function showApproval(run) {
+    const waiting = run && (run.status === 'AWAITING_APPROVAL' || run.status === 'SECURITY_BLOCKED');
+    els.approval.hidden = !waiting;
+    if (!waiting) return;
+    const blocked = run.status === 'SECURITY_BLOCKED';
+    els.approvalTitle.textContent = blocked
+      ? 'The sandbox refused part of this run'
+      : `${run.assignments?.length || 0} specialist${run.assignments?.length === 1 ? '' : 's'} ready · your approval starts them`;
+    els.approvalDetail.textContent = `plan ${String(run.planHash || '').slice(0, 12)} · disclosure ${String(run.disclosureHash || '').slice(0, 12)} · rev ${run.revision}`;
+    els.approvalGo.disabled = blocked;
+    els.approvalGo.textContent = blocked ? 'Blocked' : 'Approve';
+  }
+
+  function ingestRun(run) {
+    if (!run || !run.id) return;
+    state.run = run;
+    renderPanes(run);
+    showApproval(run);
+  }
+
+  els.approvalGo.addEventListener('click', async () => {
+    const run = state.run;
+    if (!run || els.approvalGo.disabled) return;
+    els.approvalGo.disabled = true;
+    try {
+      await bk.approveRun({ id: run.id, revision: run.revision, planHash: run.planHash,
+        disclosureHash: run.disclosureHash, idempotencyKey: `console-${run.id}-${run.revision}` });
+    } catch (error) {
+      els.approvalDetail.textContent = String(error?.message || error);
+      els.approvalGo.disabled = false;
+    }
+  });
+  els.approvalAbort.addEventListener('click', () => {
+    if (state.run) bk.abortRun(state.run.id).catch(() => {});
+  });
+
+  bk.onRunEvent?.((event) => ingestRun(event));
+  bk.onTaskLog?.((log) => appendLog(log?.taskId, log?.text || '', log?.stream === 'stderr'));
+  bk.onTaskEvent?.((task) => {
+    const pane = paneFor(task?.id);
+    if (!pane) return;
+    const state_ = pane.querySelector('.state');
+    state_.textContent = String(task.status || '').replace(/_/g, ' ');
+    state_.dataset.state = task.status || '';
+    if (task.error) appendLog(task.id, task.error, true);
+  });
 
   // ---------- settings + status ----------------------------------------------
   function applySettings(settings) {
@@ -279,7 +391,8 @@
 
   // ---------- live events -----------------------------------------------------
   bk.onSettingsChanged?.(applySettings);
-  bk.onSessionUpdate?.(() => loadSessions());
+  // A new turn opens a new session; follow it rather than leaving the old tab selected.
+  bk.onSessionUpdate?.((session) => { if (session?.id) state.activeSession = session.id; loadSessions(); });
   bk.onConversation?.(() => loadSessions());
   bk.onComposerFocus?.(() => { setView('chat'); els.input.focus(); });
 
@@ -309,6 +422,14 @@
     } catch (_) { els.workspace.textContent = '—'; }
     els.sub.textContent = info?.buildId ? String(info.buildId) : '';
     await loadSessions();
+    // A run may already be in flight, or already waiting for an approval the owner never
+    // saw because this window was not open yet.
+    try {
+      const runs = await bk.listRuns();
+      const live = (Array.isArray(runs) ? runs : [])
+        .filter((run) => !['COMPLETED', 'FAILED'].includes(run.status)).pop();
+      if (live) ingestRun(live);
+    } catch (_) {}
     els.input.focus();
   })();
 })();

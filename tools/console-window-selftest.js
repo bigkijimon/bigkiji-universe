@@ -74,4 +74,25 @@ assert.ok(/event\.key === '1'/.test(js) && /event\.key === '2'/.test(js), 'and r
 assert.ok(/bk\.ptyInput/.test(js) && /bk\.onPtyData/.test(js), 'the terminal is wired to the real pty');
 assert.ok(/openMain\(\)/.test(js), 'the 3D scene is one button away rather than underneath');
 
-console.log('console window selftest: PASS · markup and behaviour agree on every id · assets exist · opaque with no backdrop-filter · CSP present · broadcasts reach it · chat and terminal both reachable');
+// ---- specialist panes and the approval gate ---------------------------------
+// A pane per assignment is only worth having if it shows the real process. These pin
+// that it is fed by the live run/task channels rather than a mock, and that the
+// approval echoes the exact hashes the coordinator demands — approve() throws
+// STALE_RUN_REVISION / STALE_PLAN_HASH / STALE_DISCLOSURE_HASH otherwise, and an
+// approval button that always fails is worse than none.
+assert.ok(/onRunEvent/.test(js) && /onTaskLog/.test(js) && /onTaskEvent/.test(js),
+  'panes are driven by the live run and task channels');
+assert.ok(/revision: run\.revision/.test(js) && /planHash: run\.planHash/.test(js) && /disclosureHash: run\.disclosureHash/.test(js),
+  'approval echoes revision, plan hash and disclosure hash');
+assert.ok(/idempotencyKey/.test(js), 'and carries an idempotency key so a double click is not a double start');
+assert.ok(/AWAITING_APPROVAL/.test(js) && /SECURITY_BLOCKED/.test(js),
+  'both waiting states are surfaced — a blocked run must not look approvable');
+assert.ok(/els\.approvalGo\.disabled = blocked/.test(js), 'a sandbox refusal disables the button rather than failing on click');
+assert.ok(/\.replace\(ANSI, ''\)/.test(js), 'provider output is stripped of escape sequences before it reaches the DOM');
+assert.ok(/line\.textContent =/.test(js), 'and set as text, never parsed — this is raw CLI output');
+assert.ok(/LOG_LINES/.test(js) && /removeChild\(log\.firstChild\)/.test(js),
+  'the log is bounded; a long run must not grow the DOM without limit');
+assert.ok(/CSS\.escape/.test(js), 'task ids reach a selector, so they are escaped');
+assert.ok(/listRuns/.test(js), 'a run already waiting when the window opens is picked up');
+
+console.log('console window selftest: PASS · markup and behaviour agree on every id · assets exist · opaque with no backdrop-filter · CSP present · broadcasts reach it · chat and terminal both reachable · one pane per real assignment · approval echoes the exact hashes');

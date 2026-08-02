@@ -120,6 +120,57 @@
   .view { position: absolute; inset: 0; display: none; }
   .view.on { display: flex; flex-direction: column; }
 
+  /* ---------- approval gate ----------
+     Every mutation-capable run stops here. It is the loudest thing in the window on
+     purpose: this is the moment the owner is deciding to spend money and let something
+     write to disk, and the plan hash is what they are agreeing to. */
+  .approval {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 9px 14px;
+    background: var(--accent-wash); border-bottom: 1px solid var(--accent);
+  }
+  .approval-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .approval-text b { font-size: 12.5px; }
+  .approval-text span { font-size: 11px; color: var(--ink-soft); font-family: "SF Mono", Menlo, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .approval .primary { background: var(--accent); color: #fff; padding: 6px 15px; border-radius: 8px; font-size: 12.5px; font-weight: 550; }
+  .approval .ghost { padding: 6px 12px; border-radius: 8px; font-size: 12.5px; color: var(--ink-soft); }
+  .approval .ghost:hover { background: #0000000d; color: var(--ink); }
+
+  /* ---------- panes ----------
+     One conversation, plus one pane per specialist the coordinator actually assigned.
+     The panes are not decoration: each is a separate provider process with its own
+     model and its own live output. */
+  /* The conversation keeps its width. Three specialists at a fixed width used to add up
+     to more than the window and squeezed the chat pane — and its composer — down to
+     nothing, so the owner could watch the work but no longer talk to it. Specialists
+     scroll sideways instead. */
+  .panes { flex: 1; min-height: 0; display: flex; align-items: stretch; overflow-x: auto; }
+  .pane { display: flex; flex-direction: column; position: relative; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+  .pane-chat { flex: 1 0 400px; min-width: 400px; position: sticky; left: 0; z-index: 1; background: var(--bg); container-type: inline-size; }
+  /* With specialists running the conversation gets narrow. Drop the least important
+     control first rather than letting the composer crush the send button. */
+  @container (max-width: 520px) { .metarow .sel.optional { display: none; } }
+  .pane-agent { flex: 0 0 320px; min-width: 320px; background: var(--surface); }
+  .pane-head {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+    border-bottom: 1px solid var(--line-soft); font-size: 11.5px;
+  }
+  .pane-head .role { font-weight: 600; color: var(--ink); }
+  .pane-head .who { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-head .grow { flex: 1; }
+  .pane-head .state { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--card); color: var(--ink-soft); }
+  .pane-head .state[data-state="running"] { background: var(--accent-wash); color: var(--accent); }
+  .pane-head .state[data-state="completed"] { color: var(--ok); }
+  .pane-head .state[data-state="failed"], .pane-head .state[data-state="blocked"] { color: var(--danger); }
+  .pane-log {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 12px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; color: var(--ink-soft);
+  }
+  .pane-log .err { color: var(--danger); }
+  .pane-log .idle { color: var(--ink-faint); font-family: inherit; }
+
   /* ---------- transcript ---------- */
   #scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .thread { max-width: 780px; margin: 0 auto; padding: 26px 26px 10px; }
@@ -265,47 +316,60 @@
   <nav class="tabstrip" id="tabs" role="tablist" aria-label="Sessions"></nav>
 
   <div class="body">
-    <!-- conversation -->
+    <!-- conversation, plus one pane per specialist the coordinator woke up -->
     <section class="view on" id="viewChatPane" role="tabpanel" aria-label="Conversation">
-      <div id="scroll">
-        <div class="thread" id="thread">
-          <div class="empty" id="empty">
-            <div>
-              <div class="mark" id="agentMark">π</div>
-              <h1 id="emptyTitle">Chat with PiAgent</h1>
-              <p>Pick an action or start typing</p>
-              <hr>
-              <div class="actions-grid" id="quickActions"></div>
+      <div class="approval" id="approval" hidden>
+        <div class="approval-text">
+          <b id="approvalTitle">A run is waiting for approval</b>
+          <span id="approvalDetail"></span>
+        </div>
+        <button class="ghost" id="approvalAbort">Abort</button>
+        <button class="primary" id="approvalGo">Approve</button>
+      </div>
+      <div class="panes" id="panes">
+        <div class="pane pane-chat" id="paneChat">
+          <div id="scroll">
+            <div class="thread" id="thread">
+              <div class="empty" id="empty">
+                <div>
+                  <div class="mark" id="agentMark">π</div>
+                  <h1 id="emptyTitle">Chat with PiAgent</h1>
+                  <p>Pick an action or start typing</p>
+                  <hr>
+                  <div class="actions-grid" id="quickActions"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button id="toBottom" title="Jump to latest">↓</button>
+          <div class="composer-wrap">
+            <div class="composer">
+              <textarea id="input" rows="1" placeholder="Type a message…  (⌘L to focus)" aria-label="Message"></textarea>
+              <div class="metarow">
+                <span class="sel" title="Local conversation model"><b id="modelName">—</b></span>
+                <span class="sel" title="Execution mode — what happens when work is planned">
+                  <select id="execMode" aria-label="Execution mode">
+                    <option value="plan">Plan</option>
+                    <option value="auto">Auto-plan</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </span>
+                <span class="sel optional" title="Independent proposals taken before work starts">
+                  <select id="lenses" aria-label="Deliberation">
+                    <option value="0">No deliberation</option>
+                    <option value="2">2 lenses</option>
+                    <option value="3">3 lenses</option>
+                  </select>
+                </span>
+                <span class="grow"></span>
+                <span class="elapsed" id="elapsed"></span>
+                <span class="ring" id="ctxRing" title="Context used in the last turn"><i id="ctxPct">—</i></span>
+                <button class="send" id="send" disabled aria-label="Send">↑</button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <button id="toBottom" title="Jump to latest">↓</button>
-      <div class="composer-wrap">
-        <div class="composer">
-          <textarea id="input" rows="1" placeholder="Type a message…  (⌘L to focus)" aria-label="Message"></textarea>
-          <div class="metarow">
-            <span class="sel" title="Local conversation model"><b id="modelName">—</b></span>
-            <span class="sel" title="Execution mode — what happens when work is planned">
-              <select id="execMode" aria-label="Execution mode">
-                <option value="plan">Plan</option>
-                <option value="auto">Auto-plan</option>
-                <option value="manual">Manual</option>
-              </select>
-            </span>
-            <span class="sel" title="Independent proposals taken before work starts">
-              <select id="lenses" aria-label="Deliberation">
-                <option value="0">No deliberation</option>
-                <option value="2">2 lenses</option>
-                <option value="3">3 lenses</option>
-              </select>
-            </span>
-            <span class="grow"></span>
-            <span class="elapsed" id="elapsed"></span>
-            <span class="ring" id="ctxRing" title="Context used in the last turn"><i id="ctxPct">—</i></span>
-            <button class="send" id="send" disabled aria-label="Send">↑</button>
-          </div>
-        </div>
+        <!-- specialist panes are inserted here by console.js, one per assignment -->
       </div>
     </section>
 
