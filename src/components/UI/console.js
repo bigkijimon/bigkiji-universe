@@ -395,6 +395,8 @@
   bk.onSessionUpdate?.((session) => { if (session?.id) state.activeSession = session.id; loadSessions(); });
   bk.onConversation?.(() => loadSessions());
   bk.onComposerFocus?.(() => { setView('chat'); els.input.focus(); });
+  // The application menu's Settings… item lands here; the modal lives in the renderer.
+  bk.onOpenSettings?.(() => window.BKSettings?.open?.());
 
   // ---------- boot ------------------------------------------------------------
   (async () => {

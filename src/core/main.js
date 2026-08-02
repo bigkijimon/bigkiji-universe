@@ -21,6 +21,7 @@ if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PA
 const dataRootModule = require('./data-root');
 const { WorkspaceRegistry, candidates: candidateWorkspaces, DEFAULT_EXCLUDE: WORKSPACE_DEFAULT_EXCLUDE } = require('./workspace-registry');
 const { drainTouchQueue } = require('./watch-queue');
+const { applyApplicationMenu } = require('./app-menu');
 const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
 // Do not materialise the default data root while the first-run wizard may still send
 // the owner somewhere else — an abandoned empty ~/BigKijiUniverse would be confusing.
@@ -1010,6 +1011,9 @@ async function fastDispatch(text) {
 }
 taskCache.init({
   kbPath: path.join(PATHS.knowledgeRoot, 'task_knowledge_base.json'),
+  // Enables the semantic second chance on a cache miss. Without an embedding model on
+  // the machine the store reports itself unavailable and routing is unchanged.
+  knowledgeRoot: PATHS.knowledgeRoot,
   model: 'qwen3.5:35b-a3b',
   knowledge,
   C,
@@ -1571,6 +1575,19 @@ app.whenReady().then(async () => {
   comfy = new ComfyUIMediaBridge({ root: PATHS.comfyRoot || undefined, outputDir: PATHS.generatedMediaRoot });
   comfy.on('event', (event) => broadcast('comfy:event', event));
   if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN && !SHOW_CONSOLE) app.dock.hide(); // 通常時のみメニューバー常駐
+  // Without an application menu, Electron registers none of the native edit roles — so
+  // Cmd-C and Cmd-V did not work in any window, and Settings was reachable only from a
+  // keydown handler inside a focused renderer. Menu.setApplicationMenu was grep 0 until
+  // now; this is the Apple HIG entry point the app was missing rather than a decoration.
+  applyApplicationMenu({
+    Menu,
+    app,
+    handlers: {
+      openConsole: () => createConsoleWindow(),
+      openMain: () => createMainWindow(),
+      openSettings: () => { createConsoleWindow(); broadcast('ui:open-settings'); },
+    },
+  });
   createTray();
   createTrayWindow();
   if (SMOKE || SNAP || SHOW_MAIN) createMainWindow(); // --show-main は再起動後のCanvas確認・直接起動用
