@@ -6,6 +6,7 @@ const { ModelCapabilityRegistry } = require('./model-capability-registry');
 const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
 const { SkillRegistry } = require('./skill-registry');
 const { resolveModel } = require('./model-router');
+const { CircuitBreaker } = require('./circuit-breaker');
 const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
@@ -50,7 +51,7 @@ function publicRun(run) {
 class CoreExecutionCoordinator extends EventEmitter {
   constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry(),
     skills = new SkillRegistry(), memory = new deliberate.DeliberationMemory({ root: knowledge.ROOT }),
-    available = null } = {}) {
+    available = null, breaker = new CircuitBreaker() } = {}) {
     super();
     if (!taskRunner) throw new Error('CoreExecutionCoordinator requires TaskRunner');
     this.taskRunner = taskRunner;
@@ -69,6 +70,12 @@ class CoreExecutionCoordinator extends EventEmitter {
     // credential still won its role and then died at spawn, which costs a full
     // plan-approve-fail-repair cycle to discover something knowable up front.
     this.isAvailable = typeof available === 'function' ? available : () => true;
+    // A provider that has just said "not now" is skipped for the length of its
+    // cooldown instead of being re-offered by every assignment in the run. It
+    // changes who gets proposed and nothing else: the approval gate below is
+    // untouched, and a run whose provider was swapped still stops and waits for
+    // the owner exactly as it did before.
+    this.breaker = breaker;
     this.runs = new Map();
     this.taskToRun = new Map();
     taskRunner.on('task', (task) => this._ingestTask(task));
@@ -273,14 +280,24 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (['completed', 'failed'].includes(task.status) && !assignment.learned) {
       assignment.learned = true;
       const durationMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0;
+      const reason = task.status === 'completed' ? '' : String(task.failureReason || '');
+      const tripped = this.breaker.record(task.provider, { reason, retryAfterMs: task.retryAfterMs || 0 });
+      if (tripped?.opened) {
+        assignment.throttled = reason;
+        knowledge.recordEvent(run.id, { type: 'provider-cooldown', status: run.status, provider: task.provider,
+          evidence: `${reason} — skipping ${task.provider} for ${Math.round(tripped.cooldownMs / 1000)}s` });
+        this.emit('cooldown', { runId: run.id, ...tripped });
+      }
       const lesson = this.registry.record({ provider: task.provider, model: task.model, role: assignment.role,
-        ok: task.status === 'completed', durationMs, tokens: task.tokens });
+        ok: task.status === 'completed', durationMs, tokens: task.tokens, reason });
       // Surface what PiAgent learned. A routing change the owner cannot see is
       // indistinguishable from the router being erratic.
       if (lesson) {
         run.lessons = [...(run.lessons || []), lesson].slice(-12);
-        knowledge.recordEvent(run.id, { type: 'routing-lesson', status: run.status, provider: task.provider,
-          evidence: `${lesson.role}: ${lesson.reason} → penalty ${lesson.previous} → ${lesson.penalty}` });
+        knowledge.recordEvent(run.id, { type: lesson.throttled ? 'routing-throttled' : 'routing-lesson', status: run.status, provider: task.provider,
+          evidence: lesson.throttled
+            ? `${lesson.role}: ${lesson.note}`
+            : `${lesson.role}: ${lesson.reason} → penalty ${lesson.previous} → ${lesson.penalty}` });
         this.emit('lesson', { runId: run.id, ...lesson });
       }
     }
@@ -340,7 +357,20 @@ class CoreExecutionCoordinator extends EventEmitter {
 
   _fallback(run, assignment) {
     const candidates = FALLBACKS[assignment.provider] || [];
-    const next = candidates[assignment.fallbackIndex++] || null;
+    // Walk past anyone in cooldown. Without this, three assignments failing on
+    // the same exhausted quota each propose the same next provider, the owner
+    // approves three repairs, and all three hit the same wall — which is what
+    // today's Gemini outage looked like from the inside.
+    let next = null; const skipped = [];
+    while (assignment.fallbackIndex < candidates.length) {
+      const candidate = candidates[assignment.fallbackIndex++];
+      if (!this.breaker.isOpen(candidate)) { next = candidate; break; }
+      skipped.push(`${candidate} (${Math.round(this.breaker.retryInMs(candidate) / 1000)}s)`);
+    }
+    if (skipped.length) {
+      knowledge.recordEvent(run.id, { type: 'fallback-skipped', status: run.status, provider: assignment.provider,
+        evidence: `in cooldown: ${skipped.join(', ')}` });
+    }
     if (!next) return false;
     const oldTask = this.taskRunner.get(assignment.taskId);
     const model = resolveModel(next, `${run.prompt} ${assignment.title}`, assignment.role);

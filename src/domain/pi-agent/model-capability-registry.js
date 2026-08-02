@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
+const { THROTTLED } = require('./circuit-breaker');
 
 const SOURCES = Object.freeze({
   'claude-code': 'https://docs.anthropic.com/en/docs/claude-code/cli-usage',
@@ -92,8 +93,17 @@ class ModelCapabilityRegistry {
   }
   choose(role, candidates) { return [...candidates].sort((a, b) => this.score(b, role) - this.score(a, role))[0] || null; }
 
-  record({ provider, role, ok, durationMs = 0, tokens = {}, model = '' } = {}) {
+  // `reason` is how the failure is classified — see model-router.classifyFailure.
+  // 'rate-limit' and 'quota' are recorded but not scored: being throttled is a
+  // fact about the calendar, not about the provider, and the two must not be
+  // conflated. The penalty this registry writes survives the outage, so a
+  // provider that was merely busy for an afternoon would carry the mark for
+  // every routing decision afterwards — the same shape of bug as the 207
+  // samples with zero successes that the migration above cleans up, arriving by
+  // a different road.
+  record({ provider, role, ok, durationMs = 0, tokens = {}, model = '', reason = '' } = {}) {
     if (!provider) return;
+    if (!ok && THROTTLED.has(reason)) return this._throttled({ provider, role, model, reason });
     for (const id of [...new Set([provider, ModelCapabilityRegistry.key(provider, model)])]) {
       const row = this.performance.models[id] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
       row.provider = provider; if (model) row.model = model;
@@ -112,6 +122,23 @@ class ModelCapabilityRegistry {
     }
     atomic(this.performanceFile, this.performance);
     return this.learn({ provider, role, model, durationMs, ok });
+  }
+
+  // A throttled attempt is counted, so the owner can see how often it happens,
+  // but it touches neither `samples` nor `successRate` nor any penalty. It is
+  // not evidence either way about whether this provider does the job well.
+  _throttled({ provider, role = 'general', model = '', reason = '' }) {
+    for (const id of [...new Set([provider, ModelCapabilityRegistry.key(provider, model)])]) {
+      const row = this.performance.models[id] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
+      row.provider = provider; if (model) row.model = model;
+      row.throttled = Number(row.throttled || 0) + 1;
+      row.throttledAt = new Date().toISOString();
+      row.throttledReason = reason;
+      this.performance.models[id] = row;
+    }
+    atomic(this.performanceFile, this.performance);
+    return { provider, model, role, throttled: true, reason,
+      note: reason === 'quota' ? 'quota exhausted — not scored' : 'rate limited — not scored' };
   }
 
   // The owner's rule: when a delegated agent is slow, teach PiAgent then and there

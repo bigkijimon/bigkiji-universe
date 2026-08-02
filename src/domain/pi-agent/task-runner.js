@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
-const { GLM_MODELS, resolveModel } = require('./model-router');
+const { GLM_MODELS, resolveModel, classifyFailure, retryAfterMs } = require('./model-router');
 const { ContextPruner } = require('./context-pruner');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
@@ -187,6 +187,13 @@ class TaskRunner extends EventEmitter {
     if (extra || error) task.error = `${task.error}\n${extra || error}`.trim();
     clearTimeout(task.timeoutTimer); delete task.timeoutTimer;
     task.status = code === 0 ? 'completed' : 'failed'; task.exitCode = code;
+    // Why it failed, if the reason is one the provider is not to blame for. The
+    // exit code alone cannot tell a rate limit from a bad patch — every CLI here
+    // exits non-zero for both — so the classification reads what the provider
+    // actually said on stderr. '' means an ordinary failure, which the router
+    // should and does learn from.
+    task.failureReason = code === 0 ? '' : classifyFailure(task.error);
+    if (task.failureReason) task.retryAfterMs = retryAfterMs(task.error);
     task.finishedAt = new Date().toISOString(); task.updatedAt = task.finishedAt; delete task.child;
     if (['qwen', 'ollama'].includes(task.provider)) this.qwenGuardrails.leave({
       durationMs: Math.max(0, new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()), timedOut: !!task.timedOut });

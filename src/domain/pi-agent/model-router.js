@@ -86,7 +86,52 @@ function pickStart(chain, text) {
 }
 
 // レートリミット/課金系エラーの検知パターン（pi stderr・RPC errorイベント用）
-const ERROR_PATTERN = /(\b429\b|rate.?limit|quota|RESOURCE_EXHAUSTED|insufficient_quota|exceeded|overloaded|billing)/i;
+//
+// One regular expression used to cover both, and for choosing a fallback that is
+// fine — either way this provider cannot serve the next request. But the router
+// also *remembers* failures, and there the two are different facts:
+//
+//   rate limit — "not now". The provider works; there were too many requests in
+//                too short a window. It will work again in seconds or minutes.
+//   quota      — "not today". The plan's allowance is spent, or the model is not
+//                on this tier at all. A different provider is needed, but this
+//                one is not broken either.
+//
+// Neither is a statement about how well the provider does its job, so neither
+// may reach the penalty table — see model-capability-registry.record().
+//
+// A single response can match both: Gemini answers an exhausted free-tier
+// allowance with HTTP 429 *and* "Quota exceeded". Quota is checked first,
+// because the recovery time is the thing that differs and the longer one wins.
+const RATE_LIMIT_PATTERN = /(\b429\b|rate.?limit|RESOURCE_EXHAUSTED|too many requests|overloaded)/i;
+const QUOTA_PATTERN = /(quota|insufficient_quota|exceeded|billing)/i;
+const ERROR_PATTERN = new RegExp(`${RATE_LIMIT_PATTERN.source}|${QUOTA_PATTERN.source}`, 'i');
+
+/**
+ * Why a provider failed, when the reason is one the provider is not to blame for.
+ * Returns '' for an ordinary failure — a crash, a bad patch, a timeout — which is
+ * exactly the kind of failure the router *should* learn from.
+ * @returns {'quota'|'rate-limit'|'model-unavailable'|''}
+ */
+function classifyFailure(text) {
+  const value = String(text || '');
+  if (!value) return '';
+  if (QUOTA_PATTERN.test(value)) return 'quota';
+  if (RATE_LIMIT_PATTERN.test(value)) return 'rate-limit';
+  if (MODEL_UNAVAILABLE_PATTERN.test(value)) return 'model-unavailable';
+  return '';
+}
+
+// Providers say how long to wait in several shapes: Gemini nests
+// `"retryDelay": "12s"` in its error body, HTTP uses `Retry-After` in seconds.
+// Returns 0 when nothing was stated — the caller then falls back to its own
+// backoff rather than inventing a number.
+function retryAfterMs(text) {
+  const value = String(text || '');
+  const seconds = value.match(/"?retry-?(?:after|delay)"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s?"?/i);
+  if (seconds) return Math.round(Number(seconds[1]) * 1000);
+  return 0;
+}
 // プロバイダのモデルカタログ変更・廃止も「そのティアだけが死んだ」状態。
 // 404一般を含めるとツール/Webの404まで誤って降格するので、モデル名を伴う応答だけに絞る。
 const MODEL_UNAVAILABLE_PATTERN = /(?:models?\/[^\s"']+.*(?:not found|unsupported)|(?:model|models?)\b.*\b(?:not found|unsupported).*(?:generatecontent|api|version)?|\b404\b.*(?:models?\/|model\b))/i;
@@ -176,6 +221,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 
 module.exports = {
   GLM_MODELS, CLAUDE_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
-  ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN,
+  ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN, RATE_LIMIT_PATTERN, QUOTA_PATTERN,
+  classifyFailure, retryAfterMs,
   handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, warmModel, ollamaKickstart,
 };
