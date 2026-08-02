@@ -1,13 +1,12 @@
 'use strict';
 
-const { themeFor, stripAnsi } = require('../../domain/terminal/cli-theme');
+const { themeFor } = require('../../domain/terminal/cli-theme');
 const {
   count, glyphs, metric, padToWidth, renderNote, renderToolCall, stringWidth, truncateToWidth,
 } = require('./transcript');
 const APP_VERSION = require('../../../package.json').version;
 
 const ESC = '\x1b';
-const plain = (value) => stripAnsi(value);
 // Width-aware: measuring with String#length silently overflowed every line
 // carrying Japanese by up to 2x. ASCII behaviour is unchanged.
 const clip = (value, width) => truncateToWidth(value, width);
@@ -32,9 +31,19 @@ function progressOf(state = {}, phase = state?.phase) {
   if (typeof real === 'number') return Math.max(0, Math.min(100, Math.round(real)));
   return keywordProgress(phase);
 }
+// Which published status lights which step. A substring test looked right and was
+// wrong: the daemon publishes EXECUTING, and 'EXECUTING'.includes('EXECUTE') is false
+// because the eighth character differs — so the EXECUTE step never lit during a run.
+// The stems below are the shared prefixes, which survive both the -ING and the bare form.
+const PHASE_STEMS = Object.freeze({
+  PREFLIGHT: ['PREFLIGHT', 'PLANNING', 'AWAITING', 'CONVERSATION', 'PRUNING', 'DRAFTED', 'ENHANCED'],
+  EXECUTE: ['EXECUT', 'REPAIR', 'RUNNING'],
+  VERIFY: ['VERIF', 'COMPLETED', 'ENFORCED'],
+});
+
 function phaseChip(name, current, index, C = themeFor('plan')) {
   const normalized = phaseName(current).toUpperCase();
-  const active = normalized.includes(name) || (name === 'PREFLIGHT' && normalized.includes('AWAITING'));
+  const active = (PHASE_STEMS[name] || [name]).some((stem) => normalized.includes(stem));
   return active ? `${C.strong}●${index} ${name}${C.reset}` : `${C.muted}○${index} ${name}${C.reset}`;
 }
 

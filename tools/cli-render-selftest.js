@@ -172,6 +172,17 @@ ok('formatDiff tones added, removed and context differently', () => {
   assert.ok(coloured[2].includes(theme.accent), 'added line should carry the accent');
   assert.ok(coloured[0].includes(theme.dim), 'context should be dim');
 });
+ok('a patch is detected in provider output and rendered as a diff, not a wall of text', () => {
+  assert.equal(T.looksLikeDiff(PATCH), true);
+  assert.equal(T.looksLikeDiff('just some log output\nwith @@ in it'), false);
+  const lines = plainLines(T.renderEvent('tasklog', { provider: 'codex', text: PATCH }, { width: 70 }));
+  assert.deepStrictEqual(lines, [
+    '       10   ctx line',
+    '       11 - gone',
+    '       11 + added',
+    '       12   ctx2',
+  ]);
+});
 ok('formatDiff clips long lines and folds with a real count', () => {
   const long = `@@ -1,1 +1,6 @@\n${['+' + 'z'.repeat(200), '+b', '+c', '+d', '+e'].join('\n')}`;
   const lines = plainLines(T.formatDiff(long, { width: 30, maxLines: 2 }));
@@ -431,5 +442,24 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   assert.equal(single.frames.length, panel.frames.length);
   assert.ok(single.frames[0].includes('▀'), 'the 1-row variant should still be half-block pixel art');
 });
+
+
+// ---- phase steps light for the statuses the daemon actually publishes -------
+// Regression guard: the old test was a substring match, and the daemon publishes
+// EXECUTING while the step is labelled EXECUTE. 'EXECUTING'.includes('EXECUTE') is
+// false, so the EXECUTE step stayed dark for the whole of every run.
+{
+  const { phaseChip } = require('../src/cli/tui/renderer');
+  const bare = (text) => String(text).replace(/\x1b\[[0-9;]*m/g, '');
+  const litSteps = (status) => ['PREFLIGHT', 'EXECUTE', 'VERIFY']
+    .filter((name, index) => bare(phaseChip(name, status, index + 1)).startsWith('\u25cf'));
+  assert.deepStrictEqual(litSteps('EXECUTING'), ['EXECUTE'], 'EXECUTING must light EXECUTE');
+  assert.deepStrictEqual(litSteps('REPAIRING'), ['EXECUTE']);
+  assert.deepStrictEqual(litSteps('VERIFYING'), ['VERIFY']);
+  assert.deepStrictEqual(litSteps('COMPLETED'), ['VERIFY']);
+  assert.deepStrictEqual(litSteps('AWAITING_APPROVAL'), ['PREFLIGHT']);
+  assert.deepStrictEqual(litSteps('PLANNING'), ['PREFLIGHT']);
+  assert.deepStrictEqual(litSteps('IDLE'), [], 'idle lights nothing rather than guessing');
+}
 
 console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout · hanging indents · honest folds · diffs · task lists · width-aware at 60/80/100/140 · NO_COLOR + TERM=dumb · sticky footer contract intact`);

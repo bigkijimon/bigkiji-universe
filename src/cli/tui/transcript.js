@@ -350,6 +350,11 @@ function parseUnifiedDiff(patch) {
   return out;
 }
 
+const DIFF_HEAD = /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/m;
+
+/** True when a tool result is really a patch, so it can be shown as one. */
+function looksLikeDiff(text) { return DIFF_HEAD.test(String(text ?? '')); }
+
 const DIFF_SIGN = Object.freeze({ add: '+', del: '-', ctx: ' ' });
 
 /**
@@ -444,6 +449,9 @@ function renderEvent(event, data = {}, options = {}) {
     }
     case 'tasklog': {
       if (!text) return [];
+      // A provider that printed a patch gets a patch: line numbers and +/-
+      // prefixes, not an anonymous wall of text under an elbow.
+      if (looksLikeDiff(text)) return formatDiff(text, { ...base, indent: 5, maxLines: Math.max(resultLines, 8) });
       return renderToolResult(text, { ...base, maxLines: resultLines, isError: data.stream === 'stderr' });
     }
     case 'task': {
@@ -523,6 +531,6 @@ module.exports = {
   foldLines, foldMarker, gutterLines, metric, count,
   shortenPath, summarizeToolInput, renderToolCall, renderToolResult,
   renderUserTurn, renderAssistantText, renderNote,
-  parseUnifiedDiff, formatDiff, formatTaskList,
+  parseUnifiedDiff, formatDiff, formatTaskList, looksLikeDiff,
   renderEvent, renderStatus, runAssignments,
 };
