@@ -1,4 +1,18 @@
-#!/bin/zsh
-# bigkiji — BigKiji Universe リモートCLIラッパ（symlink経由でも自位置を解決）
-SELF=${0:A}
-exec node "${SELF:h}/bigkiji-cli.js" "$@"
+#!/bin/sh
+# bigkiji — BigKiji Universe CLI wrapper.
+#
+# POSIX sh, not zsh. This is the command other tools run: cmux, tmux, a shell
+# && chain and a CI image all have /bin/sh, and zsh's ${0:A} was convenient at
+# the cost of every environment that does not ship zsh.
+#
+# The loop below is what ${0:A} was doing — follow symlinks to the real file so
+# that `npm link` and a hand-made symlink on PATH both resolve to this checkout.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *)  self=$(dirname "$self")/$link ;;
+  esac
+done
+exec node "$(cd "$(dirname "$self")" && pwd)/bigkiji-cli.js" "$@"

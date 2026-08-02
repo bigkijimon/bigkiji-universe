@@ -2,8 +2,9 @@
 
 const { themeFor } = require('../../domain/terminal/cli-theme');
 const {
-  count, glyphs, metric, padToWidth, renderNote, renderToolCall, stringWidth, truncateToWidth,
+  DASH, count, glyphs, lower, metric, padToWidth, phrase, renderNote, renderToolCall, stringWidth, truncateToWidth,
 } = require('./transcript');
+const { catMark } = require('./loading-frames');
 const APP_VERSION = require('../../../package.json').version;
 
 const ESC = '\x1b';
@@ -41,10 +42,55 @@ const PHASE_STEMS = Object.freeze({
   VERIFY: ['VERIF', 'COMPLETED', 'ENFORCED'],
 });
 
-function phaseChip(name, current, index, C = themeFor('plan')) {
+function phaseChip(name, current, index, C = themeFor('plan'), { compact = false } = {}) {
   const normalized = phaseName(current).toUpperCase();
   const active = (PHASE_STEMS[name] || [name]).some((stem) => normalized.includes(stem));
-  return active ? `${C.strong}●${index} ${name}${C.reset}` : `${C.muted}○${index} ${name}${C.reset}`;
+  // `name` stays the uppercase table key. PHASE_STEMS is keyed on it, so folding
+  // the argument instead of the label would make every lookup miss and leave all
+  // three chips dark for the whole of every run — the exact bug the comment above
+  // records being fixed once already.
+  const text = compact ? String(index) : `${index} ${phrase(name)}`;
+  return active ? `${C.strong}●${text}${C.reset}` : `${C.muted}○${text}${C.reset}`;
+}
+
+// The one box in the whole CLI.
+//
+// Everything else here is deliberately de-boxed — hierarchy comes from a left
+// gutter, so the full terminal width belongs to the content, and the self test
+// asserts that no framing glyph reaches the transcript. The owner asked on
+// 2026-08-03 for the model information at the top to be enclosed, and enclosing
+// one fixed-size fact panel is a different thing from framing flowing content:
+// it never reflows, never wraps, and never competes with a line of prose for
+// width. The self test keeps forbidding boxes everywhere else.
+//
+// Nothing in here is invented. The model and the context window come from the
+// daemon's `conversation` snapshot, the counts from its fleet; a field the
+// daemon did not send renders as '—' rather than a plausible default.
+function modelPanel(state = {}, options = {}) {
+  const { width = 80, theme = themeFor('plan'), label = ' model ' } = options;
+  const conversation = state.conversation || {};
+  const fleet = state?.models?.models || state?.models || [];
+  const bits = [lower(conversation.model) || DASH];
+  const ctx = Number(conversation.maxContextTokens);
+  if (Number.isFinite(ctx) && ctx > 0) bits.push(`${ctx >= 1000 ? `${Math.round(ctx / 1000)}k` : ctx} ctx`);
+  if (fleet.length) bits.push(`${fleet.filter((model) => model.connected).length}/${fleet.length} online`);
+
+  // The cat is pixels, and pixels are colour. `truncateToWidth` returns plain
+  // text — it strips ANSI even when it has nothing to trim — so the mark is
+  // measured and concatenated, never passed through it. Only the facts, which
+  // are plain, get ellipsised.
+  const mark = catMark();
+  const markWidth = mark ? stringWidth(mark) + 2 : 0;
+  const room = Math.max(stringWidth(label) + 2, width - 2);
+  const facts = truncateToWidth(bits.join(' · '), Math.max(1, room - 2 - markWidth));
+  const bodyWidth = markWidth + stringWidth(facts);
+  const body = mark ? `${mark}  ${theme.ink}${facts}${theme.reset}` : `${theme.ink}${facts}${theme.reset}`;
+  const inner = Math.max(stringWidth(label) + 1, bodyWidth + 2);
+
+  const top = `${theme.border}╭─${theme.reset}${theme.muted}${label}${theme.reset}${theme.border}${'─'.repeat(inner - stringWidth(label) - 1)}╮${theme.reset}`;
+  const middle = `${theme.border}│${theme.reset} ${body}${' '.repeat(inner - bodyWidth - 2)} ${theme.border}│${theme.reset}`;
+  const bottom = `${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`;
+  return [top, middle, bottom];
 }
 
 /** Join a left and a right segment inside `width` columns, measuring display width. */
@@ -56,14 +102,14 @@ function spread(left, right, width) {
 
 // Full screen monitor (`bigkiji monitor`).
 //
-//   Sticky Top    = kijitora mascot + phase vector + fleet (fixed header)
+//   Sticky Top    = title + model panel + phase vector + fleet (fixed header)
 //   Middle        = live agent relay (DECSTBM scroll region)
 //   Sticky Bottom = key hints (always last row)
 //
 // No dependencies, no curses — DECSTBM (\x1b[top;bottom r) and absolute cursor
-// addressing only. There is no box drawing anywhere: hierarchy comes from the
-// left gutter and indentation, which gives every column back to the content and
-// lets the layout survive a 60 column terminal.
+// addressing only. Hierarchy comes from the left gutter and indentation, which
+// gives every column back to the content and lets the layout survive a 60
+// column terminal. The single exception is `modelPanel` — see the note there.
 class TUIRenderer {
   constructor({ output = process.stdout } = {}) { this.output = output; }
 
@@ -85,38 +131,47 @@ class TUIRenderer {
     const pct = this.progress(phase, state);
     const narrow = width < 76;
 
-    // Title — mascot and version on the left, daemon facts dim on the right.
-    const title = `${C.bold}${C.ink}(=^･ω･^=)  BigKiji Universe v${APP_VERSION}${C.reset}`;
-    const facts = `${C.dim}Core 8777 ${mark.note} PID ${state.pid || '—'}${C.reset}`;
+    // Title — name and version on the left, daemon facts dim on the right. The
+    // kaomoji that used to sit here is gone; the cat now lives in the model
+    // panel below as pixels, which say the same thing in a third of the width.
+    const title = `${C.bold}${C.ink}bigkiji universe v${APP_VERSION}${C.reset}`;
+    const facts = `${C.dim}core 8777 ${mark.note} pid ${state.pid || DASH}${C.reset}`;
     const header = [
-      narrow ? truncateToWidth(`(=^･ω･^=) BigKiji v${APP_VERSION}`, width) : spread(title, facts, width),
-      `${C.muted}${truncateToWidth(`Pi-Orchestrator ${mark.note} ${String(mode).toUpperCase()} ${mark.note} models wake only when assigned`, width)}${C.reset}`,
+      narrow ? truncateToWidth(`bigkiji v${APP_VERSION}`, width) : spread(title, facts, width),
+      `${C.muted}${truncateToWidth(`pi-orchestrator ${mark.note} ${lower(mode)} ${mark.note} models wake only when assigned`, width)}${C.reset}`,
+      ...modelPanel(state, { width, theme: C }),
       '',
     ];
 
     // Phase — one headline line, the vector and the meter folded underneath it.
-    header.push(...renderToolCall('Phase', `${phaseName(phase)} ${mark.note} ${pct}%`, { width, theme: C, mark }));
-    const chips = `${this.phase('PREFLIGHT', phase, 1, C)}  ${this.phase('EXECUTE', phase, 2, C)}  ${this.phase('VERIFY', phase, 3, C)}`;
+    header.push(...renderToolCall('phase', `${phrase(phaseName(phase))} ${mark.note} ${pct}%`, { width, theme: C, mark }));
+    // The chip row is the one line here that was a fixed 40 columns whatever the
+    // terminal was, so it ran off the right edge below 45 columns — measured, and
+    // true before this file was last touched. Under pressure the names go and the
+    // numbered dots stay, because which step is lit is the part worth keeping.
+    const chipRow = (compact) => `${this.phase('PREFLIGHT', phase, 1, C, { compact })}  ${this.phase('EXECUTE', phase, 2, C, { compact })}  ${this.phase('VERIFY', phase, 3, C, { compact })}`;
+    const chips = stringWidth(chipRow(false)) + 5 <= width ? chipRow(false) : chipRow(true);
     const meterWidth = Math.max(8, Math.min(24, width - 46));
     header.push(`     ${chips}${narrow ? '' : `   ${C.accent}${bar(pct, meterWidth)}${C.reset} ${C.strong}${String(pct).padStart(3)}%${C.reset}`}`);
     header.push('');
 
     // Fleet — the accent is reserved for models that are actually connected.
-    header.push(...renderToolCall('Models', `${count(connected)} connected of ${count(fleet)}`, { width, theme: C, mark }));
+    header.push(...renderToolCall('models', `${count(connected)} connected of ${count(fleet)}`, { width, theme: C, mark }));
     const modelCapacity = Math.max(0, Math.min(6, rows - header.length - 8));
     const nameWidth = Math.max(10, Math.min(20, width - 44));
     for (const model of fleet.slice(0, modelCapacity)) {
       const status = String(model.status || 'IDLE').toUpperCase();
+      const label = phrase(status);
       const tone = status === 'ERROR' ? C.error : model.connected ? C.accent : C.muted;
       const m = model.metrics || {};
       // Unmeasured metrics are '—'. A model that never ran did not use 0 tokens;
       // we simply do not know, and printing 0 would be a fabricated number.
-      const detail = narrow ? status
-        : `${pad(status, 9)} ${C.dim}${pad(`${metric(m.tokensUsed)} tok`, 11)}${pad(`${metric(m.tokensSaved)} saved`, 13)}${pad(metric(m.latencyMs, 'ms'), 8)}${C.reset}`;
-      header.push(`  ${tone}${mark.turn}${C.reset} ${C.ink}${pad(model.displayName || model.id, nameWidth)}${C.reset} ${tone}${detail}${C.reset}`);
+      const detail = narrow ? label
+        : `${pad(label, 9)} ${C.dim}${pad(`${metric(m.tokensUsed)} tok`, 11)}${pad(`${metric(m.tokensSaved)} saved`, 13)}${pad(metric(m.latencyMs, 'ms'), 8)}${C.reset}`;
+      header.push(`  ${tone}${mark.turn}${C.reset} ${C.ink}${pad(lower(model.displayName || model.id), nameWidth)}${C.reset} ${tone}${detail}${C.reset}`);
     }
     header.push('');
-    header.push(...renderToolCall('Relay', `${count(relay)} ${relay.length === 1 ? 'event' : 'events'}`, { width, theme: C, mark }));
+    header.push(...renderToolCall('relay', `${count(relay)} ${relay.length === 1 ? 'event' : 'events'}`, { width, theme: C, mark }));
 
     const footer = ['', `${C.muted}${truncateToWidth(
       `q quit ${mark.note} r reload ${mark.note} a accept ${mark.note} x reject ${mark.note} ↑↓ session ${mark.note} Shift+Tab mode ${mark.note} h HUD`,
@@ -129,18 +184,18 @@ class TUIRenderer {
     const sourceWidth = narrow ? 0 : 14;
     const middle = logs.map((entry) => {
       const time = pad(entry.time || '--:--:--', 8);
-      const source = sourceWidth ? `${C.accent}${pad(entry.source || entry.event || 'SYSTEM', sourceWidth)}${C.reset} ` : '';
+      const source = sourceWidth ? `${C.accent}${pad(phrase(entry.source || entry.event || 'system'), sourceWidth)}${C.reset} ` : '';
       const room = Math.max(6, width - 5 - 8 - 1 - (sourceWidth ? sourceWidth + 1 : 0));
       return `  ${C.brown}${mark.result}${C.reset}  ${C.dim}${time}${C.reset} ${source}${C.ink}${clip(entry.text || entry.status || '', room)}${C.reset}`;
     });
-    if (!middle.length) middle.push(...renderNote('No transmissions — standing by', { width, theme: C, mark }));
+    if (!middle.length) middle.push(...renderNote('no transmissions — standing by', { width, theme: C, mark }));
     while (middle.length < middleRows) middle.push('');
     return { header, middle: middle.slice(0, middleRows), footer, rows, width };
   }
 
   frame(state = {}, relay = []) { const { header, middle, footer } = this.sections(state, relay); return [...header, ...middle, ...footer].join('\n'); }
 
-  phase(name, current, index, C = themeFor('plan')) { return phaseChip(name, current, index, C); }
+  phase(name, current, index, C = themeFor('plan'), options = {}) { return phaseChip(name, current, index, C, options); }
   progress(phase, state = {}) { return progressOf(state, phase); }
 
   draw(state, relay) {
@@ -241,4 +296,4 @@ class StickyScreen {
   }
 }
 
-module.exports = { TUIRenderer, StickyScreen, clip, pad, bar, phaseName, phaseChip, progressOf, keywordProgress, APP_VERSION };
+module.exports = { TUIRenderer, StickyScreen, clip, pad, bar, phaseName, phaseChip, progressOf, keywordProgress, modelPanel, APP_VERSION };

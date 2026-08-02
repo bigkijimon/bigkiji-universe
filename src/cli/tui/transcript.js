@@ -29,6 +29,20 @@ const { NO_COLOR, themeFor, stripAnsi } = require('../../domain/terminal/cli-the
 const SGR_STRIKE = NO_COLOR ? '' : '\x1b[9m';
 const DASH = '—';
 
+// The owner asked (2026-08-03) for every character BigKiji paints to be
+// lowercase. Two helpers, because the two cases differ:
+//
+//   lower()  — for values that are still identifiers after folding: paths,
+//              model ids. Underscores survive, because `my_file.js` is a name.
+//   phrase() — for status words BigKiji only ever displays. AWAITING_APPROVAL
+//              is a protocol value; on screen it should read as a phrase, so
+//              underscores become spaces.
+//
+// Neither is applied to transcript content — the owner's own words, diffs and
+// file contents keep their case, because folding those would change meaning.
+const lower = (value) => String(value ?? '').toLowerCase();
+const phrase = (value) => String(value ?? '').replace(/_+/g, ' ').toLowerCase();
+
 // ---------------------------------------------------------------------------
 // Display width
 // ---------------------------------------------------------------------------
@@ -443,8 +457,8 @@ function renderEvent(event, data = {}, options = {}) {
   switch (event) {
     case 'commentary': {
       if (!text) return [];
-      const source = String(data.source || 'BigKiji');
-      const lines = renderToolCall(source, truncateToWidth(String(data.status || 'note').toLowerCase(), 18), base);
+      const source = lower(data.source || 'bigkiji');
+      const lines = renderToolCall(source, truncateToWidth(phrase(data.status || 'note'), 18), base);
       return [...lines, ...renderToolResult(text, { ...base, maxLines: resultLines })];
     }
     case 'tasklog': {
@@ -456,20 +470,20 @@ function renderEvent(event, data = {}, options = {}) {
     }
     case 'task': {
       const title = data?.metadata?.title || data?.metadata?.role || data.id || 'task';
-      const head = renderToolCall(String(data.provider || 'agent'), String(title), base);
+      const head = renderToolCall(lower(data.provider || 'agent'), String(title), base);
       const status = String(data.status || '').toUpperCase();
       if (!status) return head;
-      return [...head, ...renderNote(status, base)];
+      return [...head, ...renderNote(phrase(status), base)];
     }
     case 'run': {
-      const head = renderToolCall('Run', `${data.id || DASH} · ${data.status || DASH}`, base);
+      const head = renderToolCall('run', `${lower(data.id) || DASH} · ${phrase(data.status) || DASH}`, base);
       const list = formatTaskList(runAssignments(data), { ...base, indent: 2, maxLines: 8 });
       return [...head, ...list];
     }
     case 'idea': {
       const title = data?.draft?.title || data.ideaId || data.id || '';
       if (!data.action) return [];
-      return renderToolCall('Idea', `${data.action}${title ? ` · ${title}` : ''}`, base);
+      return renderToolCall('idea', `${lower(data.action)}${title ? ` · ${title}` : ''}`, base);
     }
     case 'conversation':
       // turn_start repeats the prompt the owner just typed; turn_complete is
@@ -503,22 +517,25 @@ function renderStatus(state = {}, options = {}) {
   const out = [];
 
   const counts = [
-    `phase ${String(state.phase || 'IDLE')}`,
+    `phase ${phrase(state.phase || 'IDLE')}`,
     `sessions ${count(state.sessions)}`,
     `runs ${count(state.runs)}`,
     `files ${count(state.inventory?.files)}${state.inventory?.truncated ? '+' : ''}`,
   ].join(`  ${mark.note}  `);
-  out.push(...renderToolCall('Status', counts, { width, theme, mark }));
+  out.push(...renderToolCall('status', counts, { width, theme, mark }));
 
   const nameWidth = Math.max(10, Math.min(20, width - 44));
   for (const model of fleet) {
+    // The comparison stays uppercase — that is the value the daemon publishes.
+    // Only `label` reaches the screen.
     const status = String(model.status || 'IDLE').toUpperCase();
+    const label = phrase(status);
     const tone = status === 'ERROR' ? theme.error : model.connected ? theme.accent : theme.muted;
     const metrics = model.metrics || {};
-    const name = padToWidth(model.displayName || model.id || '?', nameWidth);
+    const name = padToWidth(lower(model.displayName || model.id || '?'), nameWidth);
     const detail = width < 76
-      ? `${status}`
-      : `${padToWidth(status, 9)} ${theme.dim}${padToWidth(`${metric(metrics.tokensUsed)} tok`, 11)}${padToWidth(`${metric(metrics.latencyMs, 'ms')}`, 8)}${theme.reset}`;
+      ? `${label}`
+      : `${padToWidth(label, 9)} ${theme.dim}${padToWidth(`${metric(metrics.tokensUsed)} tok`, 11)}${padToWidth(`${metric(metrics.latencyMs, 'ms')}`, 8)}${theme.reset}`;
     out.push(`  ${tone}${mark.turn}${theme.reset} ${theme.ink}${name}${theme.reset} ${tone}${detail}${theme.reset}`);
   }
   out.push(...renderNote(`${count(connected)} connected of ${count(fleet)}`, { width, theme, mark }));
@@ -526,7 +543,7 @@ function renderStatus(state = {}, options = {}) {
 }
 
 module.exports = {
-  DASH, UNICODE_GLYPHS, ASCII_GLYPHS, glyphs,
+  DASH, UNICODE_GLYPHS, ASCII_GLYPHS, glyphs, lower, phrase,
   charWidth, stringWidth, sliceToWidth, truncateToWidth, padToWidth, wrapToWidth,
   foldLines, foldMarker, gutterLines, metric, count,
   shortenPath, summarizeToolInput, renderToolCall, renderToolResult,

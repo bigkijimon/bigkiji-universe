@@ -2,18 +2,25 @@
 
 // Self test for the pure CLI rendering functions.
 //
-// Everything asserted here is a property the owner asked for by name: no box
-// drawing, hanging indents at the content column, honest truncation counts,
-// diffs that look like diffs, task lists that show progress at a glance, and
-// output that never exceeds the terminal width — including at 60 columns and
-// with Japanese, where a character costs two cells.
+// Everything asserted here is a property the owner asked for by name: hanging
+// indents at the content column, honest truncation counts, diffs that look like
+// diffs, task lists that show progress at a glance, and output that never
+// exceeds the terminal width — including at 60 columns and with Japanese, where
+// a character costs two cells.
+//
+// Two of those instructions were revised on 2026-08-03 and both revisions are
+// asserted below rather than assumed:
+//   - "no box drawing" now means no box around *flowing* content. One panel of
+//     fixed facts at the top of the header is enclosed, by request.
+//   - every character BigKiji paints is lowercase, and the kaomoji is retired
+//     in every environment including NO_COLOR and TERM=dumb.
 //
 // Run: node tools/cli-render-selftest.js
 
 const assert = require('assert');
 const { stripAnsi } = require('../src/domain/terminal/cli-theme');
 const T = require('../src/cli/tui/transcript');
-const { TUIRenderer } = require('../src/cli/tui/renderer');
+const { TUIRenderer, modelPanel } = require('../src/cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../src/cli/tui/footer');
 const { loadingFrames, frameRows, FRAME_SETS } = require('../src/cli/tui/loading-frames');
 
@@ -222,7 +229,8 @@ ok('a run event turns its assignments into a task list', () => {
       { title: 'Execute', provider: 'codex', status: 'running' },
       { title: 'Verify', provider: 'gemini', status: 'queued' }],
   }, { width: 70 }));
-  assert.ok(lines[0].startsWith('● Run(run-7'));
+  assert.ok(lines[0].startsWith('● run(run-7'), `chrome is lowercase: ${lines[0]}`);
+  assert.ok(lines[0].includes('awaiting approval'), `a status reads as a phrase, not a token: ${lines[0]}`);
   assert.ok(lines[1].includes('☑'), 'a completed assignment should be ticked');
   assert.ok(lines[2].includes('▸'), 'a running assignment should be the active marker');
   assert.ok(lines[3].includes('☐'), 'a queued assignment should be pending');
@@ -250,7 +258,7 @@ ok('/status shows — for a model that never ran, and never a fabricated 0', () 
     phase: 'IDLE', sessions: [], runs: [],
     models: { models: [{ id: 'claude', displayName: 'Claude Code', status: 'OFFLINE', connected: false, metrics: {} }] },
   }, { width: 100 }));
-  const model = lines.find((line) => line.includes('Claude Code'));
+  const model = lines.find((line) => line.includes('claude code'));
   assert.ok(model.includes('—'), 'an unmeasured model must show an em dash');
   assert.ok(!/\b0 tok\b/.test(model), `fabricated zero in "${model}"`);
   assert.ok(lines[0].includes('sessions 0'), 'an empty list really is zero');
@@ -260,25 +268,82 @@ ok('/status shows — for a model that never ran, and never a fabricated 0', () 
 // ---------------------------------------------------------------------------
 // 8. The de-boxed regions really carry no box drawing
 // ---------------------------------------------------------------------------
-ok('the monitor header/relay/footer contain no box-drawing corners', () => {
-  const state = {
-    pid: 4242, phase: 'EXECUTE',
-    models: { models: [
-      { id: 'claude', displayName: 'Claude Code', status: 'OFFLINE', connected: false, metrics: {} },
-      { id: 'pi', displayName: 'PiAgent Engine', status: 'EXECUTING', connected: true, metrics: { tokensUsed: 1240, tokensSaved: 300, latencyMs: 88 } },
-    ] },
-    runs: [], sessions: [], inventory: { files: [1, 2, 3] },
-  };
-  const relay = [{ time: '12:04:31', source: 'PiAgent Engine', text: 'Inspecting sandbox memory and selecting only the required models.' }];
+const MONITOR_STATE = {
+  pid: 4242, phase: 'EXECUTE',
+  conversation: { model: 'qwen2.5:0.5b', maxContextTokens: 4096 },
+  models: { models: [
+    { id: 'claude', displayName: 'Claude Code', status: 'OFFLINE', connected: false, metrics: {} },
+    { id: 'pi', displayName: 'PiAgent Engine', status: 'EXECUTING', connected: true, metrics: { tokensUsed: 1240, tokensSaved: 300, latencyMs: 88 } },
+  ] },
+  runs: [], sessions: [], inventory: { files: [1, 2, 3] },
+};
+const MONITOR_RELAY = [{ time: '12:04:31', source: 'PiAgent Engine', text: 'Inspecting sandbox memory and selecting only the required models.' }];
+
+// The owner asked on 2026-08-03 for the model information at the top to be
+// enclosed in a box, having asked for no boxes at all when this file was
+// written. Both instructions still hold, at different scopes: the model panel is
+// three fixed rows of facts, and everything that carries flowing content — the
+// relay, the footer, the whole transcript — is still forbidden a frame. So the
+// assertion is no longer "no box anywhere" but "exactly one box, and it is that
+// panel".
+ok('the monitor relay and footer still contain no box drawing at all', () => {
   for (const [cols, rows] of [[100, 30], [60, 24], [200, 50]]) {
     const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });
-    const { header, middle, footer } = renderer.sections(state, relay);
-    const output = plainLines([...header, ...middle, ...footer]).join('\n');
-    assert.doesNotMatch(output, CORNERS, `box corners survived at ${cols}x${rows}`);
-    assert.doesNotMatch(output, BOX, `box drawing survived at ${cols}x${rows}`);
+    const { header, middle, footer } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
+    const flowing = plainLines([...middle, ...footer]).join('\n');
+    assert.doesNotMatch(flowing, CORNERS, `box corners survived in flowing content at ${cols}x${rows}`);
+    assert.doesNotMatch(flowing, BOX, `box drawing survived in flowing content at ${cols}x${rows}`);
     assert.ok(widest([...header, ...middle, ...footer]) <= cols,
       `monitor overflowed ${cols} columns at ${cols}x${rows} (widest ${widest([...header, ...middle, ...footer])})`);
   }
+});
+ok('the header carries exactly one box, and it is the model panel', () => {
+  for (const [cols, rows] of [[100, 30], [60, 24], [200, 50]]) {
+    const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });
+    const { header } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
+    const boxed = plainLines(header).filter((line) => BOX.test(line));
+    assert.equal(boxed.length, 3, `a box is three rows and there is one of them at ${cols}x${rows}: ${boxed.length}`);
+    assert.ok(boxed[0].startsWith('╭─') && boxed[0].endsWith('╮'), `top: ${boxed[0]}`);
+    assert.ok(boxed[1].startsWith('│') && boxed[1].endsWith('│'), `middle: ${boxed[1]}`);
+    assert.ok(boxed[2].startsWith('╰') && boxed[2].endsWith('╯'), `bottom: ${boxed[2]}`);
+    const widths = boxed.map(T.stringWidth);
+    assert.ok(widths.every((value) => value === widths[0]), `the three rows must align: ${widths.join(',')}`);
+    assert.ok(widths[0] <= cols, `the panel must fit ${cols}: ${widths[0]}`);
+    assert.ok(boxed[1].includes('qwen2.5:0.5b'), `the panel states the real model: ${boxed[1]}`);
+    assert.ok(boxed[1].includes('4k ctx'), `and the real context window: ${boxed[1]}`);
+    assert.ok(boxed[1].includes('1/2 online'), `and counts what is actually connected: ${boxed[1]}`);
+  }
+});
+ok('nothing overflows between 24 and 200 columns, including the phase chips', () => {
+  // The chip row used to be a fixed 40 columns whatever the terminal was, so it
+  // ran off the edge on anything under 45 — the monitor clamps to a floor of 24,
+  // so that width is supported and was broken. Widths below 45 now drop the step
+  // names and keep the numbered dots.
+  for (const cols of [24, 30, 40, 45, 50, 60, 80, 100, 140, 200]) {
+    const renderer = new TUIRenderer({ output: { columns: cols, rows: 24, write() {} } });
+    const { header, middle, footer } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
+    const all = [...header, ...middle, ...footer];
+    assert.ok(widest(all) <= cols, `monitor overflowed ${cols} columns (widest ${widest(all)})`);
+  }
+  const narrow = new TUIRenderer({ output: { columns: 24, rows: 24, write() {} } });
+  const chips = plainLines(narrow.sections(MONITOR_STATE, MONITOR_RELAY).header).find((line) => /○\d/.test(line));
+  assert.ok(chips && !/preflight/.test(chips), `at 24 columns the names go: ${chips}`);
+  assert.ok(/[●○]1/.test(chips) && /[●○]2/.test(chips) && /[●○]3/.test(chips), `but all three steps stay: ${chips}`);
+});
+ok('the model panel invents nothing when the daemon said nothing', () => {
+  const boxed = plainLines(modelPanel({}, { width: 80 }));
+  assert.equal(boxed.length, 3);
+  assert.ok(boxed[1].includes('—'), `an unknown model is an em dash, not a default: ${boxed[1]}`);
+  assert.ok(!/ctx/.test(boxed[1]), `no context window was reported, so none is shown: ${boxed[1]}`);
+  assert.ok(!/online/.test(boxed[1]), `no fleet was reported, so no count is shown: ${boxed[1]}`);
+});
+ok('no kaomoji survives anywhere in the CLI chrome', () => {
+  const renderer = new TUIRenderer({ output: { columns: 100, rows: 30, write() {} } });
+  const { header, middle, footer } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
+  const { lines } = buildFooter({ cols: 100, mode: 'plan', state: MONITOR_STATE, elapsedMs: 1000 });
+  const all = plainLines([...header, ...middle, ...footer, ...lines.map((line) => line || '')]).join('\n');
+  assert.doesNotMatch(all, /\(=\^/, `a kaomoji survived: ${all}`);
+  assert.doesNotMatch(all, /\^=\)/, `a kaomoji survived: ${all}`);
 });
 ok('the transcript renderers emit no box drawing either', () => {
   const output = plainLines([
@@ -330,7 +395,7 @@ ok('commentary becomes a source headline with a folded result', () => {
     source: 'PiAgent Engine', status: 'PRUNING',
     text: Array.from({ length: 9 }, (_, i) => `detail ${i}`).join('\n'),
   }, { width: 70, resultLines: 3 }));
-  assert.equal(lines[0], '● PiAgent Engine(pruning)');
+  assert.equal(lines[0], '● piagent engine(pruning)');
   assert.equal(lines[1].slice(0, 5), '  ⎿  ');
   assert.equal(lines[lines.length - 1].trim(), '… +6 lines');
 });
@@ -369,7 +434,7 @@ ok('NO_COLOR output carries no escape sequences at all', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /\x1b/);
 });
-ok('TERM=dumb still produces readable, box-free output', () => {
+ok('TERM=dumb still produces readable output with no escapes and no kaomoji', () => {
   const result = require('child_process').spawnSync(process.execPath, ['-e', `
     const { TUIRenderer } = require(${JSON.stringify(require.resolve('../src/cli/tui/renderer'))});
     const r = new TUIRenderer({ output: { columns: 60, rows: 24, write() {} } });
@@ -377,9 +442,12 @@ ok('TERM=dumb still produces readable, box-free output', () => {
     process.stdout.write([...s.header, ...s.middle, ...s.footer].join('\\n'));
   `], { env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.doesNotMatch(result.stdout, CORNERS);
   assert.doesNotMatch(result.stdout, /\x1b/);
-  assert.ok(result.stdout.includes('BigKiji'), 'the identity line must survive');
+  assert.ok(result.stdout.includes('bigkiji'), 'the identity line must survive');
+  assert.doesNotMatch(result.stdout, /\(=\^/, 'a colourless terminal must not fall back to a kaomoji');
+  // The relay and footer are still frame-free; only the panel draws a border.
+  const flowing = result.stdout.split('\n').filter((line) => !BOX.test(line)).join('\n');
+  assert.doesNotMatch(flowing, CORNERS);
 });
 
 // ---------------------------------------------------------------------------
@@ -393,11 +461,13 @@ ok('the footer is still six rows in the owner-specified order', () => {
   assert.equal(inputIndex, 3, 'readline owns row index 3');
   assert.strictEqual(lines[3], null, 'the input row must be left to readline');
   const flat = plainLines(lines.map((line) => line || ''));
-  assert.ok(/LOADING|IDLE/.test(flat[0]) && flat[0].includes('1m 05s'), `row 0: ${flat[0]}`);
-  assert.ok(flat[1].includes('PHASE VECTOR'), `row 1: ${flat[1]}`);
+  assert.ok(/loading|idle/.test(flat[0]) && flat[0].includes('1m 05s'), `row 0: ${flat[0]}`);
+  assert.ok(flat[1].includes('phase vector'), `row 1: ${flat[1]}`);
   assert.match(flat[2], /^\s*─+$/, `row 2 should be a rule: ${flat[2]}`);
   assert.match(flat[4], /^\s*─+$/, `row 4 should be a rule: ${flat[4]}`);
-  assert.ok(flat[5].includes('MODE:') && flat[5].includes('SHELL:') && flat[5].includes('AGENT:'), `row 5: ${flat[5]}`);
+  assert.ok(flat[5].includes('mode:') && flat[5].includes('shell:') && flat[5].includes('agent:'), `row 5: ${flat[5]}`);
+  assert.ok(!/[A-Z]/.test(flat[1]) && !/[A-Z]/.test(flat[5]),
+    `every character BigKiji paints is lowercase: ${flat[1]} / ${flat[5]}`);
 });
 ok('the footer never overflows, even with a long Japanese comment', () => {
   for (const cols of [60, 80, 100, 140]) {
@@ -417,11 +487,35 @@ ok('unmeasured tokens still render as — in the footer', () => {
 // ---------------------------------------------------------------------------
 // 13. Loading frames — the pixel kijitora is real and the 1-row variant fits
 // ---------------------------------------------------------------------------
-ok('the default frame set is still the 1-row hand-drawn cat', () => {
+ok('the default frame set is a 1-row pixel cat, not a kaomoji', () => {
   const set = loadingFrames();
-  assert.equal(set.rows, 1);
+  assert.equal(set.rows, 1, 'the footer height contract is six rows, so the art gets one');
   assert.equal(frameRows(0, set).length, 1);
   assert.equal(T.stringWidth(frameRows(0, set)[0]), set.width);
+  assert.ok(set.id.startsWith('pixel-cat'), `the owner retired the kaomoji: ${set.id}`);
+  assert.doesNotMatch(set.frames.join(''), /\(=\^/, 'no faces');
+});
+ok('a colourless terminal gets a shaded cat, never the kaomoji back', () => {
+  const result = require('child_process').spawnSync(process.execPath, ['-e', `
+    const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
+    process.stdout.write(JSON.stringify({ id: L.DEFAULT_FRAME_SET_ID, frames: L.loadingFrames().frames, rows: L.loadingFrames().rows }));
+  `], { env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const set = JSON.parse(result.stdout);
+  assert.equal(set.id, 'pixel-cat-mono-row', `NO_COLOR must land on the silhouette set: ${set.id}`);
+  assert.equal(set.rows, 1);
+  assert.doesNotMatch(set.frames.join(''), /\x1b/, 'a colourless set carries no escapes');
+  assert.doesNotMatch(set.frames.join(''), /\(=\^/, 'and still no faces');
+  // Shading, not silhouette: every pixel of the face is opaque, so presence
+  // alone renders a solid bar. Measured, not assumed — that is why the mono row
+  // uses lightness and the mono panel uses half-blocks.
+  assert.ok(new Set(set.frames.join('')).size > 2, `the face must have internal detail: ${JSON.stringify(set.frames)}`);
+});
+ok('BIGKIJI_CLI_CAT=none turns the mascot off entirely', () => {
+  const set = FRAME_SETS.none;
+  assert.equal(set.rows, 1, 'still one row, so the footer contract holds');
+  assert.equal(set.frames.length, 1, 'one frame means the ticker can never change the footer');
+  assert.doesNotMatch(set.frames.join(''), /\S/, 'and nothing is drawn, for a screen reader');
 });
 ok('every frame of every set pads to exactly the declared geometry', () => {
   for (const set of Object.values(FRAME_SETS)) {
@@ -462,4 +556,4 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   assert.deepStrictEqual(litSteps('IDLE'), [], 'idle lights nothing rather than guessing');
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout · hanging indents · honest folds · diffs · task lists · width-aware at 60/80/100/140 · NO_COLOR + TERM=dumb · sticky footer contract intact`);
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · pixel cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact`);

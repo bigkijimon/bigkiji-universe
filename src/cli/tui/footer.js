@@ -4,11 +4,15 @@
 // so it can be unit rendered and diffed before being painted.
 //
 //   <loading icon>  <status>  <comment>            <elapsed>  <tokens>
-//   PHASE VECTOR  ●1 PREFLIGHT  ○2 EXECUTE  ○3 VERIFY    ━━━━━───── 58%
+//   phase vector  ●1 preflight  ○2 execute  ○3 verify    ━━━━━───── 58%
 //   ──────────────────────────────────────────────────────────────────
 //   π> <text input>                       <- readline owns this row (null)
 //   ──────────────────────────────────────────────────────────────────
-//   MODE: plan    SHELL: zsh(1234)    AGENT: codex ●running
+//   mode: plan    shell: zsh(1234)    agent: codex ●running
+//
+// Every label above is lowercase because the owner asked for it (2026-08-03).
+// The values the daemon publishes are untouched: only what reaches the screen
+// is folded, via `phrase()` / `lower()` from ./transcript.
 //
 // Honesty rules baked in here: a metric we do not really have renders as '—'
 // (never 0, never a guess). Elapsed time is measured from the moment the owner
@@ -18,7 +22,7 @@
 const path = require('path');
 const { stripAnsi, themeFor } = require('../../domain/terminal/cli-theme');
 const { bar, clip, phaseChip, phaseName, progressOf } = require('./renderer');
-const { stringWidth } = require('./transcript');
+const { lower, phrase, stringWidth } = require('./transcript');
 const { LOADING_TEXT, frameRows, loadingFrames } = require('./loading-frames');
 
 const DASH = '—';
@@ -70,9 +74,10 @@ function agentLabel(state = {}, C = themeFor('plan')) {
   const model = busy || fleet.find((item) => item?.connected);
   if (!model) return { text: DASH, colored: `${C.muted}${DASH}${C.reset}` };
   const status = String(model.status || 'IDLE').toUpperCase();
-  const word = STATUS_WORD[status] || status.toLowerCase();
+  const word = STATUS_WORD[status] || phrase(status);
   const tone = busy ? C.accent : status === 'ERROR' ? C.error : C.muted;
-  return { text: `${model.id} ●${word}`, colored: `${C.ink}${model.id}${C.reset} ${tone}●${word}${C.reset}` };
+  const id = lower(model.id);
+  return { text: `${id} ●${word}`, colored: `${C.ink}${id}${C.reset} ${tone}●${word}${C.reset}` };
 }
 
 // Join a left and a right segment inside `width` columns, measuring *display*
@@ -105,7 +110,9 @@ function buildFooter(options = {}) {
   // `icon` may itself carry ANSI when a coloured (pixel) frame set is selected,
   // so every measurement below goes through stringWidth, never String#length.
   const icon = art[art.length - 1];
-  const statusText = clip(busy ? LOADING_TEXT : (status || phaseName(phase)), 18);
+  // `phrase` here, not `lower`: AWAITING_APPROVAL is a protocol value the daemon
+  // publishes, and on screen it should read as two words rather than one token.
+  const statusText = clip(busy ? LOADING_TEXT : phrase(status || phaseName(phase)), 18);
   const tokens = tokenTotals(state);
   const rightPlain = `${formatElapsed(elapsedMs)}  ${formatTokens(tokens.used)} tok`;
   const right = `${C.muted}${rightPlain}${C.reset}`;
@@ -119,8 +126,8 @@ function buildFooter(options = {}) {
   // Row n+1 — PHASE VECTOR + real progress meter
   const percent = progressOf(state, phase);
   const chips = `${phaseChip('PREFLIGHT', phase, 1, C)}  ${phaseChip('EXECUTE', phase, 2, C)}  ${phaseChip('VERIFY', phase, 3, C)}`;
-  const vectorLeft = `${C.bold}${C.ink}PHASE VECTOR${C.reset}  ${chips}`;
-  const vectorLeftPlain = `PHASE VECTOR  ${plain(chips)}`; // measured by spread() in display columns
+  const vectorLeft = `${C.bold}${C.ink}phase vector${C.reset}  ${chips}`;
+  const vectorLeftPlain = `phase vector  ${plain(chips)}`; // measured by spread() in display columns
   const meterPlain = `${bar(percent, METER_WIDTH)} ${String(percent).padStart(3)}%`;
   const meter = `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${String(percent).padStart(3)}%${C.reset}`;
   lines.push(MARGIN + spread(vectorLeft, meter, inner, vectorLeftPlain, meterPlain).text);
@@ -133,8 +140,8 @@ function buildFooter(options = {}) {
 
   // Row n+5 — mode · shell · agent
   const agent = agentLabel(state, C);
-  const statusRow = `${C.muted}MODE:${C.reset} ${C.strong}${mode}${C.reset}    ${C.muted}SHELL:${C.reset} ${C.ink}${shellLabel()}${C.reset}    ${C.muted}AGENT:${C.reset} ${agent.colored}`;
-  const statusRowPlain = `MODE: ${mode}    SHELL: ${shellLabel()}    AGENT: ${agent.text}`;
+  const statusRow = `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`;
+  const statusRowPlain = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`;
   lines.push(MARGIN + (stringWidth(statusRowPlain) > inner ? clip(statusRowPlain, inner) : statusRow));
 
   return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };

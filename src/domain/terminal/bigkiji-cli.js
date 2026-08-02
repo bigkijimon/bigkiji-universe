@@ -9,12 +9,12 @@ const util = require('util');
 const { spawn } = require('child_process');
 const { DaemonClient } = require('../server/daemon-client');
 const { TUIMonitor } = require('../../cli/tui/monitor');
-const { StickyScreen } = require('../../cli/tui/renderer');
+const { StickyScreen, modelPanel } = require('../../cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../../cli/tui/footer');
 const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
 const {
-  glyphs, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
-  renderUserTurn, shortenPath, stringWidth, truncateToWidth,
+  glyphs, lower, phrase, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
+  renderUserTurn, shortenPath, truncateToWidth,
 } = require('../../cli/tui/transcript');
 const { CliPreferences } = require('./cli-preferences');
 const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
@@ -25,7 +25,7 @@ let activeMode = 'plan'; let A = themeFor(activeMode);
 const prefs = new CliPreferences();
 function setMode(value, persist = true) { activeMode = normalizeMode(value); A = themeFor(activeMode); if (persist) prefs.update({ mode: activeMode }); return activeMode; }
 
-const BOOT_NOTES = ['Starting BigKiji Core Engine...', 'Checking port 8777...', 'Loading session memory...', 'Paws on vault data...'];
+const BOOT_NOTES = ['starting bigkiji core engine...', 'checking port 8777...', 'loading session memory...', 'paws on vault data...'];
 
 // Boot spinner for the daemon handshake. It writes to **stdout** — stderr
 // bypassed the sticky DECSTBM region and corrupted the screen — and shares the
@@ -44,25 +44,29 @@ class KijiSpinner {
     }, this.frameMs);
     this.timer.unref?.();
   }
-  stop(ok = true) { if (this.timer) clearInterval(this.timer); if (this.output.isTTY) { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); } this.output.write(`${ok ? A.accent : A.error}${ok ? '[Kiji] BigKiji Core Engine attached' : '[Kiji] BigKiji Core Engine failed'}${A.reset}\n`); }
+  stop(ok = true) { if (this.timer) clearInterval(this.timer); if (this.output.isTTY) { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); } this.output.write(`${ok ? A.accent : A.error}${ok ? '[kiji] bigkiji core engine attached' : '[kiji] bigkiji core engine failed'}${A.reset}\n`); }
 }
 
 /** Terminal width, honest about the fact that a pipe has none. */
 function screenWidth(output = process.stdout) { return Math.max(40, Math.min(200, Number(output.columns) || 80)); }
 
-// Three lines, no frame. Mascot and version on the left, daemon facts dim on the
-// right, workspace and hints muted underneath. The old banner also drew five
-// permanently lit model dots; they were decoration, not state — every dot was
-// always on regardless of whether the model was reachable — so they are gone and
-// /status carries the real fleet.
+// Four lines: the model panel, then the workspace and daemon facts muted
+// underneath. The name and version ride the panel's top border rather than
+// taking a line of their own, which buys back a row of transcript.
+//
+// The kaomoji that used to open this banner is gone (owner, 2026-08-03). The
+// cat is still here — it is the pixel sprite inside the panel, eight columns
+// instead of eleven, and it is the same art the footer animates.
+//
+// The old banner also drew five permanently lit model dots; they were
+// decoration, not state — every dot was on regardless of whether the model was
+// reachable — so they are gone and the panel counts what is really connected.
 function header(state = {}, width = screenWidth()) {
   const mark = glyphs();
-  const title = `${A.bold}${A.accent}(=^･ω･^=)${A.reset} ${A.bold}${A.ink}BigKiji Universe v${APP_VERSION}${A.reset}`;
-  const facts = `${A.dim}Core 8777 ${mark.note} PID ${state.pid || '—'}${A.reset}`;
-  const room = width - stringWidth(title) - stringWidth(facts);
-  const line1 = room > 1 ? `${title}${' '.repeat(room)}${facts}` : truncateToWidth(`(=^･ω･^=) BigKiji v${APP_VERSION}`, width);
-  const line2 = `${A.muted}${truncateToWidth(`${shortenPath(state.workspace || process.cwd())} ${mark.note} Pi-Orchestrator ${mark.note} context compaction active`, width)}${A.reset}`;
-  return `${line1}\n${line2}`;
+  const panel = modelPanel(state, { width, theme: A, label: ` bigkiji universe v${APP_VERSION} ` });
+  const facts = truncateToWidth(
+    `${lower(shortenPath(state.workspace || process.cwd()))} ${mark.note} pi-orchestrator ${mark.note} core 8777 ${mark.note} pid ${state.pid || '—'}`, width);
+  return [...panel, `${A.muted}${facts}${A.reset}`].join('\n');
 }
 
 const HINTS = '/help commands · /status fleet · /mode ask|auto-edit|plan · /exit';
@@ -87,12 +91,12 @@ function launchHud() {
 
 async function selectSession(client) {
   const { sessions } = await client.sessions();
-  if (!sessions.length) { console.log(`${A.dim}No saved sessions yet.${A.reset}`); return null; }
+  if (!sessions.length) { console.log(`${A.dim}no saved sessions yet.${A.reset}`); return null; }
   if (!process.stdin.isTTY) return sessions[0];
   let index = 0;
   const render = () => {
-    process.stdout.write('\x1b[H\x1b[2J'); console.log(`${A.bold}Resume a BigKiji session${A.reset}\n${A.dim}↑/↓ select · Enter resume · Esc cancel${A.reset}\n`);
-    sessions.slice(0, 12).forEach((session, i) => console.log(`${i === index ? A.accent + '›' : ' '} ${new Date(session.updatedAt).toLocaleString()}  ${session.status || 'IDLE'}  ${session.promptSummary}${A.reset}`));
+    process.stdout.write('\x1b[H\x1b[2J'); console.log(`${A.bold}resume a bigkiji session${A.reset}\n${A.dim}↑/↓ select · enter resume · esc cancel${A.reset}\n`);
+    sessions.slice(0, 12).forEach((session, i) => console.log(`${i === index ? A.accent + '›' : ' '} ${new Date(session.updatedAt).toLocaleString()}  ${phrase(session.status || 'IDLE')}  ${session.promptSummary}${A.reset}`));
   };
   render(); process.stdin.setRawMode(true); process.stdin.resume();
   return new Promise((resolve) => {
@@ -157,8 +161,22 @@ async function repl(client) {
   const view = () => ({ width: sticky.active ? sticky.cols : screenWidth(), theme: A, mark: glyphs() });
   const emit = (lines) => { const list = Array.isArray(lines) ? lines : [lines]; if (list.length) say(list.join('\n')); };
   if (!stickyOn) { console.log(header(live)); console.log(hintLine()); }
-  // ~120ms ticker: animates the loading cat + elapsed clock, repainting only when the footer actually changed.
-  const ticker = setInterval(() => { if (turnStartedAt) frameIndex += 1; paintFooter(); }, frameSet.frameMs); ticker.unref?.();
+  // Animates the loading cat + elapsed clock, repainting only when the footer
+  // actually changed. Three deliberate limits, all of them measured problems in
+  // other terminal agents rather than hypotheticals:
+  //
+  //   - it does not run at all without a TTY. Piped into `cat` or a CI log there
+  //     is no sticky footer to animate, and a timer firing 15x a second to
+  //     discover that is waste.
+  //   - frames only advance while a turn is in flight. Pi's own issue #3881
+  //     reports a permanent spinner raising CPU in proportion to transcript
+  //     size until the fan spins up; an idle cat would buy the same bill.
+  //   - the interval is the frame set's own (67ms ≈ 15fps), which is the floor
+  //     of the 15–30fps range terminal UIs are expected to stay inside.
+  const ticker = stickyOn
+    ? setInterval(() => { if (turnStartedAt) frameIndex += 1; paintFooter(); }, frameSet.frameMs)
+    : null;
+  ticker?.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
   const statePoll = setInterval(() => { client.state().then((next) => { live = next; paintFooter(); }).catch(() => {}); }, 4000); statePoll.unref?.();
   client.on('event', ({ event, data }) => {
@@ -195,21 +213,21 @@ async function repl(client) {
           A = themeFor(mode);
         }
         const current = prefs.get();
-        emit([...renderToolCall('Settings', `theme warm-brown · mode ${mode}`, view()),
+        emit([...renderToolCall('settings', `theme warm-brown · mode ${mode}`, view()),
           ...renderToolResult(`mode accent: ${current.modeAccent}\ncontrast: ${current.contrast}\ncat commentary: ${current.catCommentary}`, { ...view(), maxLines: 6 })]);
       }
-      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); emit(renderToolCall('Mode', mode, view())); }
-      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; emit([...renderToolCall('Resume', session.id, view()), ...renderToolResult(session.promptSummary, { ...view(), maxLines: 2 })]); } }
-      else if (text === '/reload') { const result = await client.reload(); emit([...renderToolCall('Reload', `${result.cleared ?? '—'} hooks`, view())]); }
+      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); emit(renderToolCall('mode', mode, view())); }
+      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; emit([...renderToolCall('resume', lower(session.id), view()), ...renderToolResult(session.promptSummary, { ...view(), maxLines: 2 })]); } }
+      else if (text === '/reload') { const result = await client.reload(); emit([...renderToolCall('reload', `${result.cleared ?? '—'} hooks`, view())]); }
       else if (text === '/ideas') {
         const { ideas } = await client.ideas();
-        emit([...renderToolCall('Ideas', `${ideas.length} draft${ideas.length === 1 ? '' : 's'}`, view()),
+        emit([...renderToolCall('ideas', `${ideas.length} draft${ideas.length === 1 ? '' : 's'}`, view()),
           ...renderToolResult(ideas.map((idea) => `${idea.id}  ${idea.status.padEnd(9)} ${idea.title}`).join('\n') || 'none', { ...view(), maxLines: 8 })]);
       }
       else if (text.startsWith('/idea ')) {
         const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('Usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
         const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('Idea not found');
-        const ideaResult = (label, payload) => emit([...renderToolCall('Idea', `${action} · ${id}`, view()),
+        const ideaResult = (label, payload) => emit([...renderToolCall('idea', `${lower(action)} · ${lower(id)}`, view()),
           ...renderToolResult(typeof payload === 'string' ? payload : util.inspect(payload, { depth: 2, colors: false }), { ...view(), maxLines: 5 })]);
         if (action === 'plan') ideaResult(action, await client.planIdea(id, idea.draftHash));
         else if (action === 'enhance') { const planned = await client.enhanceIdea(id, idea.draftHash); const d = planned.task.disclosure;
@@ -221,8 +239,8 @@ async function repl(client) {
       }
       else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
         emit(renderEvent('run', result.run, view())); }
-      else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('HUD', launched.launched || 'launched', view())); }
-      else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('Abort', result.status || 'sent', view())); }
+      else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('hud', lower(launched.launched || 'launched'), view())); }
+      else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
       else if (text === '/help') emit(renderAssistantText('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.', view()));
       else {
@@ -238,7 +256,7 @@ async function repl(client) {
     finally { turnStartedAt = 0; }
     paintFooter(true); refreshPrompt();
   });
-  rl.on('close', () => { clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect(); process.exit(0); });
+  rl.on('close', () => { if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect(); process.exit(0); });
   paintFooter(true); refreshPrompt();
 }
 
@@ -264,6 +282,14 @@ async function main(argv = process.argv.slice(2)) {
   await repl(client);
 }
 
-if (require.main === module) main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
+// Exit codes, because something else is going to read them. cmux, tmux, a
+// shell `&&` chain and CI all treat this as a normal command: 0 for a turn that
+// completed, 1 for a failure with the reason on stderr, 130 for Ctrl-C — the
+// conventional 128 + SIGINT, so `while bigkiji ...; do` stops when interrupted
+// instead of looping forever.
+if (require.main === module) {
+  process.on('SIGINT', () => process.exit(130));
+  main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
+}
 
 module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, APP_ROOT };
