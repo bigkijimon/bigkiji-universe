@@ -1,6 +1,6 @@
 {
   "name": "bigkiji-loading-cat",
-  "note": "index 0 is transparent; indices match frames/frame-N.txt digits",
+  "note": "index 0 is transparent; indices match the digits in frames/ and frames16/",
   "colors": [
     {
       "index": 0,
@@ -15,7 +15,7 @@
     },
     {
       "index": 1,
-      "role": "black (eyes, nose, paw pads, tabby face markings)",
+      "role": "black - eyes, nose, paw pads, tabby face markings",
       "hex": "#16100E",
       "rgba": [
         22,
@@ -26,7 +26,7 @@
     },
     {
       "index": 2,
-      "role": "dark brown (silhouette outline, flank stripes)",
+      "role": "dark brown - silhouette outline, wing membrane, flank stripes",
       "hex": "#4B2E1F",
       "rgba": [
         75,
@@ -37,7 +37,7 @@
     },
     {
       "index": 3,
-      "role": "mid brown (fur, wing membrane, tail)",
+      "role": "mid brown - fur, wing bones, tail",
       "hex": "#96603A",
       "rgba": [
         150,
@@ -48,7 +48,7 @@
     },
     {
       "index": 4,
-      "role": "light tan (muzzle, belly, eye glint)",
+      "role": "light tan - muzzle, belly, eye glint",
       "hex": "#E3C08B",
       "rgba": [
         227,
@@ -58,19 +58,44 @@
       ]
     }
   ],
-  "sheet": {
-    "width": 192,
-    "height": 32,
-    "frames": 6,
-    "cell": [
-      32,
-      32
-    ]
+  "sheets": {
+    "loading-cat.png": {
+      "width": 192,
+      "height": 32,
+      "frames": 6,
+      "cell": [
+        32,
+        32
+      ],
+      "indices": "frames/frame-N.txt"
+    },
+    "loading-cat@4x.png": {
+      "width": 768,
+      "height": 128,
+      "frames": 6,
+      "cell": [
+        128,
+        128
+      ],
+      "note": "exact nearest-neighbour 4x4 block replication of loading-cat.png"
+    },
+    "loading-cat-16.png": {
+      "width": 96,
+      "height": 16,
+      "frames": 6,
+      "cell": [
+        16,
+        16
+      ],
+      "indices": "frames16/frame-N.txt",
+      "note": "redrawn at 16x16, not downscaled; 16 cols x 8 rows of ANSI half-blocks"
+    }
   },
   "timing": {
     "loop_ms": 400,
     "frame_ms": 66.67,
     "fps": 15,
     "steps": 6
-  }
+  },
+  "text": "LOADING... is NOT baked into the art; the CLI and UI draw it themselves"
 }

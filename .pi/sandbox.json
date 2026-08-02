@@ -1,0 +1,56 @@
+{
+  "$comment": [
+    "Sandbox policy for work scoped to the BigKiji Universe app itself.",
+    "Before V2.5 this file did not exist, so SandboxPolicyResolver fell through to its",
+    "safe-default: write access to the ENTIRE app directory and all five paid providers",
+    "allowed. That default is permissive by accident rather than by decision, so the",
+    "grants below are stated explicitly.",
+    "Resolution rules that constrain what can usefully be written here:",
+    "  - roots outside the Vault are dropped by the resolver, so every path is Vault-relative",
+    "  - paths matching the sensitive-path patterns (.env, .ssh, keys, credentials) are",
+    "    dropped as well, and that filter is not configurable from this file",
+    "  - filesystem.denyRead / denyWrite and the network block are read by the pi CLI's",
+    "    own sandbox package, NOT by this app; do not rely on them here"
+  ],
+  "filesystem": {
+    "allowRead": [
+      ".",
+      "./src",
+      "./tools",
+      "./docs",
+      "./skills",
+      "./fixtures"
+    ],
+    "allowWrite": [
+      "./src",
+      "./tools",
+      "./docs",
+      "./skills"
+    ]
+  },
+  "models": {
+    "$comment": "Paid execution still requires an owner-approved disclosure manifest per run; this list only bounds which providers may ever be offered.",
+    "allowPaid": [
+      "claude",
+      "claude-code",
+      "codex",
+      "gemini",
+      "glm"
+    ]
+  },
+  "skills": {
+    "$comment": [
+      "PiAgent indexes these roots and injects the matching skill's standing rules into",
+      "each assignment prompt as TEXT. No filesystem access is granted by this block —",
+      "it exists so the roots are declared in one auditable place.",
+      "English copies ship with the app and win on an id collision; the owner's Japanese",
+      "originals under ~/.claude/skills are the source of truth and are never modified."
+    ],
+    "roots": [
+      "./skills",
+      "~/.claude/skills"
+    ],
+    "injectIntoAssignments": true,
+    "maxSkillsPerAssignment": 2
+  }
+}

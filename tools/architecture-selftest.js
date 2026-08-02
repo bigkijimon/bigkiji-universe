@@ -15,7 +15,7 @@ const required = [
   'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/viral-membrane.js',
   'src/domain/terminal/components/multi-terminal-manager.js', 'src/domain/terminal/components/cmux-terminal-mirror.js',
   'src/domain/telemetry/components/right-telemetry-panel.js',
-  'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
+  'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/skill-registry.js', '.pi/sandbox.json', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
   'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
   'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js',
   'src/domain/server/daemon.js', 'src/domain/server/daemon-client.js', 'src/domain/server/session-store.js',

@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { ModelCapabilityRegistry } = require('./model-capability-registry');
 const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
+const { SkillRegistry } = require('./skill-registry');
 
 const ROLE_BLUEPRINT = Object.freeze([
   { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'gemini', title: 'Requirements and acceptance trace', write: false },
@@ -40,10 +41,18 @@ function publicRun(run) {
 }
 
 class CoreExecutionCoordinator extends EventEmitter {
-  constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry() } = {}) {
+  constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry(),
+    skills = new SkillRegistry() } = {}) {
     super();
     if (!taskRunner) throw new Error('CoreExecutionCoordinator requires TaskRunner');
     this.taskRunner = taskRunner;
+    // The owner's skills are their record of what already went wrong. Indexing them here
+    // means every specialist gets the relevant standing rules instead of rediscovering
+    // them: one sub-agent burned 428s of GPU on a workflow the skill file already ruled
+    // out, and another was one step from sending audio to a cloud endpoint that a skill
+    // file explicitly warns is the misleading default.
+    this.skills = skills;
+    try { this.skills.scan(); } catch (_) {}
     this.settingsProvider = settingsProvider;
     this.preview = preview;
     this.registry = registry;
@@ -132,12 +141,17 @@ class CoreExecutionCoordinator extends EventEmitter {
   }
 
   _assignmentPrompt(run, item) {
+    // Text only. This injects guidance, never filesystem access, so the sandbox
+    // boundary is exactly what it was before the skill registry existed.
+    let skillBrief = '';
+    try { skillBrief = this.skills.brief(`${run.prompt} ${item.title}`); } catch (_) {}
+    const suffix = skillBrief ? `\n\n${skillBrief}\n` : '';
     const shared = `BIGKIJI RUN ${run.id}\nOwner goal: ${run.prompt}\n` +
       `You are ${item.agent}, specialist role=${item.role}. ${item.title}.\n` +
       `PiAgent selected this assignment for this run. Work only inside the configured sandbox. Never expose secrets, publish, delete unrelated data, or change billing. Exit immediately after the assignment; do not remain resident.\n`;
-    if (!item.write) return `${shared}This is an independent read-only assignment. Return concise findings and evidence; do not edit files.`;
-    if (item.role === 'ui') return `${shared}Own frontend, interaction, accessibility and visual quality. ${run.previewGame ? 'For this preview game, edit index.html and app.css only; do not edit game.js.' : 'Avoid system/backend files unless explicitly required.'} Run focused verification.`;
-    return `${shared}Own architecture, IPC, services and integration. ${run.previewGame ? 'For this preview game, edit game.js only; do not edit index.html or app.css.' : 'Avoid visual styling files assigned to Design-Pi.'} Run focused verification.`;
+    if (!item.write) return `${shared}This is an independent read-only assignment. Return concise findings and evidence; do not edit files.${suffix}`;
+    if (item.role === 'ui') return `${shared}Own frontend, interaction, accessibility and visual quality. ${run.previewGame ? 'For this preview game, edit index.html and app.css only; do not edit game.js.' : 'Avoid system/backend files unless explicitly required.'} Run focused verification.${suffix}`;
+    return `${shared}Own architecture, IPC, services and integration. ${run.previewGame ? 'For this preview game, edit game.js only; do not edit index.html or app.css.' : 'Avoid visual styling files assigned to Design-Pi.'} Run focused verification.${suffix}`;
   }
 
   _ingestTask(task) {
