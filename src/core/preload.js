@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   ptyInput: (data) => ipcRenderer.send('pty:input', data),
   ptyResize: (cols, rows) => ipcRenderer.send('pty:resize', { cols, rows }),
   openMain: () => ipcRenderer.send('open-main'),
+  openConsole: () => ipcRenderer.send('open-console'),
   trayRender: (payload) => ipcRenderer.send('tray:render', payload),
   onDeliverables: (cb) => ipcRenderer.on('vault:deliverables', (_e, items) => cb(items)),
   onVaultFiles: (cb) => ipcRenderer.on('vault:files', (_e, files) => cb(files)),

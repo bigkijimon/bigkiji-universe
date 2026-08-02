@@ -272,6 +272,7 @@
   <div class="shell">
     <header>
       <span id="mark"></span><span class="title">BigKiji Universe</span>
+      <button id="openConsole" class="hbtn" title="Conversation and terminal (⌥⇧Space)">▤ CONSOLE</button>
       <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
       <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
       <span id="securityBadge" class="securityBadge" title="BigKiji egress security status">SECURE</span>
@@ -607,6 +608,7 @@
     });
     window.bigkiji.listIdeas?.().then((ideas) => { if (ideas?.[0] && ideas[0].status !== 'archived') showIdea(ideas[0], ideas[0].status); }).catch(() => {});
     window.bigkiji.onComposerFocus(() => { cmd.focus(); cmd.select(); });
+    document.getElementById('openConsole').addEventListener('click', () => window.bigkiji.openConsole());
     document.getElementById('openCanvas').addEventListener('click', () => window.bigkiji.openMain());
     document.getElementById('nudge').addEventListener('click', () => {
       piAnswer.textContent = '';

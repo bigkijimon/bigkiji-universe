@@ -59,6 +59,8 @@ const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || `v${APP_VERSION}`;
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
 const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
+// Opens the working window directly, the way `--show-main` opens the 3D scene.
+const SHOW_CONSOLE = process.argv.includes('--show-console') || process.env.BIGKIJI_SHOW_CONSOLE === '1';
 const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
@@ -73,6 +75,7 @@ const relationshipService = new RelationshipSnapshotService({
 let tray = null;
 let trayWin = null;
 let mainWin = null;
+let consoleWin = null;
 let quitting = false;
 let pty = null;
 let ptyMode = 'none'; // 'pty' | 'pipe'
@@ -128,7 +131,7 @@ function broadcast(channel, payload) {
   else if (channel === 'bk:swarm') { fleetMetrics.ingestSwarm(payload); piFleet.ingestSwarm(payload); }
   else if (channel === 'voice:live-state') { fleetMetrics.ingestVoice(payload); piFleet.ingestVoice(payload); }
   else if (channel === 'vault:touch') { fleetMetrics.ingestSync({ text: payload?.[0] || 'Vault sync' }); piFleet.ingestSync({ text: payload?.[0] || 'Vault sync' }); }
-  for (const w of [trayWin, mainWin]) {
+  for (const w of [trayWin, mainWin, consoleWin]) {
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
   }
 }
@@ -410,6 +413,28 @@ function createMainWindow() {
   mainWin.on('close', (e) => { if (!quitting) { e.preventDefault(); mainWin.hide(); } });
 }
 
+// ---------- Console: the window work actually happens in ----------
+// The Synapse Canvas is the story BigKiji tells about itself. It is also 6,000 lines of
+// particles behind everything the owner is trying to read, which is fine to look at and
+// tiring to work in. The console is the opposite: opaque, light, one surface at a time,
+// with the 3D scene one button away instead of underneath.
+//
+// Opaque and with no vibrancy set, so its stylesheet may use ordinary backgrounds
+// without colliding with a material — the same reasoning as the setup window.
+function createConsoleWindow() {
+  if (consoleWin && !consoleWin.isDestroyed()) { consoleWin.show(); consoleWin.focus(); return consoleWin; }
+  consoleWin = new BrowserWindow({
+    width: 1080, height: 760, minWidth: 720, minHeight: 520,
+    show: false, backgroundColor: '#f5f5f7',
+    titleBarStyle: 'hiddenInset', title: 'BigKiji Console',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  consoleWin.loadFile(path.join(UI_ROOT, 'console.html'));
+  consoleWin.once('ready-to-show', () => { consoleWin.show(); consoleWin.focus(); });
+  consoleWin.on('close', (e) => { if (!quitting) { e.preventDefault(); consoleWin.hide(); } });
+  return consoleWin;
+}
+
 // ---------- Tray ----------
 function createTray() {
   tray = new Tray(nativeImage.createEmpty()); // バイナリ資産ゼロ：テキストTray
@@ -418,6 +443,8 @@ function createTray() {
   tray.on('click', toggleTrayWindow);
   tray.on('right-click', () => {
     tray.popUpContextMenu(Menu.buildFromTemplate([
+      // Console first: it is where work happens, and it is what should open by reflex.
+      { label: 'Open Console', accelerator: 'Alt+Shift+Space', click: () => createConsoleWindow() },
       { label: 'Open Synapse Canvas', click: () => createMainWindow() },
       { type: 'separator' },
       { label: 'Quit BigKiji Universe', click: () => { quitting = true; app.quit(); } },
@@ -1439,6 +1466,7 @@ ipcMain.handle('file:detail', async (_e, relPath) => {
 ipcMain.on('pty:input', (_e, data) => { if (pty) pty.write(data); });
 ipcMain.on('pty:resize', (_e, { cols, rows }) => { if (pty && ptyMode === 'pty') pty.resize(cols, rows); });
 ipcMain.on('open-main', () => createMainWindow());
+ipcMain.on('open-console', () => createConsoleWindow());
 ipcMain.handle('get-info', () => {
   let loops = [];
   try {
@@ -1542,10 +1570,11 @@ app.whenReady().then(async () => {
   cmuxBridge.start();
   comfy = new ComfyUIMediaBridge({ root: PATHS.comfyRoot || undefined, outputDir: PATHS.generatedMediaRoot });
   comfy.on('event', (event) => broadcast('comfy:event', event));
-  if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
+  if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN && !SHOW_CONSOLE) app.dock.hide(); // 通常時のみメニューバー常駐
   createTray();
   createTrayWindow();
   if (SMOKE || SNAP || SHOW_MAIN) createMainWindow(); // --show-main は再起動後のCanvas確認・直接起動用
+  if (SHOW_CONSOLE) { const w = createConsoleWindow(); w.once('ready-to-show', () => app.focus({ steal: true })); }
   spawnShell();
   // Models are intentionally cold. PiAgent/daemon wakes only selected roles after owner approval.
   bus.on('event', (evt) => broadcast('bus:event', evt));
@@ -1652,22 +1681,28 @@ app.whenReady().then(async () => {
     // The windows are created earlier in whenReady; on fast machines their
     // load event can precede this harness. Seed from current WebContents state
     // so the smoke result measures the app, not listener timing.
+    // The console window is created here rather than at startup: it is not part of the
+    // normal boot, but a window that renders model output and hosts a terminal is
+    // exactly the kind of thing that should fail the build when it stops loading.
+    createConsoleWindow();
     const state = {
       trayLoaded: !!trayWin && !trayWin.webContents.isLoadingMainFrame(),
       mainLoaded: !!mainWin && !mainWin.webContents.isLoadingMainFrame(),
+      consoleLoaded: !!consoleWin && !consoleWin.webContents.isLoadingMainFrame(),
       errors: [],
     };
     trayWin.webContents.once('did-finish-load', () => { state.trayLoaded = true; });
     mainWin.webContents.once('did-finish-load', () => { state.mainLoaded = true; });
-    for (const [name, w] of [['tray', trayWin], ['main', mainWin]]) {
+    consoleWin.webContents.once('did-finish-load', () => { state.consoleLoaded = true; });
+    for (const [name, w] of [['tray', trayWin], ['main', mainWin], ['console', consoleWin]]) {
       w.webContents.on('did-fail-load', (_event, code, description) => state.errors.push(`${name}: load ${code} ${description}`));
       w.webContents.on('console-message', (event) => {
         if (Number(event?.level) >= 3) state.errors.push(`${name}: ${event.message}`);
       });
     }
     setTimeout(() => {
-      const ok = !!tray && state.trayLoaded && state.mainLoaded && ptyMode !== 'none' && state.errors.length === 0;
-      console.log(`${ok ? 'SMOKE OK' : 'SMOKE FAIL'} tray=${!!tray} trayWin=${state.trayLoaded} mainWin=${state.mainLoaded} pty=${ptyMode} rendererErrors=${state.errors.length}`);
+      const ok = !!tray && state.trayLoaded && state.mainLoaded && state.consoleLoaded && ptyMode !== 'none' && state.errors.length === 0;
+      console.log(`${ok ? 'SMOKE OK' : 'SMOKE FAIL'} tray=${!!tray} trayWin=${state.trayLoaded} mainWin=${state.mainLoaded} consoleWin=${state.consoleLoaded} pty=${ptyMode} rendererErrors=${state.errors.length}`);
       state.errors.slice(0, 5).forEach((e) => console.log('  RENDER ERR:', e));
       quitting = true;
       app.exit(ok ? 0 : 1);

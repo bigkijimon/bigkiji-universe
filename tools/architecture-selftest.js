@@ -18,6 +18,7 @@ const required = [
   'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/skill-registry.js', '.pi/sandbox.json', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
   'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
   'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js',
+  'src/components/UI/console.html', 'src/components/UI/console.js', 'src/components/UI/markdown.js',
   'src/domain/server/daemon.js', 'src/domain/server/daemon-client.js', 'src/domain/server/session-store.js',
   'src/domain/terminal/bigkiji-cli.js', 'src/domain/terminal/cli-theme.js', 'src/domain/terminal/cli-preferences.js',
   'src/cli/tui/monitor.js', 'src/cli/tui/renderer.js', 'src/core/tailscale-remote-access.js',

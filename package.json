@@ -18,6 +18,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --show-main",
+    "dev:console": "electron . --show-console",
     "dist": "node tools/build-host.js",
     "dist:mac": "APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64 --x64",
     "dist:local": "electron-builder --mac --dir --arm64 -c.mac.identity=\"BigKiji Universe Dev Signer\" -c.mac.notarize=false -c.mac.forceCodeSigning=false",
@@ -49,7 +50,7 @@
     "test:conversation": "node tools/conversation-selftest.js",
     "test:audio-wave": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/audio-wave-selftest.js",
     "test:tools": "node tools/tool-registry-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:skills && npm run test:tools && npm run test:cli-render && npm run test:cli-theme",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:markdown && npm run test:console && npm run test:skills && npm run test:tools && npm run test:cli-render && npm run test:cli-theme",
     "audit:delegations": "node tools/delegation-audit.js",
     "index:memory": "node tools/index-system-memory.js",
     "postinstall": "node tools/postinstall.js",
@@ -59,7 +60,9 @@
     "test:routing": "node tools/routing-learning-selftest.js",
     "test:deliberation": "node tools/deliberation-selftest.js",
     "test:assets": "node tools/assets-route-selftest.js",
-    "test:watch-queue": "node tools/watch-queue-selftest.js"
+    "test:watch-queue": "node tools/watch-queue-selftest.js",
+    "test:markdown": "node tools/markdown-selftest.js",
+    "test:console": "node tools/console-window-selftest.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",
