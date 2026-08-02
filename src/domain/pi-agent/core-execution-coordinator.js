@@ -16,6 +16,11 @@ const ROLE_BLUEPRINT = Object.freeze([
   { role: 'context', agent: 'Context-Pi', provider: 'qwen', title: 'Local context pruning and continuity check', write: false },
 ]);
 
+// Which roles survive when maxAgents is smaller than the selection. The independent
+// checker outranks the specialists, because a run that verifies nothing is not a
+// cheaper run — it is an unverified one.
+const ROLE_PRIORITY = Object.freeze(['leader', 'debug', 'ui', 'facilitator', 'context']);
+
 const FALLBACKS = Object.freeze({
   'claude-code': ['glm', 'codex', 'qwen'],
   codex: ['gemini', 'claude-code', 'glm', 'qwen'],
@@ -134,7 +139,13 @@ class CoreExecutionCoordinator extends EventEmitter {
   _planExecution(run) {
     run.stage = 'execution';
     const selectedRoles = selectRoles(run.prompt, run.roleContext);
-    const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, run.maxAgents).map((item) => {
+    // maxAgents used to cut in declaration order, so the read-only checker that strict
+    // mode adds unconditionally was the first thing dropped when the cap bit. Keep by
+    // importance; emit in declaration order.
+    const kept = new Set(ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role))
+      .sort((a, b) => ROLE_PRIORITY.indexOf(a.role) - ROLE_PRIORITY.indexOf(b.role))
+      .slice(0, run.maxAgents).map((item) => item.role));
+    const blueprint = ROLE_BLUEPRINT.filter((item) => kept.has(item.role)).map((item) => {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
       const provider = this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider;

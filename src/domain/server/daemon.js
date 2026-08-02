@@ -156,7 +156,9 @@ class DaemonEngine extends EventEmitter {
     this.piFleet.on('update', (snapshot) => this.publish('fleet', snapshot));
     setImmediate(() => this.refreshInventory().catch(() => {}));
     this.inventoryTimer = setInterval(() => this.refreshInventory().catch((err) => {
-      engine.publish('error', { source: 'daemon', error: `Inventory refresh failed: ${String(err.message).slice(0, 100)}` });
+      // `engine` is a parameter of startDaemon(), not a name in class scope: the only
+      // path that reported an inventory failure threw a ReferenceError instead.
+      this.publish('error', { source: 'daemon', error: `Inventory refresh failed: ${String(err.message).slice(0, 100)}` });
     }), 300000);
     this.inventoryTimer.unref();
   }

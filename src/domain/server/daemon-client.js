@@ -87,11 +87,19 @@ class DaemonClient extends EventEmitter {
   promoteIdea(id, draftHash) { return this.post('/api/idea/promote', { id, draftHash, ownerConfirmed: true }); }
   archiveIdea(id, draftHash) { return this.post('/api/idea/archive', { id, draftHash, ownerConfirmed: true }); }
   connect() {
+    this.closed = false;
     if (this.controller) return; this.controller = new AbortController();
     this._socket(this.controller.signal).catch(() => this._stream(this.controller.signal))
       .catch((error) => { this.connected = false; this.emit('disconnect', error); });
   }
-  disconnect() { this.controller?.abort(); this.controller = null; this.connected = false; }
+  // `closed` is separate from `controller` because reconnection clears the controller
+  // on its way out. Without it a disconnect during shutdown is undone two seconds later
+  // by a retry that was already in flight, and the app never exits.
+  disconnect() {
+    this.closed = true;
+    clearTimeout(this.retryTimer); this.retryTimer = null;
+    this.controller?.abort(); this.controller = null; this.connected = false;
+  }
   async _stream(signal) {
     const response = await fetch(`${this.base}/api/events`, { headers: this.headers(), signal });
     if (!response.ok) throw new Error(`Daemon event stream HTTP ${response.status}`);
@@ -123,9 +131,15 @@ class DaemonClient extends EventEmitter {
       socket.once('close', () => {
         signal.removeEventListener('abort', abort);
         this.connected = false;
-        if (opened && !signal.aborted) {
+        if (opened && !signal.aborted && !this.closed) {
           this._isReconnecting = true;
-          setTimeout(() => { this.connect().catch(() => { this._isReconnecting = false; }); }, 2000);
+          // This never reconnected and crashed while not doing it: connect() returns
+          // undefined, so `.catch` threw a TypeError inside a timer with no handler,
+          // and connect() would have returned early anyway because this.controller was
+          // still set from the connection that just died.
+          this.controller = null;
+          this.retryTimer = setTimeout(() => { this.retryTimer = null; this._isReconnecting = false; if (!this.closed) this.connect(); }, 2000);
+          this.retryTimer.unref?.();
         }
         resolve();
       });

@@ -14,6 +14,7 @@
   // Detected local tools, filled once before the modal renders so every row exists by the
   // time bind() attaches the standard [data-setting] listeners.
   let tools = []; let toolsProbed = false;
+  let workspaces = { roots: [], candidates: [], defaultExclude: [], documentsRoot: '' };
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pct = (value) => `${Math.round(Number(value) * 100)}%`;
   const speakerOptions = (current) => speakers.map((v) => `<option ${v === current ? 'selected' : ''}>${v}</option>`).join('');
@@ -108,10 +109,62 @@
       + (choose ? `<button data-tool-choose="${esc(tool.id)}" style="min-width:94px">${choose}</button>` : '')
       + `<button data-tool-test="${esc(tool.id)}">Test</button></span></div>`;
   }
+  // ---- workspaces ------------------------------------------------------------
+  // A registered folder is one BigKiji may read and edit. Candidates are proposed from
+  // ~/Documents because that is where the owner keeps their working folders, but a
+  // proposal is never a registration: a directory becoming readable because it happened
+  // to sit in the right place is not something anyone asked for.
+  const WORKSPACE_STATUS = { ok: ['ok', 'Connected'], unreadable: ['warn', 'Permission needed'], missing: ['bad', 'Folder is gone'] };
+  function workspaceRow(root_) {
+    const [tone, label] = WORKSPACE_STATUS[root_.status] || ['warn', 'Unknown'];
+    const excluded = (root_.exclude || []).length;
+    return `<div class="setting-row"><label>${esc(root_.label)}<small style="display:block;color:#61736e">${esc(root_.path)}</small></label>`
+      + `<span style="justify-self:end;color:#61736e;font-size:11px">${excluded} excluded</span>`
+      + `<span style="display:flex;align-items:center;gap:7px;justify-self:end">`
+      + `<b class="connection ${tone}" style="min-width:132px"><i></i>${esc(label)}</b>`
+      + (root_.overridden ? '<b style="color:#61736e;font-size:11px">env</b>'
+        : `<button data-workspace-remove="${esc(root_.id)}">Remove</button>`) + '</span></div>';
+  }
+  function workspacesCard() {
+    const rows = workspaces.roots.length ? workspaces.roots.map(workspaceRow).join('')
+      : '<p class="settings-copy">No folders added yet. BigKiji can read and edit nothing until you add one.</p>';
+    const proposals = (workspaces.candidates || []).slice(0, 8).map((item) =>
+      `<button data-workspace-add="${esc(item.path)}" title="${esc(item.path)}">${esc(item.label)}${item.isObsidianVault ? ' · vault' : ''}</button>`).join('');
+    const overridden = workspaces.roots.some((root_) => root_.overridden);
+    return `<div class="settings-card wide"><h3>WORKSPACE FOLDERS</h3>${rows}
+      <div class="cmux-controls" style="margin-top:12px;flex-wrap:wrap">${proposals}<button data-workspace="choose">Add another folder…</button></div>
+      <p class="settings-copy" style="margin-top:9px">${overridden
+        ? 'BIGKIJI_WORKSPACES is set, so this list comes from the environment and edits here are ignored until it is unset.'
+        : `Suggestions come from ${esc(workspaces.documentsRoot || '~/Documents')}. Adding one is what grants access — nothing is scanned before you do.`}</p>
+      <p class="settings-copy" style="margin-top:8px">A folder inside one you have already added is refused rather than counted twice, and a folder that disappears is reported here instead of being quietly re-pointed somewhere else. Every root skips ${esc((workspaces.defaultExclude || []).slice(0, 4).join(', '))} and the rest of the usual build output.</p></div>`;
+  }
+  async function refreshWorkspaces({ rerender = true } = {}) {
+    try { workspaces = await window.bigkiji.workspaceState(); } catch (_) { return; }
+    const host = root?.querySelector('[data-workspace-host]');
+    if (rerender && host) { host.innerHTML = workspacesCard(); bindWorkspaces(); }
+  }
+  function bindWorkspaces() {
+    root.querySelectorAll('[data-workspace-add]').forEach((button) => button.onclick = async () => {
+      button.disabled = true;
+      try { workspaces = await window.bigkiji.workspaceRegister({ path: button.dataset.workspaceAdd }); await refreshWorkspaces(); }
+      catch (error) { button.textContent = error.message.slice(0, 40); button.disabled = false; }
+    });
+    root.querySelectorAll('[data-workspace-remove]').forEach((button) => button.onclick = async () => {
+      workspaces = await window.bigkiji.workspaceRemove(button.dataset.workspaceRemove); await refreshWorkspaces();
+    });
+    const choose = root.querySelector('[data-workspace="choose"]');
+    if (choose) choose.onclick = async () => {
+      choose.disabled = true;
+      try { workspaces = await window.bigkiji.workspaceChoose(); await refreshWorkspaces(); }
+      catch (error) { choose.textContent = error.message.slice(0, 40); }
+      finally { choose.disabled = false; }
+    };
+  }
   function toolsPage() {
     const rows = tools.map(toolRow).join('')
       || '<p class="settings-copy">Tool detection is not available in this window.</p>';
     return `<section class="settings-page" data-page-panel="tools"><div class="settings-grid">
+      <div data-workspace-host class="wide">${workspacesCard()}</div>
       <div class="settings-card wide"><h3>LOCAL TOOL CONNECTIONS</h3>${rows}
         <div class="cmux-controls" style="margin-top:12px"><button data-tools="detect">Re-detect</button><button data-tools="test">Test all connections</button></div>
         <p class="settings-copy" style="margin-top:9px" data-tools-note>Nothing has been checked yet.</p></div>
@@ -259,6 +312,7 @@
       finally { button.disabled = false; }
     });
     root.querySelectorAll('[data-tool-test]').forEach((button) => button.onclick = () => testTool(button.dataset.toolTest));
+    bindWorkspaces();
     root.querySelectorAll('[data-tools]').forEach((button) => button.onclick = () => {
       if (button.dataset.tools === 'detect') refreshTools();
       if (button.dataset.tools === 'test') testAllTools();
@@ -338,6 +392,9 @@
       // Detection is synchronous in the main process, so this costs milliseconds and lets
       // every tool row exist before bind() attaches the shared [data-setting] listeners.
       try { tools = await window.bigkiji.toolsDetect(); } catch (_) { tools = []; }
+      // Both lists must exist before render(), so bind() can attach to rows that are
+      // already in the DOM rather than to rows that appear a tick later.
+      await refreshWorkspaces({ rerender: false });
       window.BKAudio?.apply(state.audio);
       document.documentElement.style.fontSize = `${state.appearance.textScale * 100}%`;
       document.body.classList.toggle('reduce-motion', !!state.appearance.reduceMotion);
@@ -346,6 +403,11 @@
       button?.addEventListener('click', open);
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); if (e.key === ',' && e.metaKey) { e.preventDefault(); open(); } });
       // Another window (or the tray) may change settings; keep this modal and the name in sync.
+      window.bigkiji.onWorkspaceChanged?.((next) => {
+        workspaces = next;
+        const host = root?.querySelector('[data-workspace-host]');
+        if (host) { host.innerHTML = workspacesCard(); bindWorkspaces(); }
+      });
       window.bigkiji.onSettingsChanged?.((next) => {
         if (saveTimer) return; // a local edit is still debounced — never clobber it
         state = next;

@@ -19,6 +19,7 @@ const UI_ROOT = PATHS.uiRoot;
 process.env.BIGKIJI_DATA_ROOT = PATHS.dataRoot;
 if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PATHS.knowledgeRoot;
 const dataRootModule = require('./data-root');
+const { WorkspaceRegistry, candidates: candidateWorkspaces, DEFAULT_EXCLUDE: WORKSPACE_DEFAULT_EXCLUDE } = require('./workspace-registry');
 const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
 // Do not materialise the default data root while the first-run wizard may still send
 // the owner somewhere else — an abandoned empty ~/BigKijiUniverse would be confusing.
@@ -182,25 +183,35 @@ function findSeikaDirs() {
 const VAULT_EXCLUDE = /node_modules|\.git|_archive|graphify-out|\.next|ComfyUI|recordings|\.obsidian|package-lock/;
 let vaultFiles = [];
 
+// The galaxy is made of the folders the owner registered, not of one hardcoded root.
+// With nothing registered this is exactly the previous single-root behaviour — same
+// paths, same clusters — so the map cannot change shape until the owner asks it to.
+function scanRoots() {
+  const registered = workspaces.list().filter((root) => root.status === 'ok');
+  if (!registered.length) return [{ path: VAULT, label: path.basename(VAULT), prefix: '' }];
+  return registered.map((root) => ({ path: root.path, label: root.label,
+    prefix: registered.length > 1 ? `${root.label}/` : '', exclude: root.exclude || [] }));
+}
+
 async function scanVaultFiles() {
   const out = [];
-  const walk = async (dir, depth) => {
+  const walk = async (root, dir, depth) => {
     if (out.length > 4200) return;
     let ents;
     try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of ents) {
       if (e.name.startsWith('.')) continue;
       const p = path.join(dir, e.name);
-      if (VAULT_EXCLUDE.test(p)) continue;
-      if (e.isDirectory()) { if (depth < 4) await walk(p, depth + 1); continue; }
+      if (VAULT_EXCLUDE.test(p) || (root.exclude || []).includes(e.name)) continue;
+      if (e.isDirectory()) { if (depth < 4) await walk(root, p, depth + 1); continue; }
       try {
         const st = await fs.promises.stat(p);
-        const rel = p.slice(VAULT.length + 1);
+        const rel = `${root.prefix}${p.slice(root.path.length + 1)}`;
         out.push({ p: rel, c: rel.split('/')[0], t: st.mtimeMs, size: st.size });
       } catch (_) {}
     }
   };
-  await walk(VAULT, 0);
+  for (const root of scanRoots()) await walk(root, root.path, 0);
   vaultFiles = out;
   broadcast('vault:files', vaultFiles);
 }
@@ -224,13 +235,14 @@ function sandboxTopology() {
 
 // fs.watch（FSEvents・再帰）: 実際に触られたファイルをリアルタイムで可視化へ
 const touchQueue = new Set();
-async function refreshVaultPaths(paths) {
+async function refreshVaultPaths(paths, root = scanRoots()[0]) {
   let changed = false;
   for (const raw of paths) {
-    const rel = String(raw || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!rel || VAULT_EXCLUDE.test(rel) || rel.split('/').some((part) => part.startsWith('.'))) continue;
-    const absolute = path.resolve(VAULT, rel);
-    if (!absolute.startsWith(path.resolve(VAULT) + path.sep)) continue;
+    const relative = String(raw || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!relative || VAULT_EXCLUDE.test(relative) || relative.split('/').some((part) => part.startsWith('.'))) continue;
+    const absolute = path.resolve(root.path, relative);
+    if (!absolute.startsWith(path.resolve(root.path) + path.sep)) continue;
+    const rel = `${root.prefix || ''}${relative}`;
     const index = vaultFiles.findIndex((file) => file.p === rel);
     try {
       const stat = await fs.promises.stat(absolute);
@@ -244,28 +256,57 @@ async function refreshVaultPaths(paths) {
   }
   if (changed) broadcast('vault:files', vaultFiles);
 }
+// One watcher per registered root, torn down and rebuilt when the list changes. The
+// queue carries the root each path belongs to, because two roots can hold the same
+// relative path and resolving it against the wrong one silently points at the wrong file.
+const vaultWatchers = new Map();
+let vaultWatchFlush = null;
 function startVaultWatch() {
-  try {
-    fs.watch(VAULT, { recursive: true }, (_ev, fname) => {
-      if (!fname || VAULT_EXCLUDE.test(fname)) return;
-      const base = path.basename(fname);
-      if (base.startsWith('.') || base.endsWith('.tmp')) return;
-      touchQueue.add(String(fname));
-    });
-  } catch (_) { return; }
-  const flush = setInterval(() => {
+  const wanted = new Map(scanRoots().map((root) => [root.path, root]));
+  for (const [key, watcher] of vaultWatchers) {
+    if (wanted.has(key)) continue;
+    try { watcher.close(); } catch (_) {}
+    vaultWatchers.delete(key);
+  }
+  for (const [key, root] of wanted) {
+    if (vaultWatchers.has(key)) continue;
+    try {
+      vaultWatchers.set(key, fs.watch(key, { recursive: true }, (_ev, fname) => {
+        if (!fname || VAULT_EXCLUDE.test(fname)) return;
+        const base = path.basename(fname);
+        if (base.startsWith('.') || base.endsWith('.tmp')) return;
+        touchQueue.add(`${key} ${fname}`);
+      }));
+    } catch (_) { /* an unreadable root is reported in Settings, not retried in a loop */ }
+  }
+  if (vaultWatchFlush) return;
+  vaultWatchFlush = setInterval(() => {
     if (!touchQueue.size) return;
-    const paths = [...touchQueue].slice(0, 6);
+    const queued = [...touchQueue].slice(0, 6);
     touchQueue.clear();
-    broadcast('vault:touch', paths);
-    // Incremental metadata refresh avoids a 4,200-file rescan on every edit.
-    refreshVaultPaths(paths).catch((error) => bus.push({ source: 'system', type: 'degrade', text: `Vault refresh failed: ${error.message}` }));
-    for (const rel of paths.slice(0, 3)) {
+    const byRoot = new Map();
+    for (const entry of queued) {
+      const cut = entry.indexOf(' ');
+      const key = entry.slice(0, cut); const relative = entry.slice(cut + 1);
+      if (!byRoot.has(key)) byRoot.set(key, []);
+      byRoot.get(key).push(relative);
+    }
+    const roots = new Map(scanRoots().map((root) => [root.path, root]));
+    const shown = [];
+    for (const [key, paths] of byRoot) {
+      const root = roots.get(key); if (!root) continue;
+      for (const relative of paths) shown.push(`${root.prefix || ''}${relative}`);
+      // Incremental metadata refresh avoids a 4,200-file rescan on every edit.
+      refreshVaultPaths(paths, root).catch((error) => bus.push({ source: 'system', type: 'degrade', text: `Vault refresh failed: ${error.message}` }));
+    }
+    if (!shown.length) return;
+    broadcast('vault:touch', shown);
+    for (const rel of shown.slice(0, 3)) {
       const agent = COMPANY_AGENT[rel.split('/')[0]] ?? null;
       bus.push({ source: 'vault', agent, type: 'fs', text: `✎ ${rel.slice(0, 110)}` });
     }
   }, 900);
-  flush.unref();
+  vaultWatchFlush.unref();
 }
 
 function scanDeliverables() {
@@ -1157,6 +1198,67 @@ ipcMain.handle('tools:choose', async (_event, id) => {
   return result.canceled ? '' : result.filePaths[0];
 });
 
+// Which folders BigKiji may read and edit. The owner's default picture is that
+// ~/Documents is the working surface and each business is a folder inside it — so the
+// candidates come from there. They are proposed, never auto-registered: a directory
+// silently becoming readable because it happened to be in the right place is how an
+// app ends up indexing somebody's tax returns.
+const workspaces = new WorkspaceRegistry({ userData: PATHS.userData });
+function workspaceState() {
+  return {
+    roots: workspaces.list(),
+    candidates: candidateWorkspaces({ roots: [path.join(os.homedir(), 'Documents'), os.homedir()] })
+      .filter((item) => !workspaces.list().some((root) => root.path === item.path)).slice(0, 24),
+    defaultExclude: [...WORKSPACE_DEFAULT_EXCLUDE],
+    documentsRoot: path.join(os.homedir(), 'Documents'),
+  };
+}
+function publishWorkspaces() {
+  const state = workspaceState();
+  broadcast('workspace:changed', state);
+  // Registering a folder is what makes it appear in the map and stay watched, so both
+  // have to follow the list rather than wait for the next launch.
+  startVaultWatch();
+  scanVaultFiles().catch((error) => bus.push({ source: 'system', type: 'degrade', text: `Workspace scan failed: ${error.message}` }));
+  return state;
+}
+// The read path the registry exists to gate. Registering a folder is what makes a file
+// in it reachable from the renderer; an excluded subfolder and a sensitive file are not
+// reachable even inside a registered root.
+const { isSensitivePath } = require('../domain/pi-core/security/security-policy');
+function resolveWorkspaceFile(target) {
+  const value = String(target || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!value) return '';
+  const registered = workspaces.list().filter((root) => root.status === 'ok');
+  for (const root of scanRoots()) {
+    const stripped = root.prefix && value.startsWith(root.prefix) ? value.slice(root.prefix.length) : value;
+    const absolute = path.resolve(root.path, stripped);
+    if (!absolute.startsWith(path.resolve(root.path) + path.sep)) continue;
+    if (registered.length && !workspaces.allows(absolute)) continue;
+    if (isSensitivePath(absolute)) continue;
+    if (!fs.existsSync(absolute)) continue;
+    return absolute;
+  }
+  return '';
+}
+ipcMain.handle('workspace:state', () => workspaceState());
+ipcMain.handle('workspace:register', (_event, spec = {}) => {
+  workspaces.register(String(spec.path || ''), { label: spec.label || '', exclude: Array.isArray(spec.exclude) ? spec.exclude : null });
+  return publishWorkspaces();
+});
+ipcMain.handle('workspace:remove', (_event, id) => { workspaces.remove(String(id || '')); return publishWorkspaces(); });
+ipcMain.handle('workspace:update', (_event, id, patch = {}) => { workspaces.update(String(id || ''), patch); return publishWorkspaces(); });
+ipcMain.handle('workspace:choose', async () => {
+  const result = await require('electron').dialog.showOpenDialog(mainWin || undefined, {
+    title: 'Add a folder BigKiji may work in',
+    message: 'BigKiji reads and edits inside the folders you add here, and nowhere else.',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled) return workspaceState();
+  workspaces.register(result.filePaths[0]);
+  return publishWorkspaces();
+});
+
 ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});
@@ -1258,14 +1360,19 @@ if (process.env.PITEST) {
 }
 ipcMain.on('pi:abort', () => { if (daemonClient?.connected) daemonClient.post('/api/abort').catch(() => {}); else pi.abort(); });
 
+// Both of these used to resolve against one hardcoded root. They now resolve through
+// the registered workspaces, which is what makes the Settings copy — "adding a folder
+// is what grants access" — actually true.
 ipcMain.on('reveal', (_e, p) => {
-  if (typeof p === 'string' && isInside(VAULT, p)) shell.showItemInFolder(p); // Vault内のみ許可
+  const file = typeof p === 'string' && (path.isAbsolute(p) ? p : resolveWorkspaceFile(p));
+  if (file && (workspaces.list().some((root) => root.status === 'ok') ? workspaces.allows(file) : isInside(VAULT, file))) {
+    shell.showItemInFolder(file);
+  }
 });
 ipcMain.handle('file:detail', async (_e, relPath) => {
   const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-  const absolute = path.resolve(VAULT, rel);
-  const root = path.resolve(VAULT) + path.sep;
-  if (!absolute.startsWith(root) || VAULT_EXCLUDE.test(absolute)) throw new Error('File is outside the BigKiji Vault');
+  const absolute = resolveWorkspaceFile(rel);
+  if (!absolute || VAULT_EXCLUDE.test(absolute)) throw new Error('File is outside every folder BigKiji may read');
   const st = await fs.promises.stat(absolute);
   let promptSummary = 'No prompt context recorded';
   if (/\.(md|json)$/i.test(rel)) {
