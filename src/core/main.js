@@ -22,7 +22,10 @@ const dataRootModule = require('./data-root');
 const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
 // Do not materialise the default data root while the first-run wizard may still send
 // the owner somewhere else — an abandoned empty ~/BigKijiUniverse would be confusing.
-if (!SETUP_STATUS.needed || PATHS.dataRootSource !== 'default') dataRootModule.ensureLayout(PATHS);
+// 'suppressed' (SMOKE/SNAP) is not the same as 'done' — a smoke run must not leave a
+// data root behind either. Every writer already mkdir's recursively, so skipping this
+// costs nothing.
+if (SETUP_STATUS.kind === 'done' || PATHS.dataRootSource !== 'default') dataRootModule.ensureLayout(PATHS);
 const { Orchestrator } = require('./orchestrator');
 const { PiBridge, MODEL: PI_MODEL } = require('../domain/pi-agent/pi-bridge');
 // v13: model-routerを直接インポート（Ollamaウォームアップ等）
