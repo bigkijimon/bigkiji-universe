@@ -312,19 +312,31 @@
   // and one for removed, so "approve" is not a blind yes. A provider only starts
   // being counted once it emits a hunk header, because a bare '+' at the start
   // of a line is ordinary prose far more often than it is a patch.
-  const diffs = new Map(); // taskId -> { patching, added, removed }
-  const HUNK = /^(@@ |diff --git |Index: )/;
+  const diffs = new Map(); // taskId -> { added, removed, patching, inHunk }
+  const HUNK = /^@@ /;
+  const FILE_START = /^(diff --git |Index: )/;
+  const FILE_META = /^(\+\+\+ |--- |index |new file |deleted file |old mode |new mode |similarity |rename |Binary files )/;
 
   function countDiff(taskId, text) {
-    let seen = diffs.get(taskId);
+    const seen = diffs.get(taskId) || { added: 0, removed: 0, patching: false, inHunk: false };
     for (const line of String(text).split('\n')) {
-      if (HUNK.test(line)) { seen = seen || { added: 0, removed: 0 }; seen.patching = true; continue; }
-      if (!seen?.patching) continue;
-      if (line.startsWith('+++') || line.startsWith('---')) continue; // file headers, not content
-      if (line.startsWith('+')) seen.added += 1;
-      else if (line.startsWith('-')) seen.removed += 1;
+      if (HUNK.test(line)) { seen.patching = true; seen.inHunk = true; continue; }
+      if (FILE_START.test(line)) { seen.patching = true; seen.inHunk = false; continue; }
+      if (!seen.patching) continue;
+      // Between `diff --git` and the first `@@` come the file headers. Inside a
+      // hunk those same prefixes are content: `+++i;` is a line somebody added,
+      // and a removed markdown rule is `----`. Only skip them where they can
+      // actually be headers.
+      if (!seen.inHunk) { if (FILE_META.test(line)) continue; }
+      if (line.startsWith('+')) { seen.added += 1; continue; }
+      if (line.startsWith('-')) { seen.removed += 1; continue; }
+      if (line === '' || line.startsWith(' ') || line.startsWith('\\')) continue; // context
+      // A hunk runs until something that is not diff-shaped. Without this the
+      // first patch put the task into counting mode forever, and every "- ran
+      // tests" the provider wrote afterwards was tallied as a deleted line.
+      seen.patching = false; seen.inHunk = false;
     }
-    if (seen) diffs.set(taskId, seen);
+    diffs.set(taskId, seen);
     renderDiffStat();
   }
 
@@ -332,6 +344,7 @@
     let added = 0; let removed = 0;
     for (const entry of diffs.values()) { added += entry.added; removed += entry.removed; }
     els.diff.textContent = '';
+    els.diff.title = '';
     if (!added && !removed) return;
     const plus = document.createElement('span'); plus.className = 'plus'; plus.textContent = `+${added}`;
     const minus = document.createElement('span'); minus.className = 'minus'; minus.textContent = `−${removed}`;

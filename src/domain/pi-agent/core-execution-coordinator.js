@@ -280,8 +280,9 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (['completed', 'failed'].includes(task.status) && !assignment.learned) {
       assignment.learned = true;
       const durationMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0;
-      const reason = task.status === 'completed' ? '' : String(task.failureReason || '');
-      const tripped = this.breaker.record(task.provider, { reason, retryAfterMs: task.retryAfterMs || 0 });
+      const ok = task.status === 'completed';
+      const reason = ok ? '' : String(task.failureReason || '');
+      const tripped = this.breaker.record(task.provider, { ok, reason, retryAfterMs: task.retryAfterMs || 0 });
       if (tripped?.opened) {
         assignment.throttled = reason;
         knowledge.recordEvent(run.id, { type: 'provider-cooldown', status: run.status, provider: task.provider,
@@ -361,11 +362,19 @@ class CoreExecutionCoordinator extends EventEmitter {
     // the same exhausted quota each propose the same next provider, the owner
     // approves three repairs, and all three hit the same wall — which is what
     // today's Gemini outage looked like from the inside.
+    //
+    // `fallbackIndex` only advances when a provider is actually taken. Advancing
+    // it past one that was merely cooling burned the position permanently: with a
+    // one-entry chain, a sixty second cooldown meant the assignment could never be
+    // repaired again, even an hour later.
     let next = null; const skipped = [];
-    while (assignment.fallbackIndex < candidates.length) {
-      const candidate = candidates[assignment.fallbackIndex++];
-      if (!this.breaker.isOpen(candidate)) { next = candidate; break; }
-      skipped.push(`${candidate} (${Math.round(this.breaker.retryInMs(candidate) / 1000)}s)`);
+    for (let index = assignment.fallbackIndex; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      if (!this.breaker.allow(candidate)) {
+        skipped.push(`${candidate} (${Math.round(this.breaker.retryInMs(candidate) / 1000)}s)`);
+        continue;
+      }
+      next = candidate; assignment.fallbackIndex = index + 1; break;
     }
     if (skipped.length) {
       knowledge.recordEvent(run.id, { type: 'fallback-skipped', status: run.status, provider: assignment.provider,

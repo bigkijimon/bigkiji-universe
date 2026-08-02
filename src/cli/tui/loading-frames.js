@@ -150,7 +150,13 @@ function monoShadeRow(row = [], palette = []) {
 
 // The face sits around pixel rows 6..7 in every frame; that pair reads as a
 // recognisable cat in a single terminal row.
+//
+// The shaded single row can only use one of them, and it has to be row 7: that
+// is where the eyes are (`0000234224320000` — the 2s). Row 6 is the brow, which
+// is a uniform band, so shading it produced the same featureless bar the
+// silhouette did in four of the six frames.
 const FACE_ROWS = [6, 7];
+const EYE_ROW = 7;
 
 function buildPixelFrameSets() {
   const palette = readPalette();
@@ -185,7 +191,7 @@ function buildMonoFrameSets() {
     for (let y = 0; y + 1 < grid.length; y += 2) rows.push(monoHalfBlockRow(grid[y], grid[y + 1]));
     return rows.join('\n');
   });
-  const single = grids.map((grid) => monoShadeRow(grid[FACE_ROWS[0]] || [], palette));
+  const single = grids.map((grid) => monoShadeRow(grid[EYE_ROW] || [], palette));
   return {
     'pixel-cat-mono': Object.freeze({ id: 'pixel-cat-mono', label: 'Pixel kijitora — colourless silhouette (8 rows)',
       rows: Math.max(1, Math.floor((grids[0].length || 16) / 2)), width, frameMs: 67, frames: Object.freeze(panel) }),
@@ -254,7 +260,7 @@ function buildCatMark(colored) {
   if (first < 0) return '';
   const palette = readPalette();
   if (colored && palette.length) return halfBlockRow(upper.slice(first, last + 1), lower.slice(first, last + 1), palette);
-  return monoShadeRow(upper.slice(first, last + 1), palette);
+  return monoShadeRow(lower.slice(first, last + 1), palette); // lower === EYE_ROW
 }
 
 function loadingFrames(id = DEFAULT_FRAME_SET_ID) { return FRAME_SETS[id] || FRAME_SETS[WINGED_CAT_ASCII.id]; }

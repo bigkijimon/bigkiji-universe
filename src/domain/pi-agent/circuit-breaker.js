@@ -57,31 +57,34 @@ class CircuitBreaker {
 
   _circuit(provider) {
     const key = String(provider || '');
-    if (!this.circuits.has(key)) this.circuits.set(key, { hits: [], openUntil: 0, cooldownMs: 0, opens: 0, reason: '' });
+    if (!this.circuits.has(key)) this.circuits.set(key, { hits: [], openUntil: 0, cooldownMs: 0, opens: 0, reason: '', trialTaken: false });
     return this.circuits.get(key);
   }
 
   /**
    * What happened when we asked this provider.
    * @param {string} provider
-   * @param {{reason?: string, retryAfterMs?: number}} outcome — reason '' means it worked
+   * @param {{ok?: boolean, reason?: string, retryAfterMs?: number}} outcome
    * @returns {{provider: string, state: string, opened: boolean, openUntil: number, reason: string}|null}
    */
-  record(provider, { reason = '', retryAfterMs = 0 } = {}) {
+  record(provider, { ok = false, reason = '', retryAfterMs = 0 } = {}) {
     if (!provider) return null;
     const circuit = this._circuit(provider);
     const at = this.now();
 
-    // Anything that is not a throttle closes the circuit. A provider that
-    // answered — even with a crash — is reachable, and reachability is the only
-    // thing this class tracks. Whether the answer was any good is the capability
-    // registry's job, and keeping the two separate is why a rate limit can be
-    // forgiven here without also being forgiven there.
-    if (!THROTTLED.has(reason)) {
+    // Only a provider that actually answered closes its circuit. An ordinary
+    // failure leaves it exactly where it was.
+    //
+    // Treating every non-throttle outcome as "reachable" looked reasonable and
+    // was wrong: while a quota cooldown was running, one unrelated crash from
+    // any other task on the same provider wiped it, and the next repair walked
+    // straight back into the exhausted quota. Silence is not evidence of health.
+    if (ok) {
       if (!circuit.hits.length && !circuit.openUntil) return null;
-      this.circuits.set(String(provider), { hits: [], openUntil: 0, cooldownMs: 0, opens: 0, reason: '' });
+      this.circuits.set(String(provider), { hits: [], openUntil: 0, cooldownMs: 0, opens: 0, reason: '', trialTaken: false });
       return { provider, state: 'closed', opened: false, openUntil: 0, reason: '' };
     }
+    if (!THROTTLED.has(reason)) return null; // a crash says nothing about reachability
 
     circuit.reason = reason;
     circuit.hits = circuit.hits.filter((time) => at - time < this.windowMs);
@@ -104,18 +107,40 @@ class CircuitBreaker {
     circuit.openUntil = at + wait;
     circuit.opens += 1;
     circuit.hits = [];
+    circuit.trialTaken = false; // a fresh cooldown earns a fresh trial
     return { provider, state: 'open', opened: true, openUntil: circuit.openUntil, reason, cooldownMs: wait };
   }
 
-  /** 'closed' | 'open' | 'half-open' */
+  /** 'closed' | 'open' | 'half-open'. A pure query — it consumes nothing. */
   state(provider) {
     const circuit = this.circuits.get(String(provider || ''));
     if (!circuit || !circuit.openUntil) return 'closed';
     return this.now() >= circuit.openUntil ? 'half-open' : 'open';
   }
 
-  /** True only while the cooldown is still running. Half-open lets one through. */
+  /** True only while the cooldown is running. Does not consume the half-open trial. */
   isOpen(provider) { return this.state(provider) === 'open'; }
+
+  /**
+   * May I ask this provider now? Consumes the half-open trial, so exactly one
+   * caller gets through per cooldown.
+   *
+   * This is the difference between the docstring above and what the code did.
+   * The repair loop hands every failed assignment to _fallback in a single pass;
+   * with a pure clock comparison all three of them saw half-open and all three
+   * were offered the same still-throttled provider — the exact case this module
+   * exists to prevent.
+   */
+  allow(provider) {
+    const state = this.state(provider);
+    if (state === 'open') return false;
+    if (state === 'half-open') {
+      const circuit = this._circuit(provider);
+      if (circuit.trialTaken) return false;
+      circuit.trialTaken = true;
+    }
+    return true;
+  }
 
   /** Milliseconds until this provider is worth asking again; 0 when it is now. */
   retryInMs(provider) {

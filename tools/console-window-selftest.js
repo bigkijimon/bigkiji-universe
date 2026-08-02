@@ -106,24 +106,28 @@ assert.ok(/HUNK/.test(js) && /@@ /.test(js),
 assert.ok(/diffs\.clear\(\)/.test(js),
   'a new run starts a new count; carrying the last one forward overstates what is about to happen');
 {
-  // Run the counter the way the window does, so the arithmetic is checked rather
-  // than the presence of the code that does it.
-  const HUNK = /^(@@ |diff --git |Index: )/;
-  const tally = (text) => {
-    let seen = null; let added = 0; let removed = 0;
-    for (const line of text.split('\n')) {
-      if (HUNK.test(line)) { seen = true; continue; }
-      if (!seen) continue;
-      if (line.startsWith('+++') || line.startsWith('---')) continue;
-      if (line.startsWith('+')) added += 1;
-      else if (line.startsWith('-')) removed += 1;
-    }
-    return { added, removed };
-  };
-  assert.deepEqual(tally('+ this is prose\n- and so is this'), { added: 0, removed: 0 },
+  // Run the real function, lifted out of the window's IIFE, so the arithmetic is
+  // checked rather than the presence of the code that does it.
+  const start = js.indexOf('const diffs = new Map()');
+  const end = js.indexOf('function renderDiffStat()');
+  assert.ok(start > 0 && end > start, 'the counter should be findable in console.js');
+  const build = new Function('els', 'renderDiffStat', `${js.slice(start, end)}\nreturn { countDiff, diffs };`);
+  const { countDiff, diffs } = build({ diff: { textContent: '', title: '' } }, () => {});
+  const tally = (id, text) => { countDiff(id, text); const e = diffs.get(id) || {}; return { added: e.added || 0, removed: e.removed || 0 }; };
+
+  assert.deepEqual(tally('a', '+ this is prose\n- and so is this'), { added: 0, removed: 0 },
     'text before any hunk header is not a patch');
-  assert.deepEqual(tally('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
-    { added: 2, removed: 1 }, 'file headers are not content');
+  assert.deepEqual(tally('b', 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
+    { added: 2, removed: 1 }, 'file headers between diff --git and the first @@ are not content');
+  assert.deepEqual(tally('c', '@@ -1,0 +1,2 @@\n+++i;\n+count++;'), { added: 2, removed: 0 },
+    'inside a hunk, +++i; is a line somebody added — not a file header');
+  assert.deepEqual(tally('d', '@@ -1,1 +0,0 @@\n----'), { added: 0, removed: 1 },
+    'and a removed markdown rule is a removed line');
+  assert.deepEqual(tally('e', '@@ -1,0 +1,1 @@\n+real\nsummary:\n- updated x\n- ran tests\n- all green'),
+    { added: 1, removed: 0 },
+    'a hunk ends at the first line that is not diff-shaped; what the provider narrates afterwards is prose');
+  assert.deepEqual(tally('f', '@@ -1,0 +1,1 @@\n+real\n\nFAIL x\n- Expected\n+ Received'), { added: 1, removed: 0 },
+    'including jest output, which is full of leading + and -');
 }
 
 console.log('console window selftest: PASS · markup and behaviour agree on every id · assets exist · opaque with no backdrop-filter · CSP present · broadcasts reach it · chat and terminal both reachable · one pane per real assignment · approval echoes the exact hashes · the change counter counts patches, not prose');

@@ -47,6 +47,41 @@ ok('a quota answer and a rate limit are told apart, and a crash is neither', () 
   assert.equal(classifyFailure(''), '');
   assert.equal(retryAfterMs('nothing here'), 0, 'no stated delay means no invented delay');
 });
+ok('ordinary stderr is never mistaken for a throttle', () => {
+  // What these are matched against is not an error line. It is `task.error`:
+  // the last 8000 characters of everything the provider wrote to stderr. A loose
+  // word here costs a real defect its penalty and opens a cooldown on a provider
+  // that is working — the exact inverse of what this feature is for. Every string
+  // below is output a healthy provider produces.
+  for (const text of [
+    'Error: Maximum call stack size exceeded',
+    'jest: timeout of 5000ms exceeded',
+    "Cannot find module './billing'",
+    'AssertionError at src/foo.js:429',
+    'expected 3 to equal 429',
+    'Test suite failed: 429 assertions checked',
+    'TypeError: undefined is not a function',
+    'ENOSPC: no space left on device',
+    'error TS2345: Argument of type string is not assignable',
+    'npm ERR! code ELIFECYCLE',
+  ]) {
+    assert.equal(classifyFailure(text), '', `"${text}" is an ordinary failure and must still be penalised`);
+  }
+});
+ok('and a genuine throttle still is one, in the shapes providers actually send', () => {
+  const throttles = [
+    ['{"error":{"code":429,"message":"You exceeded your current quota","status":"RESOURCE_EXHAUSTED"}}', 'quota'],
+    ['HTTP/1.1 429 Too Many Requests', 'rate-limit'],
+    ['429 Too Many Requests', 'rate-limit'],
+    ['"status": 429', 'rate-limit'],
+    ['rate limit reached for gpt-5', 'rate-limit'],
+    ['{"type":"overloaded_error"}', 'rate-limit'],
+    ['insufficient_quota', 'quota'],
+    ['Quota exceeded for metric generate_content_free_tier_requests', 'quota'],
+    ['please check your plan and billing details', 'quota'],
+  ];
+  for (const [text, want] of throttles) assert.equal(classifyFailure(text), want, `"${text}"`);
+});
 ok('the combined pattern still matches everything it used to', () => {
   // pi-bridge.js drives its local fallback off ERROR_PATTERN. Splitting the
   // regex in two must not change what that sees.
@@ -61,33 +96,33 @@ ok('the combined pattern still matches everything it used to', () => {
 // ---------------------------------------------------------------------------
 ok('an ordinary failure never opens the circuit', () => {
   const time = clock(); const breaker = breakerWith(time);
-  for (let i = 0; i < 10; i += 1) breaker.record('codex', { reason: '' });
+  for (let i = 0; i < 10; i += 1) breaker.record('codex', { ok: true });
   assert.equal(breaker.state('codex'), 'closed');
   assert.equal(breaker.isOpen('codex'), false);
   assert.deepEqual(breaker.snapshot(), [], 'a provider that never throttled is not worth reporting');
 });
 ok('one throttle is not enough; the threshold is', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 3 });
-  assert.equal(breaker.record('gemini', { reason: 'rate-limit' }).opened, false);
-  assert.equal(breaker.record('gemini', { reason: 'rate-limit' }).opened, false);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'rate-limit' }).opened, false);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'rate-limit' }).opened, false);
   assert.equal(breaker.state('gemini'), 'closed', 'two in a burst is a burst, not an outage');
-  const tripped = breaker.record('gemini', { reason: 'rate-limit' });
+  const tripped = breaker.record('gemini', { ok: false, reason: 'rate-limit' });
   assert.equal(tripped.opened, true);
   assert.equal(breaker.state('gemini'), 'open');
   assert.equal(breaker.isOpen('gemini'), true);
 });
 ok('throttles older than the window are forgotten', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 3, windowMs: 60000 });
-  breaker.record('glm', { reason: 'rate-limit' });
-  breaker.record('glm', { reason: 'rate-limit' });
+  breaker.record('glm', { ok: false, reason: 'rate-limit' });
+  breaker.record('glm', { ok: false, reason: 'rate-limit' });
   time.advance(61000);
-  assert.equal(breaker.record('glm', { reason: 'rate-limit' }).opened, false,
+  assert.equal(breaker.record('glm', { ok: false, reason: 'rate-limit' }).opened, false,
     'one throttle an hour is not an outage and must not trip anything');
   assert.equal(breaker.state('glm'), 'closed');
 });
 ok('the cooldown expires into half-open, which lets exactly one attempt through', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
-  breaker.record('gemini', { reason: 'rate-limit' });
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' });
   assert.equal(breaker.state('gemini'), 'open');
   assert.equal(breaker.retryInMs('gemini'), 60000);
   time.advance(59999);
@@ -99,54 +134,87 @@ ok('the cooldown expires into half-open, which lets exactly one attempt through'
 });
 ok('a throttle on the trial attempt doubles the wait instead of repeating it', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
-  breaker.record('gemini', { reason: 'rate-limit' });
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' });
   time.advance(60000);
-  const again = breaker.record('gemini', { reason: 'rate-limit' });
+  const again = breaker.record('gemini', { ok: false, reason: 'rate-limit' });
   assert.equal(again.opened, true);
   assert.equal(again.cooldownMs, 120000, 'the previous wait was too short, so it grows');
   time.advance(120000);
-  assert.equal(breaker.record('gemini', { reason: 'rate-limit' }).cooldownMs, 240000);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'rate-limit' }).cooldownMs, 240000);
 });
 ok('the wait is capped, so nothing is retired forever', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000, maxCooldownMs: 300000 });
   let last = 0;
   for (let i = 0; i < 12; i += 1) {
-    const result = breaker.record('gemini', { reason: 'rate-limit' });
+    const result = breaker.record('gemini', { ok: false, reason: 'rate-limit' });
     last = result.cooldownMs; time.advance(last);
   }
   assert.equal(last, 300000);
 });
 ok('one success closes the circuit and forgets the escalation', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
-  breaker.record('gemini', { reason: 'rate-limit' });
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' });
   time.advance(60000);
-  breaker.record('gemini', { reason: 'rate-limit' }); // cooldown now 120s
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' }); // cooldown now 120s
   time.advance(120000);
-  const closed = breaker.record('gemini', { reason: '' });
+  const closed = breaker.record('gemini', { ok: true });
   assert.equal(closed.state, 'closed');
   assert.equal(breaker.state('gemini'), 'closed');
   assert.equal(breaker.retryInMs('gemini'), 0);
   // And the next outage starts from the base wait again, not from 240s.
-  assert.equal(breaker.record('gemini', { reason: 'rate-limit' }).cooldownMs, 60000);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'rate-limit' }).cooldownMs, 60000);
+});
+ok('an unrelated crash does not wipe a running cooldown — only a success does', () => {
+  // Treating every non-throttle outcome as evidence of health was wrong: while a
+  // quota cooldown ran, one crash from any other task on the same provider reset
+  // it, and the next repair walked straight back into the exhausted quota.
+  const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
+  breaker.record('gemini', { ok: false, reason: 'quota' });
+  const waiting = breaker.retryInMs('gemini');
+  assert.ok(waiting > 0);
+  assert.equal(breaker.record('gemini', { ok: false, reason: '' }), null, 'a crash teaches this class nothing');
+  assert.equal(breaker.state('gemini'), 'open', 'and must leave the circuit exactly where it was');
+  assert.equal(breaker.retryInMs('gemini'), waiting);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'model-unavailable' }), null);
+  assert.equal(breaker.state('gemini'), 'open', 'a retired model is not a working one either');
+  breaker.record('gemini', { ok: true });
+  assert.equal(breaker.state('gemini'), 'closed', 'an answer is');
+});
+ok('half-open admits exactly one caller, not everyone who asks', () => {
+  // The repair loop hands every failed assignment to _fallback in one pass. With
+  // a pure clock comparison all of them saw half-open and all of them were
+  // offered the same still-throttled provider — the case this module exists for.
+  const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' });
+  assert.equal(breaker.allow('gemini'), false, 'nobody passes while the cooldown runs');
+  time.advance(60000);
+  assert.equal(breaker.state('gemini'), 'half-open');
+  assert.equal(breaker.allow('gemini'), true, 'the first caller gets the trial');
+  assert.equal(breaker.allow('gemini'), false, 'the second does not');
+  assert.equal(breaker.allow('gemini'), false);
+  assert.equal(breaker.isOpen('gemini'), false, 'isOpen stays a pure query and consumes nothing');
+  breaker.record('gemini', { ok: false, reason: 'rate-limit' });
+  time.advance(120000);
+  assert.equal(breaker.allow('gemini'), true, 'a fresh cooldown earns a fresh trial');
 });
 ok('an exhausted quota waits longer than a rate limit', () => {
   const time = clock();
   const limited = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
   const spent = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
-  const a = limited.record('gemini', { reason: 'rate-limit' });
-  const b = spent.record('gemini', { reason: 'quota' });
+  const a = limited.record('gemini', { ok: false, reason: 'rate-limit' });
+  const b = spent.record('gemini', { ok: false, reason: 'quota' });
   assert.ok(b.cooldownMs > a.cooldownMs, `${b.cooldownMs} should exceed ${a.cooldownMs}`);
 });
 ok("the provider's own retry-after wins when it is longer, and never shortens ours", () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000, maxCooldownMs: 900000 });
-  assert.equal(breaker.record('gemini', { reason: 'rate-limit', retryAfterMs: 300000 }).cooldownMs, 300000);
+  assert.equal(breaker.record('gemini', { ok: false, reason: 'rate-limit', retryAfterMs: 300000 }).cooldownMs, 300000);
   const other = breakerWith(clock(), { threshold: 1, cooldownMs: 60000 });
-  assert.equal(other.record('codex', { reason: 'rate-limit', retryAfterMs: 1000 }).cooldownMs, 60000,
+  assert.equal(other.record('codex', { ok: false, reason: 'rate-limit', retryAfterMs: 1000 }).cooldownMs, 60000,
     'a 1s hint must not undercut our own backoff');
 });
 ok('circuits are per provider', () => {
   const time = clock(); const breaker = breakerWith(time, { threshold: 1 });
-  breaker.record('gemini', { reason: 'quota' });
+  breaker.record('gemini', { ok: false, reason: 'quota' });
   assert.equal(breaker.isOpen('gemini'), true);
   assert.equal(breaker.isOpen('codex'), false, 'one provider being out says nothing about another');
   assert.deepEqual(breaker.snapshot().map((row) => row.provider), ['gemini']);
@@ -200,14 +268,39 @@ ok('_fallback walks past providers in cooldown and stops at the first available 
 
   // claude-code falls back to glm, then codex, then qwen. Take the first two out.
   assert.deepEqual(FALLBACKS['claude-code'], ['glm', 'codex', 'qwen']);
-  breaker.record('glm', { reason: 'quota' });
-  breaker.record('codex', { reason: 'rate-limit' });
+  breaker.record('glm', { ok: false, reason: 'quota' });
+  breaker.record('codex', { ok: false, reason: 'rate-limit' });
 
   const run = { id: 'run-1', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
   const assignment = { taskId: 't1', provider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
   assert.equal(coordinator._fallback(run, assignment), true);
   assert.equal(assignment.provider, 'qwen', 'the two in cooldown are skipped, not offered');
   assert.equal(planned.length, 1, 'and only one replacement is planned');
+});
+ok('a cooldown postpones a fallback; it does not burn the chain position', () => {
+  // A cooldown is temporary and `fallbackIndex` is permanent, so advancing it
+  // past a provider that was merely cooling retired that provider for good. With
+  // the one-entry chain qwen -> glm, a sixty second rate limit meant the
+  // assignment could never be repaired again, even an hour later.
+  const time = clock();
+  const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
+  const taskRunner = Object.assign(new (require('events').EventEmitter)(), {
+    get: () => ({ prompt: 'original', error: 'boom', metadata: {} }),
+    plan: (spec) => ({ id: spec.id, status: 'queued', disclosure: { disclosureHash: 'h' } }),
+  });
+  const coordinator = new CoreExecutionCoordinator({ taskRunner, breaker,
+    registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'f-')) }) });
+  assert.deepEqual(FALLBACKS.qwen, ['glm'], 'this test relies on the single-entry chain');
+  breaker.record('glm', { ok: false, reason: 'rate-limit' });
+
+  const run = { id: 'run-3', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
+  const assignment = { taskId: 't1', provider: 'qwen', role: 'context', title: 'work', fallbackIndex: 0 };
+  assert.equal(coordinator._fallback(run, assignment), false, 'nothing available right now');
+  assert.equal(assignment.fallbackIndex, 0, 'so the position must not move');
+  time.advance(600000);
+  assert.equal(coordinator._fallback(run, assignment), true, 'and once the cooldown is over it recovers');
+  assert.equal(assignment.provider, 'glm');
+  assert.equal(assignment.fallbackIndex, 1, 'now it moves, because a provider was actually taken');
 });
 ok('when every fallback is in cooldown the run fails instead of looping', () => {
   const time = clock();
@@ -218,7 +311,7 @@ ok('when every fallback is in cooldown the run fails instead of looping', () => 
   });
   const coordinator = new CoreExecutionCoordinator({ taskRunner, breaker,
     registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'd-')) }) });
-  for (const provider of FALLBACKS['claude-code']) breaker.record(provider, { reason: 'quota' });
+  for (const provider of FALLBACKS['claude-code']) breaker.record(provider, { ok: false, reason: 'quota' });
   const run = { id: 'run-2', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
   const assignment = { taskId: 't1', provider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
   assert.equal(coordinator._fallback(run, assignment), false);

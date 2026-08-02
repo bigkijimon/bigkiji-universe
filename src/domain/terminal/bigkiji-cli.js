@@ -86,7 +86,7 @@ function launchHud() {
   if (process.platform === 'darwin' && app) { const child = spawn('/usr/bin/open', [app], { detached: true, stdio: 'ignore' }); child.unref(); return { launched: app }; }
   const electron = path.join(APP_ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
   if (fs.existsSync(electron)) { const child = spawn(electron, ['.', '--show-main'], { cwd: APP_ROOT, detached: true, stdio: 'ignore' }); child.unref(); return { launched: 'development Electron HUD' }; }
-  throw new Error('No BigKiji Universe GUI build was found');
+  throw new Error('no bigkiji universe gui build was found');
 }
 
 async function selectSession(client) {
@@ -209,7 +209,7 @@ async function repl(client) {
           else if (key === 'contrast' && ['standard', 'high'].includes(requested)) prefs.update({ contrast: requested });
           else if (key === 'cat' && ['low', 'periodic'].includes(requested)) prefs.update({ catCommentary: requested });
           else if (key === 'accent' && ['follow', 'fixed-orange'].includes(requested)) prefs.update({ modeAccent: requested });
-          else throw new Error('Usage: /setting mode ask|auto-edit|plan | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
+          else throw new Error('usage: /setting mode ask|auto-edit|plan | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
           A = themeFor(mode);
         }
         const current = prefs.get();
@@ -225,24 +225,24 @@ async function repl(client) {
           ...renderToolResult(ideas.map((idea) => `${idea.id}  ${idea.status.padEnd(9)} ${idea.title}`).join('\n') || 'none', { ...view(), maxLines: 8 })]);
       }
       else if (text.startsWith('/idea ')) {
-        const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('Usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
-        const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('Idea not found');
+        const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
+        const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('idea not found');
         const ideaResult = (label, payload) => emit([...renderToolCall('idea', `${lower(action)} · ${lower(id)}`, view()),
           ...renderToolResult(typeof payload === 'string' ? payload : util.inspect(payload, { depth: 2, colors: false }), { ...view(), maxLines: 5 })]);
         if (action === 'plan') ideaResult(action, await client.planIdea(id, idea.draftHash));
         else if (action === 'enhance') { const planned = await client.enhanceIdea(id, idea.draftHash); const d = planned.task.disclosure;
-          ideaResult(action, `${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
+          ideaResult(action, `${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\napprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
         else if (action === 'send') ideaResult(action, await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
         else if (action === 'adopt') ideaResult(action, await client.promoteIdea(id, idea.draftHash));
         else if (action === 'archive') ideaResult(action, await client.archiveIdea(id, idea.draftHash));
-        else throw new Error('Unknown idea action');
+        else throw new Error('unknown idea action');
       }
       else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
         emit(renderEvent('run', result.run, view())); }
       else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('hud', lower(launched.launched || 'launched'), view())); }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.', view()));
+      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan; every external model still waits for owner approval.', view()));
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the
@@ -256,11 +256,35 @@ async function repl(client) {
     finally { turnStartedAt = 0; }
     paintFooter(true); refreshPrompt();
   });
-  rl.on('close', () => { if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect(); process.exit(0); });
+  // readline in terminal mode swallows ^C itself and emits this instead of
+  // letting SIGINT reach the process, so without it Ctrl-C out of the REPL
+  // closed the interface and exited 0.
+  let interrupted = false;
+  rl.on('SIGINT', () => { interrupted = true; rl.close(); });
+  rl.on('close', () => {
+    if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect();
+    process.exit(interrupted ? 130 : 0);
+  });
   paintFooter(true); refreshPrompt();
 }
 
+// Exit codes, because something else is going to read them. cmux, tmux, a shell
+// `&&` chain and CI all treat this as a normal command: 0 for a turn that
+// completed, 1 for a failure with the reason on stderr, 130 for Ctrl-C — the
+// conventional 128 + SIGINT, so `while bigkiji ...; do` stops when interrupted
+// instead of looping forever.
+//
+// It lives inside main() rather than under `require.main === module`, because
+// the shipped command is tools/bigkiji-cli.js requiring this file — so that
+// guard is false for every real invocation and the handler was never installed.
+function installSignalHandlers() {
+  if (installSignalHandlers.done) return;
+  installSignalHandlers.done = true;
+  process.on('SIGINT', () => process.exit(130));
+}
+
 async function main(argv = process.argv.slice(2)) {
+  installSignalHandlers();
   const client = await ensureClient(); setMode(prefs.get().mode, false); const args = [...argv]; const autoAt = args.indexOf('--auto'); const auto = autoAt >= 0;
   if (auto) args.splice(autoAt, 1); const command = String(args[0] || '').replace(/^\//, '').toLowerCase();
   if (['monitor', 'tui'].includes(command) || args.includes('--tui')) { const monitor = new TUIMonitor({ client }); client.on('hud-request', () => launchHud()); await monitor.start(); return; }
@@ -275,21 +299,15 @@ async function main(argv = process.argv.slice(2)) {
     if (result.draft) console.log(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, options).join('\n'));
     if (result.run) {
       console.log(renderEvent('run', result.run, options).join('\n'));
-      console.log(renderNote('Awaiting owner directive — open “bigkiji monitor” and press a to accept.', options).join('\n'));
+      console.log(renderNote('awaiting owner directive — open “bigkiji monitor” and press a to accept.', options).join('\n'));
     }
     return;
   }
   await repl(client);
 }
 
-// Exit codes, because something else is going to read them. cmux, tmux, a
-// shell `&&` chain and CI all treat this as a normal command: 0 for a turn that
-// completed, 1 for a failure with the reason on stderr, 130 for Ctrl-C — the
-// conventional 128 + SIGINT, so `while bigkiji ...; do` stops when interrupted
-// instead of looping forever.
 if (require.main === module) {
-  process.on('SIGINT', () => process.exit(130));
   main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
 }
 
-module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, APP_ROOT };
+module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, APP_ROOT };

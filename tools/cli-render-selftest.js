@@ -22,7 +22,7 @@ const { stripAnsi } = require('../src/domain/terminal/cli-theme');
 const T = require('../src/cli/tui/transcript');
 const { TUIRenderer, modelPanel } = require('../src/cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../src/cli/tui/footer');
-const { loadingFrames, frameRows, FRAME_SETS } = require('../src/cli/tui/loading-frames');
+const { loadingFrames, frameRows, FRAME_SETS, SHADES } = require('../src/cli/tui/loading-frames');
 
 // The corners and tees named in the brief, plus every other framing glyph and
 // the vertical bar that used to cost two columns on every single line.
@@ -329,6 +329,56 @@ ok('nothing overflows between 24 and 200 columns, including the phase chips', ()
   const chips = plainLines(narrow.sections(MONITOR_STATE, MONITOR_RELAY).header).find((line) => /○\d/.test(line));
   assert.ok(chips && !/preflight/.test(chips), `at 24 columns the names go: ${chips}`);
   assert.ok(/[●○]1/.test(chips) && /[●○]2/.test(chips) && /[●○]3/.test(chips), `but all three steps stay: ${chips}`);
+});
+ok('the sections fit the screen vertically too, down to 16 rows', () => {
+  // The panel costs three rows and the relay has a floor of three, so on a short
+  // screen the sections came to more rows than the terminal had: draw() wrote a
+  // relay line into the footer's row and the footer's own ESC[2K erased it.
+  for (const rows of [16, 18, 20, 24, 30, 50]) {
+    const renderer = new TUIRenderer({ output: { columns: 100, rows, write() {} } });
+    const { header, middle, footer } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
+    const total = header.length + middle.length + footer.length;
+    assert.ok(total <= rows, `${total} rows of sections for a ${rows} row terminal`);
+  }
+  const short = new TUIRenderer({ output: { columns: 100, rows: 16, write() {} } });
+  assert.equal(plainLines(short.sections(MONITOR_STATE, MONITOR_RELAY).header).filter((line) => BOX.test(line)).length, 0,
+    'below 18 rows the live relay is worth more than a panel /status can print on demand');
+});
+ok('a long version string cannot push the panel past the terminal', () => {
+  // The label rides the top border and is built from APP_VERSION. It was measured
+  // against itself rather than the width, so a prerelease string pushed a 40
+  // column panel out to 48.
+  for (const cols of [24, 40, 60, 80]) {
+    const boxed = plainLines(modelPanel(MONITOR_STATE, { width: cols, label: ' bigkiji universe v2.5.0-rc.1+build.20260803 ' }));
+    const widths = boxed.map(T.stringWidth);
+    assert.ok(widths.every((value) => value === widths[0]), `rows must align at ${cols}: ${widths.join(',')}`);
+    assert.ok(widths[0] <= cols, `panel is ${widths[0]} wide in a ${cols} column terminal`);
+  }
+});
+ok('every frame of the colourless cat has a face, not just two of them', () => {
+  // The shaded row was taken from pixel row 6, the brow, which is a uniform band
+  // — so four of the six frames rendered as a featureless bar. The eyes are in
+  // row 7.
+  const result = require('child_process').spawnSync(process.execPath, ['-e', `
+    const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
+    process.stdout.write(JSON.stringify({ frames: L.loadingFrames().frames, mark: L.catMark() }));
+  `], { env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const { frames, mark } = JSON.parse(result.stdout);
+  // "Has a face" means the eyes are there, and an eye is a darker pair inside a
+  // lighter face. Counting distinct characters was too weak to see the bug: the
+  // brow row has three shades too, it just has them in a smooth gradient.
+  const [darkest, dark, mid, light] = SHADES;
+  const OPEN_EYES = new RegExp(`[${light}${mid}][${dark}${darkest}]{1,2}[${light}${mid}]`);
+  const open = frames.filter((frame) => OPEN_EYES.test(frame)).length;
+  assert.ok(open >= 3, `only ${open} of ${frames.length} colourless frames show eyes: ${JSON.stringify(frames)}`);
+  assert.ok(OPEN_EYES.test(mark), `the header mark has no face: ${JSON.stringify(mark)}`);
+});
+ok('the monitor key hints are lowercase like everything else', () => {
+  const renderer = new TUIRenderer({ output: { columns: 100, rows: 30, write() {} } });
+  const hints = plainLines(renderer.sections(MONITOR_STATE, MONITOR_RELAY).footer).join('\n');
+  assert.ok(/quit/.test(hints), 'the hints should be there at all');
+  assert.ok(!/[A-Z]/.test(hints), `every character BigKiji paints is lowercase: ${hints}`);
 });
 ok('the model panel invents nothing when the daemon said nothing', () => {
   const boxed = plainLines(modelPanel({}, { width: 80 }));

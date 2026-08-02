@@ -7,8 +7,17 @@
 #
 # The loop below is what ${0:A} was doing — follow symlinks to the real file so
 # that `npm link` and a hand-made symlink on PATH both resolve to this checkout.
+#
+# The depth limit is not decoration: a symlink cycle anywhere on PATH would
+# otherwise spin this loop forever instead of failing, which ${0:A} could not do.
 self=$0
+depth=0
 while [ -L "$self" ]; do
+  depth=$((depth + 1))
+  if [ "$depth" -gt 40 ]; then
+    echo "bigkiji: symlink loop resolving $0" >&2
+    exit 1
+  fi
   link=$(readlink "$self")
   case $link in
     /*) self=$link ;;

@@ -103,9 +103,40 @@ function pickStart(chain, text) {
 // A single response can match both: Gemini answers an exhausted free-tier
 // allowance with HTTP 429 *and* "Quota exceeded". Quota is checked first,
 // because the recovery time is the thing that differs and the longer one wins.
-const RATE_LIMIT_PATTERN = /(\b429\b|rate.?limit|RESOURCE_EXHAUSTED|too many requests|overloaded)/i;
-const QUOTA_PATTERN = /(quota|insufficient_quota|exceeded|billing)/i;
-const ERROR_PATTERN = new RegExp(`${RATE_LIMIT_PATTERN.source}|${QUOTA_PATTERN.source}`, 'i');
+//
+// These have to be tight, because what they are matched against is not an error
+// line — it is `task.error`, the last 8000 characters of everything the provider
+// wrote to stderr. A loose word costs a real defect its penalty: matching bare
+// `exceeded` turns "Maximum call stack size exceeded" into an exhausted quota,
+// and bare `429` turns "AssertionError at src/foo.js:429" into a rate limit. So
+// 429 only counts beside a status/code key or the phrase it belongs to, and
+// `exceeded`/`billing` only count in the company of the word they qualify.
+const RATE_LIMIT_PATTERN = new RegExp([
+  '\\brate[ _-]?limit',
+  'too many requests',
+  'RESOURCE_EXHAUSTED',
+  '\\boverloaded', // Anthropic sends {"type":"overloaded_error"}, so no trailing boundary
+  'slow[ _]?down',
+  '\\b(?:status|statuscode|status_code|code|httpcode)\\b\\W{0,8}429\\b', // {"code": 429}
+  '\\bhttp/?[\\d.]*\\s+429\\b',                                          // HTTP/1.1 429
+  '\\b429\\b\\W{0,4}(?:too many|rate|client error)',                     // 429 Too Many Requests
+].join('|'), 'i');
+const QUOTA_PATTERN = new RegExp([
+  'insufficient_quota',
+  'quota[ _-]?(?:exceeded|exhausted)',
+  'exceeded[^\\n]{0,40}\\bquota\\b',
+  '\\bquota\\b[^\\n]{0,60}\\b(?:exceeded|exhausted|reached|limit: ?0)\\b',
+  'out of (?:credit|quota)',
+  'billing details',
+  '\\bbilling\\b[^\\n]{0,40}\\b(?:required|enable|upgrade)\\b',
+].join('|'), 'i');
+
+// UNCHANGED from before the classification split, deliberately. pi-bridge.js:72
+// drives the local Pi fallback chain off this, and narrowing it would silently
+// change which stderr lines demote a model — a different feature, on a different
+// day, with its own reasons. The precise patterns above are for the router's
+// memory; this one is for that fallback, exactly as it was.
+const ERROR_PATTERN = /(\b429\b|rate.?limit|quota|RESOURCE_EXHAUSTED|insufficient_quota|exceeded|overloaded|billing)/i;
 
 /**
  * Why a provider failed, when the reason is one the provider is not to blame for.

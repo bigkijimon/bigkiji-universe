@@ -81,14 +81,18 @@ function modelPanel(state = {}, options = {}) {
   // are plain, get ellipsised.
   const mark = catMark();
   const markWidth = mark ? stringWidth(mark) + 2 : 0;
-  const room = Math.max(stringWidth(label) + 2, width - 2);
+  const room = Math.max(8, width - 2);
+  // The label rides the top border, so it has to fit the terminal too. It is
+  // built from APP_VERSION by the caller, and a prerelease string was enough to
+  // push a 40 column panel out to 48.
+  const heading = truncateToWidth(label, Math.max(3, room - 2));
   const facts = truncateToWidth(bits.join(' · '), Math.max(1, room - 2 - markWidth));
   const bodyWidth = markWidth + stringWidth(facts);
   const body = mark ? `${mark}  ${theme.ink}${facts}${theme.reset}` : `${theme.ink}${facts}${theme.reset}`;
-  const inner = Math.max(stringWidth(label) + 1, bodyWidth + 2);
+  const inner = Math.min(room, Math.max(stringWidth(heading) + 1, bodyWidth + 2));
 
-  const top = `${theme.border}╭─${theme.reset}${theme.muted}${label}${theme.reset}${theme.border}${'─'.repeat(inner - stringWidth(label) - 1)}╮${theme.reset}`;
-  const middle = `${theme.border}│${theme.reset} ${body}${' '.repeat(inner - bodyWidth - 2)} ${theme.border}│${theme.reset}`;
+  const top = `${theme.border}╭─${theme.reset}${theme.muted}${heading}${theme.reset}${theme.border}${'─'.repeat(Math.max(0, inner - stringWidth(heading) - 1))}╮${theme.reset}`;
+  const middle = `${theme.border}│${theme.reset} ${body}${' '.repeat(Math.max(0, inner - bodyWidth - 2))} ${theme.border}│${theme.reset}`;
   const bottom = `${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`;
   return [top, middle, bottom];
 }
@@ -139,7 +143,12 @@ class TUIRenderer {
     const header = [
       narrow ? truncateToWidth(`bigkiji v${APP_VERSION}`, width) : spread(title, facts, width),
       `${C.muted}${truncateToWidth(`pi-orchestrator ${mark.note} ${lower(mode)} ${mark.note} models wake only when assigned`, width)}${C.reset}`,
-      ...modelPanel(state, { width, theme: C }),
+      // The panel costs three rows, and the relay's floor is three. Below 18 rows
+      // there is not enough screen for both: the sections came to 17 on a 16 row
+      // terminal, draw() wrote a relay line into the footer's row, and the footer's
+      // own ESC[2K erased it. On a short screen the live relay is worth more than a
+      // restatement of facts /status can print on demand.
+      ...(rows >= 18 ? modelPanel(state, { width, theme: C }) : []),
       '',
     ];
 
@@ -174,7 +183,7 @@ class TUIRenderer {
     header.push(...renderToolCall('relay', `${count(relay)} ${relay.length === 1 ? 'event' : 'events'}`, { width, theme: C, mark }));
 
     const footer = ['', `${C.muted}${truncateToWidth(
-      `q quit ${mark.note} r reload ${mark.note} a accept ${mark.note} x reject ${mark.note} ↑↓ session ${mark.note} Shift+Tab mode ${mark.note} h HUD`,
+      `q quit ${mark.note} r reload ${mark.note} a accept ${mark.note} x reject ${mark.note} ↑↓ session ${mark.note} shift+tab mode ${mark.note} h hud`,
       width)}${C.reset}`];
 
     // Relay — one line per event so the region stays dense: dim clock, accent
