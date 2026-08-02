@@ -45,6 +45,16 @@ const EVENT_CHANNEL = Object.freeze({
 });
 
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
+// The content type comes from this map, never from the request or from sniffing, so a
+// file cannot be served as something it is not. An extension that is absent here is a
+// 415 rather than a download — the media root holds generated output, and anything in
+// it that is not an image, a video or a sound is not something the phone should fetch.
+const ASSET_TYPES = Object.freeze({
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
+});
 
 function loadConfig() {
   fs.mkdirSync(STATE_ROOT, { recursive: true, mode: 0o700 });
@@ -439,6 +449,50 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       if (req.method === 'GET' && url.pathname === '/api/mobile/devices') return json(res, 200, { devices: mobileDevices.list() });
       if (req.method === 'GET' && url.pathname === '/api/mobile/me') return json(res, 200, { device: mobileDevice ? mobileDevices.public(mobileDevice) : null, master: isMaster });
       if (req.method === 'POST' && url.pathname === '/api/mobile/devices/revoke') { const body = await readJson(req); return json(res, 200, mobileDevices.revoke(String(body.id || ''))); }
+      // Generated media. Before V2.5 the daemon served an explicit five-file whitelist
+      // and nothing else, so anything BigKiji produced — a ComfyUI render, a generated
+      // track — had no route to the phone at all. Serving a directory needs three
+      // things the whitelist never had to think about: the path must be proven to be
+      // inside the root after resolution (a decoded '..' is the whole attack), the type
+      // must come from a fixed map rather than from the request, and video has to
+      // answer Range or Safari will not play it.
+      if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/assets/')) {
+        const relative = decodeURIComponent(url.pathname.slice('/assets/'.length));
+        const root = path.resolve(PATHS.generatedMediaRoot);
+        const file = path.resolve(root, relative);
+        if (file !== root && !file.startsWith(root + path.sep)) return json(res, 403, { error: 'outside the media root' });
+        let stat; try { stat = fs.statSync(file); } catch (_) { return json(res, 404, { error: 'not found' }); }
+        if (!stat.isFile()) return json(res, 404, { error: 'not found' });
+        const type = ASSET_TYPES[path.extname(file).toLowerCase()];
+        if (!type) return json(res, 415, { error: 'unsupported media type' });
+        const base = { 'content-type': type, 'cache-control': 'private, max-age=3600', 'accept-ranges': 'bytes',
+          'x-content-type-options': 'nosniff' };
+        const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+        if (range && (range[1] || range[2])) {
+          let start = range[1] ? Number(range[1]) : stat.size - Number(range[2]);
+          let end = range[1] && range[2] ? Number(range[2]) : stat.size - 1;
+          start = Math.max(0, start); end = Math.min(stat.size - 1, end);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+            res.writeHead(416, { ...base, 'content-range': `bytes */${stat.size}` }); res.end(); return;
+          }
+          res.writeHead(206, { ...base, 'content-range': `bytes ${start}-${end}/${stat.size}`, 'content-length': end - start + 1 });
+          if (req.method === 'HEAD') { res.end(); return; }
+          fs.createReadStream(file, { start, end }).pipe(res); return;
+        }
+        res.writeHead(200, { ...base, 'content-length': stat.size });
+        if (req.method === 'HEAD') { res.end(); return; }
+        fs.createReadStream(file).pipe(res); return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/assets') {
+        const root = PATHS.generatedMediaRoot;
+        let names = []; try { names = fs.readdirSync(root); } catch (_) {}
+        const items = names.filter((name) => ASSET_TYPES[path.extname(name).toLowerCase()])
+          .map((name) => { try { const stat = fs.statSync(path.join(root, name));
+            return { name, url: `/assets/${encodeURIComponent(name)}`, size: stat.size, updatedAt: stat.mtimeMs,
+              type: ASSET_TYPES[path.extname(name).toLowerCase()] }; } catch (_) { return null; } })
+          .filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
+        return json(res, 200, { root, items });
+      }
       if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, engine.state());
       if (req.method === 'GET' && url.pathname === '/api/sessions') return json(res, 200, { sessions: engine.sessions.list(Number(url.searchParams.get('limit') || 40)) });
       if (req.method === 'GET' && url.pathname === '/api/session') {
@@ -516,6 +570,10 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
   const ping = setInterval(() => { for (const client of clients) if (!client.writableEnded) client.write(': ping\n\n'); }, 15000); ping.unref();
   server.listen(config.port, config.bind, () => {
     const pidFile = engine.stateRoot === STATE_ROOT ? PID_FILE : path.join(engine.stateRoot, 'daemon.pid');
+    // The state directory normally exists because ensureLayout ran first. When it does
+    // not — a fresh data root, a moved one, a test — writing the pid file threw inside
+    // a listen callback, which is an uncaught exception rather than a startup error.
+    fs.mkdirSync(path.dirname(pidFile), { recursive: true });
     fs.writeFileSync(pidFile, `${process.pid}\n`, { mode: 0o600 });
     if (process.send) process.send({ type: 'ready', port: config.port });
     else console.log(`[BIGKIJI DAEMON READY] http://${config.bind}:${config.port}`);

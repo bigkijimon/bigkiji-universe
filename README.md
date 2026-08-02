@@ -1,297 +1,431 @@
 # BigKiji Universe
 
-BigKiji Universe is a local-first Electron command center that turns your files, AI agents, plans, and terminal sessions into an explorable 3D universe.
+Version 2.5.0 · Apache-2.0 · Electron desktop app
 
-The central **Core Accretion Field** receives live data through curved synapse streams. Department and file clusters form an interactive force-directed graph, roadmap phases appear as illuminated gates, and Pi-Agents reduce context before any approved frontier model is called. The desktop also includes a two-track natural voice engine and, on macOS, a complete cmux control plane.
+BigKiji Universe is a menu-bar-resident Electron app that orchestrates external AI coding
+CLIs — Claude Code, Codex, Gemini, GLM and a local Ollama/Qwen model — through a local
+supervising agent (PiAgent). Every external run is planned locally, pruned to a small
+sandbox-scoped context, sealed into a disclosure manifest, and started only after the owner
+approves that exact manifest.
 
-> Local planning, memory, context pruning, and speech use Qwen/Ollama. The only authorized paid execution providers are Claude, Codex, Gemini, and GLM.
+Alongside the orchestrator the app ships a Three.js canvas that renders the real files and
+relationships PiAgent is working on, an integrated terminal (`node-pty` + `@xterm/xterm`),
+a loopback daemon, and a standalone `bigkiji` CLI/TUI that attaches to the same daemon.
 
-Natural conversation is local-first too. A lightweight resident Qwen model handles chat and idea capture without waking paid models. Ideas begin as private Markdown drafts under `<data root>/ideas/`; adopting a draft, improving it with Gemini, or turning it into code always remains an explicit Owner action.
+On macOS the app hides its dock icon and lives in the menu bar (`app.dock.hide()` in
+`src/core/main.js`). Windows and Linux build targets exist in `package.json` and CI runs the
+test suite on macOS, Windows and Linux, but the tray-resident behaviour and the cmux bridge
+are macOS-specific.
 
-## What you get
-
-- **3D Force Graph Canvas** — real Vault files, agent relationships, organic synapse strands, pointer zoom, focus and auto-camera modes.
-- **Dynamic Phase Gates** — roadmap phases and status particles rendered as layered 3D planes.
-- **Core Accretion Field** — curved inflow streams and genesis bursts visualize actual activity.
-- **Active AI Models Fleet** — only real connected providers are shown; unused models stay asleep until PiAgent assigns an approved task.
-- **Mission Relay + Multi-Terminal** — owner-visible commentary is separate from task streams and interactive terminals.
-- **cmux Operations Index** — macOS workspace, tab, split, theme, color, SSH, VM, remote, diff, browser, agent, and advanced CLI controls. Destructive commands require confirmation.
-- **Dynamic Voice Engine** — independent Owner and Agent tracks, local Qwen3-TTS, English by default, Japanese auto-detection, and thinking-log suppression.
-- **Standalone daemon + CLI/TUI** — `bigkiji` auto-starts the local core on port 8777 and works before Electron is opened.
-- **Optional Obsidian, Graphify, ComfyUI, and Tailscale-secured phone PWA integrations.**
+---
 
 ## Requirements
 
-- Git
-- Node.js **24 LTS** and npm
-- macOS 13+, Windows 10/11 64-bit, or a modern 64-bit Linux distribution
-- Python 3.11+ only when running local Qwen3-TTS
-- A working C/C++ toolchain may be required to rebuild `node-pty`
+| | |
+|---|---|
+| Node | `>=24 <27` (`package.json` `engines`; `.nvmrc` pins 24) |
+| Electron | `^43.2.0` (devDependency; 43.2.0 resolved in this tree) |
+| Runtime dependencies | `three ^0.172.0`, `@xterm/xterm ^5.5.0`, `@xterm/addon-fit ^0.10.0`, `node-pty ^1.0.0`, `ws ^8.21.0`, `qrcode ^1.5.4`, `dotenv ^16.6.1`, `dotenv-expand ^11.0.7` |
+| Build tooling | `electron-builder ^26.15.3`, `@electron/rebuild ^4.2.0` |
+| Native toolchain | needed only to rebuild `node-pty`; if the rebuild fails the app falls back to pipe-mode terminals and says so in the event log |
 
-Optional tools:
+### External CLIs
 
-- [Ollama](https://ollama.com/) for local Qwen planning
-- [Graphify](https://github.com/Graphify-Labs/graphify) for code/knowledge graph synchronization
-- [Obsidian](https://obsidian.md/) for Vault editing
-- [cmux](https://cmux.com/) on macOS
-- ComfyUI and whisper.cpp for local media and transcription
+BigKiji does not bundle any model or CLI. It shells out to whatever is already installed.
+Every one of these is optional — a provider you never approve is never spawned. The exact
+argv is in `adapter()` in `src/domain/pi-agent/task-runner.js`.
 
-## Install
+| Provider id | Executable | Override | Notes |
+|---|---|---|---|
+| `claude`, `claude-code` | `claude` | `CLAUDE_BIN` | run with `--strict-mcp-config`, an empty MCP config, a generated settings file and `--disallowed-tools WebSearch,WebFetch,mcp__.*` |
+| `codex` | `codex` | `CODEX_BIN` | `exec --ephemeral --ignore-user-config --strict-config -c web_search="disabled" -c shell_environment_policy.inherit="none"` |
+| `gemini` | `gemini` | `GEMINI_BIN` | `--sandbox` plus a generated admin-policy TOML that denies web search, web fetch and shell |
+| `glm` | `pi` | `PI_BIN` | `pi --print --model zai/<flagship> --no-tools --no-extensions --no-skills --no-context-files` |
+| `qwen`, `ollama` | `ollama` | `OLLAMA_BIN` | `ollama run <model> <prompt>`; model from `BIGKIJI_QWEN_MODEL`, default `qwen3.5:35b-a3b` |
 
-```bash
-git clone https://github.com/bigkijimon/bigkiji-universe.git
-cd bigkiji-universe
-npm install
-cp .env.example .env
-npm start
-```
+Without Ollama, local conversation degrades to a deterministic classifier rather than
+failing (`src/domain/pi-core/conversation-engine.js`). Other optional integrations —
+ComfyUI, n8n, Obsidian, Graphify, ACE-Step, LTX-2, cmux, Tailscale, whisper — are detected,
+never installed. See [Tool connections](#tool-connections).
 
-`npm install` rebuilds `node-pty` for Electron. If the native rebuild is unavailable, BigKiji starts in pipe-terminal mode and explains the limitation in the event log.
+---
 
-For a development window that opens immediately:
-
-```bash
-npm run dev
-```
-
-## Configure your universe
-
-BigKiji resolves paths in this order:
-
-1. `.env`
-2. values saved in **Settings → Models & API → Portable Data Paths**
-3. OS-safe defaults
-
-BigKiji keeps everything it owns — sessions, context, logs, reports, knowledge, generated media — under a single **data root**, `~/BigKijiUniverse` by default. A first-run setup wizard lets you put it somewhere else, and offers either a verified physical move of any pre-2.5 data or a reference mode that moves nothing. Override it with `BIGKIJI_DATA_ROOT`.
-
-Your Obsidian vault is separate and belongs to you: BigKiji detects any directory containing `.obsidian/`, reads it, and never writes to it or moves it.
-
-Common `.env` settings:
-
-```dotenv
-BIGKIJI_VAULT_ROOT=/absolute/path/to/your/ObsidianVault
-KNOWLEDGE_ROOT=/absolute/path/to/local/runtime/knowledge
-GRAPHIFY_GRAPH_PATH=/absolute/path/to/your/ObsidianVault/graphify-out/graph.json
-BIGKIJI_DAEMON_PORT=8777
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-ZAI_API_KEY=
-```
-
-Advanced portable deployments may also override `APP_ROOT` and `UI_ROOT`. `BIGKIJI_KNOWLEDGE_ROOT` and `KNOWLEDGE_ROOT` are equivalent; the prefixed name takes priority.
-
-API keys can also be stored from the Settings UI using Electron's OS-encrypted credential storage. `OPENAI_API_KEY` is used for Codex execution only; BigKiji does not use paid OpenAI TTS or ElevenLabs.
-
-### Settings UI
-
-Open Settings with the HUD control or `Cmd/Ctrl + ,`.
-
-- **Audio & Voices** — Owner/Agent volumes, attention cue, speech speed, Qwen voice profiles, previews.
-- **Models & API** — approved provider credentials, Qwen timeout, Vault/Knowledge/Graphify paths.
-- **Security** — live egress posture, disclosure seals, blocked actions, and policy hash.
-- **cmux** — connection, themes, workspace colors, new terminals, splits, and the complete Operations Index.
-- **Mobile** — Tailscale diagnostics, five-minute pairing QR codes, paired Owner devices, revocation, and PWA installation guidance.
-
-Path changes apply after restart. Audio and most cmux changes apply immediately.
-
-## Pi-Agent context routing
-
-Before an external executor starts, BigKiji:
-
-1. loads the closest `.pi/sandbox.json`;
-2. rejects paths outside the configured Vault and blocked providers;
-3. queries local Graphify data, or falls back to local text search;
-4. includes only matching file slices;
-5. redacts credentials and personal identifiers, then seals the selected paths and line ranges in a disclosure manifest;
-6. waits for Owner approval of the exact revision, plan hash, disclosure hash, and policy hash;
-7. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
-
-The daemon also maintains `<data root>/state/system_memory.json`, a secret-free structural index keyed by a source hash. Local Qwen receives at most 8,192 tokens (6,144 normally and 4,096 when degraded), and its work is split into short PiAgent-managed steps. Run `npm run index:memory` to inspect or refresh the index explicitly.
-
-Example sandbox:
-
-```json
-{
-  "filesystem": {
-    "allowRead": ["~/Documents/BigKiji"],
-    "allowWrite": ["~/Documents/BigKiji/projects/my-project"]
-  },
-  "models": {
-    "allowPaid": ["claude", "codex", "gemini", "glm"]
-  }
-}
-```
-
-Invalid sandbox JSON, path traversal, symlink escape, sensitive file, stale disclosure, unknown tool, or a provider outside the allowlist fails closed before the provider process starts.
-
-### Natural conversation and idea drafts
-
-- Ordinary text uses `POST /api/turn`; `CHAT` replies naturally without creating an execution run.
-- `IDEA` creates a private local Markdown draft. The repository stays unchanged until the Owner selects **Adopt**.
-- `TASK` creates a local draft and a sealed execution plan. External models stay stopped until the exact plan and disclosure are approved.
-- **Gemini polish** is a two-step action: review the payload hash and estimated tokens, then approve that exact draft. Gemini receives no repository files or web tools for this operation.
-- CLI users can run `/ideas`, `/idea enhance`, `/idea send`, `/idea plan`, `/idea adopt`, and `/idea archive`. Use `/run …` for an explicit execution plan.
-
-## Obsidian and Graphify
-
-BigKiji never rewrites your `.obsidian` directory. Point `BIGKIJI_VAULT_ROOT` at an existing Vault or create a new folder.
-
-Install the official Graphify package (`graphifyy` has two `y` characters; the command is `graphify`):
+## Install and run
 
 ```bash
-uv tool install graphifyy
-cd /path/to/your/vault
-graphify update .
+git clone git@github.com:bigkijimon/bigkiji-universe.git
+cd bigkiji-universe/app
+npm install          # postinstall runs electron-rebuild -f -w node-pty
+cp .env.example .env # optional; every key may be left blank
+npm start            # electron .
 ```
-
-Then set:
-
-```dotenv
-GRAPHIFY_GRAPH_PATH=/path/to/your/vault/graphify-out/graph.json
-```
-
-Graphify output is generated locally and is ignored by this repository. If `graph.json` is missing, BigKiji remains usable and shows a clear “Graphify graph not found” state.
-
-## Terminal and cmux
-
-The terminal area has separate views:
-
-- **Neural** — Pi fleet and telemetry overview
-- **Mission Relay** — live owner-visible agent commentary
-- **Terminals** — interactive node-pty or cmux surfaces
-- **Task streams** — independent Claude/GLM/Codex/Gemini process output
-
-On macOS, install and start cmux, then set `CMUX_BIN` if it is not on `PATH`. The **Operations Index** exposes every cmux command as argv without invoking a shell. Commands that close, remove, log out, uninstall hooks, or delete VMs display the exact command and impact before execution.
-
-Windows and Linux automatically use node-pty terminals; the rest of BigKiji remains available.
-
-## Standalone `bigkiji` CLI, daemon, and sessions
-
-`npm install` registers one canonical executable implementation. The command aliases `bigkiji`, `Bigkiji`, `kiji`, and `Kiji` all resolve to the same binary and state store.
 
 ```bash
-bigkiji status       # starts the daemon automatically when needed
-bigkiji              # interactive owner console
-bigkiji monitor      # live TUI for cmux or any ANSI terminal
-bigkiji hud          # open Electron and attach to the same daemon
-bigkiji resume       # select a JSONL-backed session
-bigkiji reload       # reload local PiAgent hooks/extensions
+npm run dev          # electron . --show-main — opens the main window immediately
 ```
 
-The daemon binds to `127.0.0.1:8777` by default. It stores private runtime credentials in `<data root>/state/remote.json` and session events in `<data root>/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves the exact current revision. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
+Smoke test — boots the app headlessly, checks the tray, both renderers and the PTY mode,
+prints one `SMOKE OK` / `SMOKE FAIL` line and exits after ~4 s:
 
-## Small Window and phone access
-
-Click the BigKiji menu-bar icon to open the transparent Small Window. Its four cards represent only the real execution surfaces: Claude, Codex, PiAgent, and Local Qwen. `OFFLINE` and `SLEEPING` are intentional zero-token states.
-
-To connect an iPhone or Android device:
-
-1. Install and sign in to Tailscale on the Mac and phone using the same tailnet.
-2. Open **Settings → Mobile** and choose **Create 5-minute QR**.
-3. BigKiji enables Tailscale Serve for the loopback daemon and creates a one-use pairing ticket. The daemon master token is never placed in the QR.
-4. Scan the QR, pair the phone, then add **BigKiji Universe Mobile** to the Home Screen.
-5. The paired PWA can send prompts, resume sessions, review the current plan and disclosure seals, hold to accept, edit, reject, or stop a run. Stale revisions, changed disclosures, and duplicate approvals are rejected by the daemon.
-
-If Tailscale is logged out, Serve requires one-time tailnet approval, or the pairing ticket expires, Settings shows the exact recovery step and does not display a misleading live state. Paired phones can be revoked individually or all at once.
-The mobile 3D deck is not a remote-desktop stream: Three.js renders locally through the phone's WebGL GPU while the Mac sends only compact JSON/SSE state. When the mobile page is hidden, both its render loop and live event connection pause.
-
-## Local voice
-
-BigKiji defaults to local Qwen3-TTS and starts speaking the first completed sentence while the answer continues. If the neural model is unavailable, it falls back to macOS system voices, `espeak-ng` on Linux, or Windows SAPI.
-
-Internal `<thinking>`, `<thought>`, analysis, and draft content is never sent to either audio track.
-
-See `tools/qwen3-tts-server.py --help` for the local server options. The default endpoint is `http://127.0.0.1:17890`.
+```bash
+SMOKE=1 npx electron .
+```
 
 ## Test
 
 ```bash
 npm test
-npm run check:imports
-SMOKE=1 npx electron .
 ```
 
-The test suite covers architecture, sandbox boundaries, symlink escape, secret/PII canaries, minimal child environments, stale disclosures, context pruning, paid-provider policy, voice filtering, cmux command confirmation, 3D interaction, terminal resizing, telemetry, and Electron runtime contracts. It also exercises daemon auto-start, WebSocket/SSE delivery, JSONL sessions, one-time mobile pairing, CSRF protection, explicit Owner approval, on-demand model activation, and desktop-only hot reload.
+`npm test` runs 28 steps in sequence: `check:imports` followed by all **27** `test:*`
+scripts (`test:architecture`, `test:security`, `test:context`, `test:pi-core`, `test:daemon`,
+`test:workspaces`, `test:tools`, `test:ui-3d`, `test:cli-render`, … — see the `scripts` block
+of `package.json`). Every declared `test:*` script is reachable from `npm test`; none are
+orphaned. Individual suites can be run directly, e.g. `npm run test:security`.
+
+CI (`.github/workflows/ci.yml`) runs `npm ci && npm test` on macOS, Windows and Ubuntu, and
+runs the Electron smoke test under `xvfb` on Ubuntu.
+
+---
+
+## Data layout
+
+`src/core/data-root.js` is the single source of truth for where the app keeps its own state.
+It is pure Node — the Electron main process, the daemon and the CLI all load it.
+
+Resolution order, highest priority first:
+
+1. `BIGKIJI_DATA_ROOT` — explicit override, and also how Electron tells child processes
+2. `<userData>/data-root.json` — pointer written by the first-run wizard
+3. `~/BigKijiUniverse` — the default
+
+The data root is a **visible directory in your home folder**, not a hidden application
+directory. Under it:
+
+```
+<data root>/
+  bigkiji-data.json          root marker
+  state/                     system_memory.json, remote.json, daemon.pid,
+                             mobile-devices.json, cli-config.json
+  sessions/  ideas/  logs/  reports/  knowledge/
+  recordings/  generated-media/  cache/tts/  models/  migrations/
+```
+
+Only settings and secrets stay in the Electron `userData` directory
+(`~/Library/Application Support/bigkiji-universe` on macOS): `settings.json`,
+`secrets.enc.json` (encrypted with Electron `safeStorage`), the `data-root.json` pointer,
+`setup-state.json`, and `workspaces.json`.
+
+### First run
+
+`setupStatus()` treats `setup-state.json` — not the existence of the data root — as the
+"already configured" marker, so a half-failed migration does not strand you outside the
+wizard. `BIGKIJI_SKIP_SETUP=1`, `SMOKE` or `SNAP` suppress it.
+
+The wizard (`src/components/UI/setup.html`) asks four things: where the data root goes,
+how existing data should get there, which Obsidian vault to read, and then shows the plan
+before doing anything. The move step is skipped entirely on a fresh install.
+
+Two modes:
+
+- **Move** — a real relocation. `src/core/data-migrator.js` renames within a volume and
+  copies → verifies (sha256, sampled above 32 MB) → deletes across volumes. The source is
+  deleted strictly last, which is what makes `rollbackMigration()` possible.
+- **Reference** — nothing moves. The pointer records where each root already lives, via
+  per-key `overrides` in `dataLayout()`.
+
+Local model blobs are a separate opt-in checkbox, off by default; the wizard warns that
+moving the TTS virtualenv breaks it because virtualenvs store absolute paths.
+`src/core/migration-plan.js` is a whitelist, not "move `~/.bigkiji`", so unrelated shell
+scripts in that directory are left alone.
+
+---
+
+## Workspaces
+
+`src/core/workspace-registry.js` holds the flat list of folders BigKiji may read and edit.
+
+- **Explicit registration only.** There is no parent-directory auto-scan. `candidates()`
+  proposes directories for the setup UI, but a proposal is never a registration.
+- **The registry lives in `userData`**, never inside the folders it points at, so it
+  survives one of them being deleted or unmounted.
+- **Overlapping roots are refused.** `register()` throws `Overlaps an existing workspace`
+  if a new root nests inside an existing one or contains it. Re-registering the same path
+  is an update, not an overlap.
+- **A vanished root is reported, not repaired.** `statusOf()` returns `ok`, `unreadable`
+  (EPERM/EACCES — re-grant access) or `missing` (ENOENT — re-pick). Nothing is silently
+  re-pointed.
+- **Per-root exclusions from the start.** Default: `node_modules`, `.git`, `.next`, `dist`,
+  `build`, `graphify-out`, `_archive`, `recordings`, `venv`, `.venv`, `__pycache__`, `Pods`.
+- `allows(path)` is the single question anything that scans or edits should ask.
+- macOS security-scoped bookmarks are stored opaquely per root (`bookmark`), captured by
+  the main process at pick time.
+
+Developer override:
+
+```bash
+BIGKIJI_WORKSPACES=~/code/project-a,~/code/project-b npm start
+```
+
+When set it **replaces** the registry entirely, so a test run cannot mutate the real one.
+
+---
+
+## Security model
+
+Source: `src/domain/pi-core/security/` and `src/domain/pi-agent/sandbox-policy.js`.
+
+**Sandbox policy resolution.** `SandboxPolicyResolver.resolve(cwd)` walks up from the task
+directory to the vault root looking for `.pi/sandbox.json` (or `sandbox.json`). A cwd
+outside the vault, or invalid JSON, returns `valid: false` and the run is blocked. Read and
+write roots are canonicalised through `realpath`, dropped if they escape the vault, and
+dropped if they match the sensitive-path patterns (`.env*`, `.ssh`, `.aws`, `.gnupg`,
+`secrets`, `credentials`, `*.pem`/`*.key`/`*.p12`, …) — that filter is not configurable
+from the file. Declared paid providers are intersected with the built-in allowlist
+(`claude`, `claude-code`, `codex`, `gemini`, `glm`).
+
+```json
+{
+  "filesystem": {
+    "allowRead":  ["./src", "./tools", "./docs"],
+    "allowWrite": ["./src", "./tools"]
+  },
+  "models": { "allowPaid": ["claude-code", "codex", "gemini", "glm"] }
+}
+```
+
+**Per-run disclosure manifest.** Before a provider can start, `createDisclosureManifest()`
+builds a v2 manifest containing: `runId`, provider, **model id**, purpose, every included
+file with its line ranges and **sha256**, redaction counts by type, every brokered external
+tool query verbatim, estimated tokens, the payload hash, and the policy hash. The whole
+document is hashed into `disclosureHash`.
+
+`approve(id, { disclosureHash })` rejects a hash that does not match (`STALE_DISCLOSURE_HASH`).
+At launch, `start()` re-checks all of it and refuses on `STALE_SECURITY_POLICY`,
+`STALE_DISCLOSURE_MANIFEST` (a file changed on disk since approval) or `STALE_MODEL_SELECTION`
+(re-tiering between approval and launch would run a model the owner never saw).
+
+**Payload redaction.** `redactPayload()` replaces private keys, Anthropic/OpenAI/Google/
+GitHub/Slack/AWS/Z.ai keys, JWTs, `Authorization` headers, named secrets, emails and phone
+numbers with `<REDACTED:type>` markers. Vendor-specific patterns run before the generic
+`sk-` pattern so a finding is labelled with the provider it belongs to. A private key is
+`critical`: it throws `SECURITY_CRITICAL_SECRET_IN_CONTEXT` rather than being redacted and
+sent. The same redactor runs over provider stdout/stderr — a critical hit kills the child.
+
+**Tool interceptor.** `ToolInterceptor.decide()` is installed for Claude Code as a
+`PreToolUse` hook (`hook-entry.js`) and mirrored by per-provider policy files. It denies
+every web tool and every `mcp__*` tool, asserts read/write paths against the sandbox, and
+allows shell only for commands matching the policy allowlist (`npm test|run …`,
+`node --check`, `tsc --noEmit`, `git status|diff|log|show`, `rg`) — with pipes, redirects,
+command substitution and any networking binary (`curl`, `wget`, `ssh`, `nc`, …) rejected
+outright. An unrecognised tool name is denied, not allowed.
+
+**Research broker.** `ResearchBroker` is the only sanctioned network path. A specialist that
+needs a fact asks for it as a request; the broker sanitises the query (strips code fences,
+replaces paths with `<PATH>`, redacts secrets, rejects anything code-shaped or containing a
+path) and the surviving string is written into the manifest by name — so the owner approves
+the exact string that would leave the machine. One blocked query blocks the whole task
+rather than being silently dropped.
+
+**Minimal-env child spawning.** `SecurityPolicy.createRuntime()` makes a private temp root
+with its own `home` and `tmp` (mode `0700`). `minimalEnv()` builds the child environment
+from scratch — `PATH`, locale, `TERM`, the isolated `HOME`/`TMPDIR`/XDG dirs, the policy
+file path, and **only that provider's credential** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, `ZAI_API_KEY`). The runtime directory is deleted when the task finishes.
+
+**What this does not claim.** These are process- and policy-level controls. They constrain
+what a cooperating CLI can reach; they are not a proof against an OS- or provider-level
+vulnerability.
+
+---
+
+## Orchestration
+
+`CoreExecutionCoordinator` (`src/domain/pi-agent/core-execution-coordinator.js`) selects
+roles per run from a fixed blueprint and wakes only the ones a prompt actually needs:
+
+| Role | Agent | Provider | Writes |
+|---|---|---|---|
+| facilitator | Facilitator-Pi | gemini | no |
+| leader | Lead-Pi | claude-code | yes |
+| ui | Design-Pi | codex | yes |
+| debug | Debug-Pi | glm | no |
+| context | Context-Pi | qwen | no |
+
+`TaskRunner` runs at most 5 tasks in parallel and queues the rest. Providers are spawned
+per run and never kept resident.
+
+`ContextPruner` scores files inside the sandbox's read roots against terms from the prompt
+(optionally seeded by a Graphify `graph.json`), then includes only ±24-line slices around
+matching lines. Defaults: 10 files / 48 000 chars / 12 000 tokens for external providers,
+7 / 32 000 / 8 192 for local Qwen.
+
+`LocalQwenGuardrails` caps the local model at 6 144 context tokens normally, 4 096 when
+degraded, 8 192 hard, with a 60 s per-task timeout.
+
+**On token savings:** `prepare()` reports `fullContextTokens`, `prunedContextTokens` and
+`tokensSaved` with `measurement: 'estimated'` — both sides are a character-class heuristic
+(`estimateTokens()`), not a tokenizer. `prunedContextTokens` is upgraded to
+`measurement: 'actual'` only when a provider's stream reports real input token counts
+(`captureUsage()` in `task-runner.js`); `fullContextTokens` always stays an estimate.
+**There is no benchmark in this repository, so no reduction ratio or speed-up factor is
+claimed here.**
+
+---
+
+## Tool connections
+
+`src/domain/pi-agent/tool-registry.js` detects and connects tools that are already on the
+machine. Nothing is bundled, copied or installed — model weights and virtualenvs run to
+gigabytes, so the app only remembers where you already put them.
+
+Two separate questions, deliberately never collapsed:
+
+- `detectAll()` — "is it here, and where?" Synchronous, `statSync` only, so opening
+  Settings is instant.
+- `probe()` — "is it answering right now?" Asynchronous, always resolves, always bounded
+  (1 200 ms default).
+
+Three states: `missing` (nothing at the resolved path), `found` (installed, health not
+verified) and `connected` (a health check ran and answered). A status is never promoted
+without evidence.
+
+| Tool | Kind | Health check |
+|---|---|---|
+| ComfyUI | directory | `GET /system_stats` on 127.0.0.1:8000 or :8188 |
+| ACE-Step | directory | any HTTP answer on 127.0.0.1:8001 |
+| LTX-2 | directory | none — it is a batch job, not a resident server |
+| Ollama | binary | `GET /api/tags` on 127.0.0.1:11434 |
+| n8n | directory | `GET /healthz` on 127.0.0.1:5678 |
+| Obsidian vault | directory | `.obsidian/` marker; read-only to BigKiji, never written, never moved |
+| Graphify CLI | binary | `graphify --version` |
+| Graphify `graph.json` | file | parsed asynchronously; refused above 128 MB |
+| GPU arbitration script | binary | none — presence on disk is all that is claimed |
+
+Resolution order per tool: environment override → saved setting → conventional install
+paths → `PATH` (for binaries). An explicitly configured path that no longer exists reports
+`missing` instead of silently falling back.
+
+---
+
+## Terminal, daemon and CLI
+
+The renderer's terminal uses `@xterm/xterm` over `node-pty` in the main process. If the
+native rebuild is unavailable the app degrades to pipe mode and logs
+`node-pty unavailable — running in pipe mode`.
+
+`package.json` registers one binary implementation under four aliases — `bigkiji`,
+`Bigkiji`, `kiji`, `Kiji` — all resolving to `tools/bigkiji`, a zsh wrapper around
+`src/domain/terminal/bigkiji-cli.js`.
+
+```bash
+bigkiji                 # interactive REPL; starts the daemon if it is not running
+bigkiji status          # or `fleet` — print daemon/fleet state
+bigkiji monitor         # or `tui` — live ANSI monitor
+bigkiji hud             # launch the Electron GUI and attach to the same daemon
+bigkiji resume          # pick a JSONL-backed session
+bigkiji reload          # reload local PiAgent hooks
+bigkiji "some prompt"   # one-shot turn
+```
+
+REPL commands: `/help`, `/status`, `/mode ask|auto-edit|plan`, `/setting`, `/resume`,
+`/reload`, `/ideas`, `/idea plan|enhance|send|adopt|archive <id>`, `/run …`, `/hud`,
+`/abort`, `/clear`, `/exit`.
+
+The daemon binds `127.0.0.1:8777`. Bind address, port and the auth token live in
+`<data root>/state/remote.json`, created with mode `0600` on first start. Sessions are
+JSONL under `<data root>/sessions/`.
+
+---
+
+## Configuration
+
+`.env` in the app directory is loaded through `dotenv` + `dotenv-expand` at startup.
+API keys can instead be stored from Settings via Electron `safeStorage`.
+
+### Read by the app
+
+| Variable | Effect |
+|---|---|
+| `BIGKIJI_DATA_ROOT` | Overrides the data root; skips the pointer file entirely |
+| `BIGKIJI_KNOWLEDGE_ROOT` | Knowledge root (`KNOWLEDGE_ROOT` accepted as an alias; the prefixed name wins) |
+| `BIGKIJI_VAULT_ROOT` | Explicit Obsidian vault root |
+| `BIGKIJI_WORKSPACES` | Comma-separated absolute paths; replaces the workspace registry |
+| `BIGKIJI_SKIP_SETUP` | `1` suppresses the first-run wizard |
+| `BIGKIJI_SHOW_MAIN` | `1` opens the main window at launch (same as `--show-main`) |
+| `BIGKIJI_AUTOHEAL` | `0` disables automatic tool self-repair after repeated failures |
+| `BIGKIJI_SWARM` | `0` disables swarm dispatch in the task cache |
+| `BIGKIJI_QWEN_MODEL` | Local Ollama model for tasks and guardrails (default `qwen3.5:35b-a3b`) |
+| `BIGKIJI_CONVERSATION_MODEL` | Local conversation model (default `qwen3.5:latest`) |
+| `BIGKIJI_OLLAMA_ENDPOINT` | Conversation endpoint (default `http://127.0.0.1:11434`) |
+| `BIGKIJI_CLAUDE_MODEL` | Claude model id for general work (default `claude-opus-5`) |
+| `BIGKIJI_CLAUDE_DESIGN_MODEL` | Claude model id for design work (default `claude-fable-5`) |
+| `BIGKIJI_GLM_MODEL` | GLM flagship model id (default `glm-5.2`) |
+| `BIGKIJI_GLM_FLASH_MODEL` | GLM flash model id (default `glm-4.7-flash`) |
+| `BIGKIJI_SLOW_TASK_MS` | Threshold above which a task counts as slow when learning routing (default 180000) |
+| `BIGKIJI_GPU_SIGNAL` | Path to the GPU arbitration script |
+| `BIGKIJI_TTS_IDLE_MS` | Idle timeout before the TTS process is released (minimum 15000, default 60000) |
+| `BIGKIJI_CLI_ASCII` | `1` forces ASCII glyphs in the CLI transcript |
+| `BIGKIJI_CLI_CAT` | Selects the CLI loading sprite frame set |
+| `BIGKIJI_BUILD_ID` | Overrides the displayed build id (defaults to `v<version>`) |
+| `BIGKIJI_APP_PATH` | Path to a packaged `BigKiji Universe.app` for `bigkiji hud` |
+| `BIGKIJI_E2E_FIXTURE` | Loads a fixture for end-to-end runs |
+
+Non-prefixed variables also read by the code: `CLAUDE_BIN`, `CODEX_BIN`, `GEMINI_BIN`,
+`PI_BIN`, `OLLAMA_BIN`, `CMUX_BIN`, `WHISPER_BIN`, `WHISPER_MODEL`, `COMFYUI_ROOT`,
+`ACESTEP_ROOT` / `ACE_STEP_ROOT`, `LTX2_ROOT`, `N8N_ROOT`, `GRAPHIFY_BIN`,
+`GRAPHIFY_GRAPH_PATH`, `KNOWLEDGE_ROOT`, `APP_ROOT`, `UI_ROOT`, and the four provider keys
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ZAI_API_KEY`.
+
+### Set by the app, not by you
+
+`BIGKIJI_SECURITY_POLICY` (policy file path, read by the PreToolUse hook), `BIGKIJI_EXECUTOR`
+(provider marker in the child env), `BIGKIJI_WORKSPACE` and `BIGKIJI_DAEMON_PARENT` (passed
+to the spawned daemon), `BIGKIJI_TTS_FILE` / `BIGKIJI_TTS_TEXT` (Windows SAPI fallback),
+`BIGKIJI_CANARY_SECRET` (used only by `tools/security-selftest.js`).
+
+> `.env.example` still lists `BIGKIJI_DAEMON_PORT`. **No code reads it** — the daemon port
+> comes from `<data root>/state/remote.json`.
+
+---
 
 ## Build
 
-Build for the current host:
-
 ```bash
-npm run dist
+npm run dist            # node tools/build-host.js — build for the current host
+npm run dist:mac        # dmg + zip, arm64 + x64, notarised via the BigKijiNotary profile
+npm run dist:win        # nsis + zip, x64 + arm64
+npm run dist:linux      # AppImage + deb, x64 + arm64
+npm run dist:local      # unsigned/self-signed .app directory for local testing
+npm run verify:release  # node tools/verify-macos-release.js
 ```
 
-Or select a platform:
+macOS release builds set `hardenedRuntime`, `forceCodeSigning` and `notarize` in
+`package.json`, so a missing Developer ID certificate is a build failure rather than a
+skipped step. `asar` is disabled and `three/examples/jsm` is copied in as an extra resource
+because the 3D canvas loads Three.js addons over `file://` as ES modules.
 
-```bash
-npm run dist:mac
-npm run dist:win
-npm run dist:linux
-```
+---
 
-macOS production builds require a valid **Developer ID Application** certificate and the `BigKijiNotary` notarytool keychain profile. Signing and notarization are mandatory; a missing certificate is a release failure, not a skipped step.
+## Status
 
-```bash
-npm run dist:mac
-npm run verify:release
-```
+Honest list of what is not settled:
 
-## Troubleshooting
+- **Context-saving figures are estimates.** `measurement: 'estimated'` is the default and
+  `fullContextTokens` is never measured. No benchmark exists in this repository, so no
+  percentage reduction or speed-up multiple is stated anywhere in this README.
+- **No published performance numbers.** There is no `bench/` directory and no timing
+  harness beyond the pass/fail selftests.
+- **Platform coverage is uneven.** Menu-bar residency (`app.dock.hide`) and the cmux bridge
+  are macOS-only. The `bigkiji` launcher is a zsh script, so the CLI aliases assume a
+  POSIX shell with zsh available.
+- **Not published to a registry.** `package.json` sets `"private": true`; install from a
+  clone.
+- **No release badges.** CI exists (`.github/workflows/ci.yml`) but no external status,
+  coverage or package service is configured for this repository, so none is linked here.
 
-### The app opens but the file universe is empty
-
-Set `BIGKIJI_VAULT_ROOT` to an existing directory and restart BigKiji.
-
-### Graphify is offline
-
-Run `graphify update .` from the configured Vault and confirm `GRAPHIFY_GRAPH_PATH` points to the resulting `graph.json`.
-
-### cmux shows PTY fallback
-
-cmux integration is macOS-only. Start cmux, verify `cmux ping`, and set `CMUX_BIN` or the CLI path in Settings.
-
-### Local speech is unavailable
-
-Start `tools/qwen3-tts-server.py`, verify `/health`, or install the platform fallback voice engine. BigKiji continues without audio if neither is available.
-
-### `node-pty` fails to build
-
-Install the platform compiler tools, then run:
-
-```bash
-npx electron-rebuild -f -w node-pty
-```
-
-## Architecture
-
-```text
-src/core/                 Electron lifecycle, IPC, paths, voice, metrics, cmux bridge
-src/domain/3d-canvas/     graph canvas, camera, roadmap, particles and shaders
-src/domain/pi-agent/      sandbox policy, context pruning, cache, routers and task runner
-src/domain/pi-core/       system memory, fail-closed tool hooks, redaction and disclosure seals
-src/domain/server/        standalone daemon, GUI/CLI transport and JSONL sessions
-src/domain/terminal/      Mission Relay, terminal tabs, cmux mirror and resize behavior
-src/cli/tui/              ANSI/cmux live monitor
-src/domain/telemetry/     live HUD, event store and optional ComfyUI bridge
-src/components/UI/        shared renderer UI, settings, voice and mobile PWA
-tools/                    self-tests, local Qwen TTS, release verification and CLI tools
-```
-
-## Security and privacy
-
-- `.env`, recordings, Graphify output, model caches, and credentials are not committed.
-- Renderer processes access privileged features only through the preload IPC bridge.
-- External model context is sandbox-scoped, secret-filtered, and sealed in an Owner-approved disclosure manifest.
-- Provider processes receive an isolated HOME and a minimal environment containing only that provider's credential.
-- Model-native WebSearch, WebFetch, browser, MCP, extensions, and arbitrary network shell commands are blocked. Research must pass through the PiAgent sanitizing broker.
-- Claude uses a PreToolUse deny hook; Gemini uses an admin policy and sandbox; Codex uses ephemeral strict configuration; GLM runs without tools. Missing enforcement stops the launch instead of relaxing policy.
-- Self-repair may generate and test a proposal, but applying, reloading, committing, publishing, spending, or changing credentials always requires explicit Owner approval.
-- cmux uses `execFile(argv)` without a shell and requires confirmation for destructive commands.
-- Local Graphify code extraction requires no LLM. Semantic media/document extraction may use whichever backend you explicitly configure in Graphify itself.
-
-Direct sandboxing materially reduces accidental disclosure but cannot prove safety against an operating-system or provider vulnerability. BigKiji reports such unsupported enforcement as `DEGRADED` and keeps the affected external model closed.
+---
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

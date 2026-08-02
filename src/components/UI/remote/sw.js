@@ -18,6 +18,11 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
   if (url.pathname.startsWith('/api/')) return; // SSE/POSTは素通し
+  // Generated media is passed straight through as well. A service worker that answers
+  // a ranged request out of the Cache API replies 200 with the whole body, and Safari
+  // then refuses to play the video at all — caching媒体 would break exactly the files
+  // this route exists to deliver.
+  if (url.pathname.startsWith('/assets/') || e.request.headers.has('range')) return;
   if (url.pathname === '/' || e.request.mode === 'navigate') {
     e.respondWith(
       fetch(e.request)

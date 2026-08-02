@@ -161,6 +161,21 @@
   #ideaM strong { display:block; margin:5px 0 8px; color:#f8fafc; font:650 12px/1.35 -apple-system,"Hiragino Sans",sans-serif; }
   #ideaM nav { display:flex; gap:6px; } #ideaM button { border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px 9px; color:#dce8e2; background:rgba(255,255,255,.04); font:700 9px -apple-system,sans-serif; }
   #ideaM button:first-child { color:#b8a1ff;border-color:rgba(168,85,247,.3) } #ideaM button:nth-child(2){color:#86d5ad;border-color:rgba(16,185,129,.3)}
+  /* Generated media strip. Horizontal, touch-scrolled, no visible scrollbar — the same
+     rule the desktop follows. Thumbnails are square so a mixed set of renders does not
+     make the row jump height as it loads. */
+  #gallery { display:none; gap:8px; margin:8px 12px; padding-bottom:2px; overflow-x:auto; overflow-y:hidden;
+    scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  #gallery.on { display:flex; }
+  #gallery::-webkit-scrollbar { display:none; }
+  #gallery img, #gallery video { flex:0 0 auto; width:96px; height:96px; object-fit:cover; border-radius:11px;
+    border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.03); scroll-snap-align:start;
+    transition:transform .16s cubic-bezier(.2,.8,.2,1); }
+  #gallery img:active, #gallery video:active { transform:scale(.97); }
+  #gallery .aud { flex:0 0 auto; height:96px; padding:0 12px; border-radius:11px; border:1px solid rgba(16,185,129,.28);
+    background:rgba(16,185,129,.06); color:#86d5ad; font:700 9px "SF Mono",Menlo,monospace;
+    transition:transform .16s cubic-bezier(.2,.8,.2,1); }
+  #gallery .aud:active { transform:scale(.97); }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -181,6 +196,7 @@
   </div>
   <div id="reply"></div>
   <div id="ideaM"><label>PRIVATE IDEA DRAFT</label><strong id="ideaMTitle"></strong><nav><button data-idea="enhance">Gemini polish</button><button data-idea="plan">Make plan</button><button data-idea="adopt">Adopt</button></nav></div>
+  <div id="gallery" aria-label="Generated media"></div>
   <div id="composer">
     <input id="txt" type="text" autocomplete="off" spellcheck="false"
       placeholder="Command the universe…  ⏎ to send" enterkeyhint="send" />
@@ -417,18 +433,47 @@ function connect() {
     if (tok && s.ms > 400) lastTokRate = tok / (s.ms / 1000);
     setStage(`STAGE 4/4: COMPLETE — in ${s.turn ? s.turn.input : 0} · out ${s.turn ? s.turn.output : 0} tok`, { pct: 100, hold: 6000 });
     ttsFinal();
+    loadGallery();
   });
-  es.addEventListener('bus', (e) => {
-    const b = JSON.parse(e.data);
+  // The daemon publishes: commentary, conversation, error, fleet, idea, inventory,
+  // knowledge, models, phase, pi, run, security, session, stats, task, tasklog.
+  // This page used to listen for 'bus', 'swarm' and 'touch', none of which are ever
+  // sent — so the agent constellation never lit up and the ambient pulse never fired.
+  es.addEventListener('task', (e) => {
+    const task = JSON.parse(e.data);
     evTimes.push(performance.now());
-    if (b.agent && AGENTS[b.agent]) excite(b.agent);
-    if (b.source === 'pi' && b.type === 'task') setStage(`STAGE 3/4: TOOL EXECUTION`, { busy: true, pct: 70 });
+    if (task.provider && AGENTS[task.provider]) excite(task.provider);
+    if (task.status === 'running') setStage('STAGE 3/4: TOOL EXECUTION', { busy: true, pct: 70 });
   });
-  es.addEventListener('swarm', (e) => {
-    const s = JSON.parse(e.data);
-    if (s.mode === 'consensus') ['gemini', 'claude-code', 'codex'].forEach(excite);
+  es.addEventListener('run', (e) => {
+    const run = JSON.parse(e.data);
+    evTimes.push(performance.now());
+    if (run.stage === 'deliberation') setStage(`DELIBERATING — ${run.assignments?.length || 0} independent lenses`, { busy: true, pct: 25 });
+    for (const item of run.assignments || []) if (AGENTS[item.provider]) excite(item.provider);
   });
-  es.addEventListener('touch', () => { evTimes.push(performance.now()); ambientFlash(); });
+  es.addEventListener('commentary', () => { evTimes.push(performance.now()); ambientFlash(); });
+}
+
+// Generated media. The phone had no route to it at all before V2.5, so a render the
+// owner asked for could only be seen at the desk it was made on.
+async function loadGallery() {
+  const strip = $('gallery'); if (!strip) return;
+  let items = [];
+  try { items = ((await fetch(api('/api/assets')).then((r) => r.json())).items) || []; } catch (_) { return; }
+  strip.classList.toggle('on', items.length > 0);
+  // api() carries the token: a paired phone authenticates by cookie, but a desktop
+  // hand-off link authenticates by query string, and an <img> sends neither by itself.
+  strip.innerHTML = items.slice(0, 24).map((item) => { const src = esc(api(item.url)); return item.type.startsWith('video/')
+    ? `<video src="${src}" muted loop playsinline preload="metadata" title="${esc(item.name)}"></video>`
+    : item.type.startsWith('audio/')
+      ? `<button class="aud" data-src="${src}" title="${esc(item.name)}">♪ ${esc(item.name.slice(0, 14))}</button>`
+      : `<img src="${src}" alt="${esc(item.name)}" loading="lazy">`; }).join('');
+  strip.querySelectorAll('video').forEach((node) => {
+    node.addEventListener('click', () => { node.paused ? node.play() : node.pause(); });
+  });
+  strip.querySelectorAll('.aud').forEach((node) => {
+    node.addEventListener('click', () => { new Audio(node.dataset.src).play().catch(() => {}); });
+  });
 }
 async function bootstrapAuth() {
   const pairing = qs.get('pair');
@@ -442,6 +487,7 @@ async function bootstrapAuth() {
     } catch (error) { $('connT').textContent = 'PAIR EXPIRED'; comm(`[LINK] ${error.message}`); return; }
   } else if (qs.get('t')) history.replaceState(null, '', '/');
   connect();
+  loadGallery();
 }
 bootstrapAuth();
 document.addEventListener('visibilitychange', () => {
