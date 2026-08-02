@@ -134,6 +134,18 @@
     opacity: .22; transition: opacity var(--dur-base) var(--ease-out); }
   .acard.hot .ad { opacity: 1; box-shadow: 0 0 6px var(--c); }
   .acard.hot .ac { color: var(--c); }
+  /* Pi mini orb: which Pi agent is instructing this model — overlaps the card top edge */
+  .apip { position: absolute; z-index: 3; top: -7px; left: 50%; display: grid; place-items: center;
+    width: 14px; height: 14px; border: 1px solid rgba(217,70,239,.55); border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, rgba(217,70,239,.24), rgba(5,9,17,.96) 62%);
+    color: #e9d5ff; font: 800 8px "SF Mono", Menlo, monospace;
+    transform: translate(-50%,0) scale(.95); opacity: .35;
+    transition: transform .22s var(--ease-out), opacity .22s var(--ease-out); }
+  .apip.on { transform: translate(-50%,0) scale(1); opacity: 1; }
+  .apip::after { content: ""; position: absolute; inset: -1px; border-radius: 50%;
+    box-shadow: 0 0 9px rgba(217,70,239,.8); opacity: 0; transition: opacity .25s var(--ease-out); }
+  .apip.on::after { opacity: 1; animation: apipBreath 2.3s ease-in-out infinite; }
+  @keyframes apipBreath { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
   .logHead { display: flex; align-items: baseline; padding: 5px 14px 5px;
     border-top: 1px solid var(--hairline); }
@@ -307,6 +319,8 @@
     const MODEL_CARDS = {
       'claude-code': { short:'Claude', color:'#ff7b00', glyph:'›_' },
       codex: { short:'Codex', color:'#10b981', glyph:'‹›' },
+      gemini: { short:'Gemini', color:'#4285f4', glyph:'◇' },
+      glm: { short:'GLM', color:'#d97706', glyph:'⬡' },
       'pi-agent-core': { short:'PiAgent', color:'#d946ef', glyph:'π' },
       'local-qwen': { short:'Local Qwen', color:'#38bdf8', glyph:'◈' },
     };
@@ -314,7 +328,7 @@
       'claude-code': MODEL_CARDS['claude-code'], claude: MODEL_CARDS['claude-code'], codex: MODEL_CARDS.codex,
       'pi-agent-core': MODEL_CARDS['pi-agent-core'], pi: MODEL_CARDS['pi-agent-core'],
       'local-qwen': MODEL_CARDS['local-qwen'], qwen: MODEL_CARDS['local-qwen'], biglama: MODEL_CARDS['local-qwen'],
-      gemini: { short:'Gemini', color:'#4e8cff', glyph:'✦' }, glm: { short:'GLM', color:'#a855f7', glyph:'✳' },
+      gemini: MODEL_CARDS.gemini, glm: MODEL_CARDS.glm,
     };
     // ---- seedベースの決定的散らし（FNV-1aハッシュ→PRNG。描画毎のMath.random禁止・枚数可変対応） ----
     function seedRand(key) {
@@ -367,11 +381,12 @@
       const c = document.createElement('div');
       c.className = 'acard';
       c.style.setProperty('--c', m.color);
-      c.innerHTML = '<span class="ai" style="color:' + m.color + '">' + m.glyph + '</span>' +
+      c.innerHTML = '<span class="apip" title="PiAgent standby">π</span>' +
+        '<span class="ai" style="color:' + m.color + '">' + m.glyph + '</span>' +
         '<span class="an">' + m.short + '</span><span class="ac">sleeping</span><i class="ad"></i>';
       scatterAgentCard(c, id, index); // IDのseedから決定的に散らす（nth-child固定を廃止）
       cards.appendChild(c);
-      cardMap[id] = { el: c, count: c.querySelector('.ac'), timer: null };
+      cardMap[id] = { el: c, count: c.querySelector('.ac'), pip: c.querySelector('.apip'), timer: null };
     });
     function updateSecurity(security = {}) {
       const badge = document.getElementById('securityBadge'); const blocked = Number(security.blocked || 0);
@@ -386,8 +401,14 @@
     function updateModels(snapshot) {
       for (const model of snapshot?.models || []) {
         const card = cardMap[model.id]; if (!card) continue;
-        const saved = model.id === 'pi-agent-core' && model.metrics?.prunedContextRatio != null ? ` · ${Math.round(model.metrics.prunedContextRatio)}% saved` : '';
+        const savedTokens = Number(model.metrics?.tokensSaved || 0);
+        const saved = model.id === 'pi-agent-core' && model.metrics?.prunedContextRatio != null ? ` · ${Math.round(model.metrics.prunedContextRatio)}% saved`
+          : savedTokens > 0 ? ` · ${savedTokens >= 1000 ? (savedTokens / 1000).toFixed(1) + 'k' : savedTokens} saved` : '';
         card.count.textContent = `${model.status || 'IDLE'}${saved}`; card.el.classList.toggle('hot', !!model.connected);
+        if (card.pip) { // Pi→モデル割当ブリッジ（model-status-storeのpiAgent/instruction実データ）
+          card.pip.title = model.piAgent ? `${model.piAgent}${model.instruction ? ` → ${model.instruction}` : ''}` : 'PiAgent standby';
+          card.pip.classList.toggle('on', !!(model.connected && model.piAgent));
+        }
       }
     }
     window.bigkiji.onModelStatus(updateModels);

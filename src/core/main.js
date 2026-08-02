@@ -45,6 +45,8 @@ const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
 const fleetMetrics = new ModelStatusStore({ knowledge });
+const { FleetMetricsStore } = require('./fleet-metrics-store');
+const piFleet = new FleetMetricsStore({}); // 13 Pi agents — persistence stays with fleetMetrics (same knowledge slot)
 const relationshipService = new RelationshipSnapshotService({
   graphPath: PATHS.graphPath,
 });
@@ -103,23 +105,24 @@ function spawnShell() {
 }
 
 function broadcast(channel, payload) {
-  if (channel === 'pi:stats') fleetMetrics.ingestStats(payload);
-  else if (channel === 'bk:swarm') fleetMetrics.ingestSwarm(payload);
-  else if (channel === 'voice:live-state') fleetMetrics.ingestVoice(payload);
-  else if (channel === 'vault:touch') fleetMetrics.ingestSync({ text: payload?.[0] || 'Vault sync' });
+  if (channel === 'pi:stats') { fleetMetrics.ingestStats(payload); piFleet.ingestStats(payload); }
+  else if (channel === 'bk:swarm') { fleetMetrics.ingestSwarm(payload); piFleet.ingestSwarm(payload); }
+  else if (channel === 'voice:live-state') { fleetMetrics.ingestVoice(payload); piFleet.ingestVoice(payload); }
+  else if (channel === 'vault:touch') { fleetMetrics.ingestSync({ text: payload?.[0] || 'Vault sync' }); piFleet.ingestSync({ text: payload?.[0] || 'Vault sync' }); }
   for (const w of [trayWin, mainWin]) {
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
   }
 }
 taskRunner.on('task', (task) => {
-  fleetMetrics.ingestTask(task); broadcast('task:event', task);
+  fleetMetrics.ingestTask(task); piFleet.ingestTask(task); broadcast('task:event', task);
   if (['running', 'completed', 'failed', 'awaiting_approval'].includes(String(task.status || ''))) {
     const label = String(task.agent || task.provider || 'Pi agent');
     speakAgent(`${label}. ${String(task.status).replaceAll('_', ' ')}. ${String(task.title || task.prompt || '').slice(0, 90)}`, label);
   }
 });
 taskRunner.on('log', (log) => broadcast('task:log', log));
-fleetMetrics.on('update', (snapshot) => { broadcast('model:status:update', snapshot); broadcast('pi:fleet', snapshot); });
+fleetMetrics.on('update', (snapshot) => broadcast('model:status:update', snapshot));
+piFleet.on('update', (snapshot) => broadcast('pi:fleet', snapshot));
 relationshipService.on('update', (snapshot) => {
   broadcast('relationship:snapshot', snapshot);
   if (snapshot.state === 'ready') fleetMetrics.ingestSync({ text: `Graphify ${snapshot.nodes.length} nodes`, ms: snapshot.loadMs });
@@ -972,7 +975,7 @@ ipcMain.handle('open:external', (_e, url) => {
   return shell.openExternal(value);
 });
 ipcMain.handle('knowledge:state', () => knowledge.loadState());
-ipcMain.handle('fleet:snapshot', () => fleetMetrics.snapshot());
+ipcMain.handle('fleet:snapshot', () => piFleet.snapshot());
 ipcMain.handle('model:status:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('relationship:snapshot', () => relationshipService.snapshot());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
@@ -1173,7 +1176,7 @@ app.whenReady().then(async () => {
   previewServer.on('reload', (status) => broadcast('preview:reload', status));
   previewServer.on('error', (error) => broadcast('preview:error', { message: String(error.message || error) }));
   coordinator = new CoreExecutionCoordinator({ taskRunner, settingsProvider: () => settingsStore.get(), preview: previewServer });
-  coordinator.on('run', (event) => { fleetMetrics.ingestRun(event); broadcast('run:event', event); });
+  coordinator.on('run', (event) => { fleetMetrics.ingestRun(event); piFleet.ingestRun(event); broadcast('run:event', event); });
   fastRouter.detect().then((availability) => fleetMetrics.setAvailability(availability)).catch(() => {});
   if (settingsStore.get().preview.enabled) previewServer.start()
     .catch((error) => bus.push({ source: 'system', type: 'warn', text: `Preview unavailable: ${error.message}` }));

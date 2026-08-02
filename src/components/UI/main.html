@@ -455,7 +455,7 @@
     box-shadow: 0 0 8px color-mix(in srgb, var(--c) 70%, transparent);
     transition: width .5s var(--ease-out); }
   /* ACTIVE TELEMETRY HUD（主計器）＋ QUERY/CODEストリーム（右） */
-  #neuralRow { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.42fr) minmax(300px, 1fr); gap: 8px; }
+  #neuralRow { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.28fr) minmax(280px, .96fr) minmax(168px, .58fr); gap: 8px; }
   #telemetryHud { --thud-cyan:#00f3ff; --thud-emerald:#34d399; --thud-violet:#a78bfa; --thud-amber:#FFE81F;
     position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1.05fr) minmax(0, .95fr); container-type:size;
     overflow: hidden; border: 1px solid rgba(0,255,170,.25); border-radius: 10px;
@@ -491,7 +491,7 @@
   .thud-comfy-copy{min-width:0;display:flex;flex-direction:column;gap:3px}.thud-comfy-copy strong{color:rgba(226,240,234,.82);font:800 7.5px "SF Mono",Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.thud-comfy-copy>span{color:rgba(159,216,194,.45);font:7.5px/1.3 "SF Mono",Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.thud-comfy-actions{display:flex;gap:3px}.thud-comfy-actions button{padding:2px 5px;border:1px solid rgba(167,139,250,.22);border-radius:4px;background:rgba(167,139,250,.07);color:rgba(216,205,255,.64);font:700 6.5px "SF Mono",Menlo,monospace;cursor:pointer}.thud-comfy-actions button:disabled{opacity:.25;cursor:default}.thud-comfy-actions button:not(:disabled):hover{color:#fff;border-color:rgba(167,139,250,.55)}
   .thud-nodegraph{display:flex;align-items:center;width:94px;height:6px}.thud-nodegraph i{width:5px;height:5px;border:1px solid rgba(167,139,250,.3);border-radius:50%;background:#070c14}.thud-nodegraph i.on{background:var(--thud-violet);box-shadow:0 0 7px var(--thud-violet)}.thud-nodegraph u{width:25px;height:1px;text-decoration:none;background:linear-gradient(90deg,rgba(167,139,250,.38),rgba(0,243,255,.25))}
   #telemetryHud[data-comfy="RUNNING"] .thud-comfy-orbit i,#telemetryHud[data-comfy="STARTING"] .thud-comfy-orbit i{animation-duration:1.7s}#telemetryHud[data-comfy="ERROR"] .thud-comfy-orbit{filter:hue-rotate(105deg)}
-  #fleetHud { position:relative; min-width:0; min-height:0; overflow:hidden; padding:5px 7px; container-type:size;
+  #fleetHud, #piFleetHud { position:relative; min-width:0; min-height:0; overflow:hidden; padding:5px 7px; container-type:size;
     border:1px solid rgba(167,139,250,.24); border-radius:10px;
     background:radial-gradient(circle at 78% 8%,rgba(167,139,250,.12),transparent 36%),rgba(4,8,16,.82);
     box-shadow:inset 0 1px rgba(255,255,255,.04),0 0 22px -16px rgba(167,139,250,.8);
@@ -504,10 +504,21 @@
   .fleet-grid.many{grid-template-columns:repeat(3,minmax(0,1fr));max-height:calc(100% - 58px);overflow:auto;scrollbar-width:thin}.fleet-grid.many .fleet-agent{padding:4px 5px}.fleet-grid.many .fleet-agent>span{display:none}.fleet-grid.many .fleet-task{margin:3px 0;font-size:5.7px}.fleet-grid.many .fleet-agent dl{display:none}
   .model-grid{grid-template-columns:repeat(2,minmax(0,1fr));max-height:calc(100% - 56px);overflow:auto;scrollbar-width:thin}.model-card small{display:block;margin-top:4px;color:#87988f;font:5.8px "SF Mono",Menlo,monospace}.model-card[data-state="OFFLINE"],.model-card[data-state="ERROR"]{opacity:.58}.model-card[data-state="THINKING"],.model-card[data-state="EXECUTING"],.model-card[data-state="PRUNING"]{border-color:rgba(134,169,149,.42);background:rgba(134,169,149,.06)}
   .model-card[data-state="SLEEPING"]{opacity:.72}.model-progress{height:2px;margin:3px 0 5px;overflow:hidden;border-radius:99px;background:rgba(255,255,255,.045)}.model-progress i{display:block;height:100%;background:linear-gradient(90deg,#86a995,#d6a179);transition:width .25s ease}.model-card[data-state="SLEEPING"] .model-progress i,.model-card[data-state="OFFLINE"] .model-progress i{width:0!important}
+  /* Pi orb: which Pi agent is driving this model — half-overlapping circle, glows softly while live. */
+  .model-grid{padding-top:15px}.model-card{position:relative;overflow:visible;margin-top:2px}
+  .pi-orb{position:absolute;z-index:2;top:-13px;left:50%;display:grid;place-items:center;width:26px;height:26px;border:1px solid rgba(217,70,239,.5);border-radius:50%;background:radial-gradient(circle at 34% 30%,rgba(217,70,239,.22),rgba(6,10,18,.96) 62%);color:#e9d5ff;font:800 12px "SF Mono",Menlo,monospace;box-shadow:0 3px 10px rgba(0,0,0,.45);transform:translate(-50%,0) scale(.95);opacity:.42;transition:transform .22s var(--ease-out,cubic-bezier(.22,1,.36,1)),opacity .22s var(--ease-out,cubic-bezier(.22,1,.36,1))}
+  .pi-orb.on{transform:translate(-50%,0) scale(1);opacity:1}
+  .pi-orb::after{content:"";position:absolute;inset:-1px;border-radius:50%;box-shadow:0 0 13px rgba(217,70,239,.75),0 0 3px rgba(217,70,239,.9);opacity:0;transition:opacity .25s var(--ease-out,cubic-bezier(.22,1,.36,1))}
+  .pi-orb.on::after{opacity:1;animation:piOrbBreath 2.3s ease-in-out infinite}
+  @keyframes piOrbBreath{0%,100%{opacity:1}50%{opacity:.45}}
+  .pi-instruction{display:flex;align-items:baseline;gap:4px;margin:4px 0 0;min-width:0;color:rgba(233,213,255,.82);font:6.5px "SF Mono",Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pi-instruction b{flex:none;color:#d946ef;font-weight:800}.pi-instruction b::after{content:"→"}
+  @media (prefers-reduced-motion: reduce){.pi-orb.on::after{animation:none}}
   @container (max-height: 150px) {
     .thud-lower{display:none}.thud-relay{grid-row:1/-1;padding:5px 8px}.thud-event{grid-template-columns:45px 64px 45px minmax(0,1fr);font-size:7px}
     .fleet-head{font-size:6.5px}.fleet-total{margin:3px 0;padding:3px 5px}.fleet-total strong{font-size:11px}.fleet-total em{display:none}
-    .fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}.fleet-agent{padding:3px 4px;border-radius:4px}.fleet-agent>header{display:block}.fleet-agent>header b{font-size:6.5px}.fleet-agent>header i{display:block;font-size:4.5px;white-space:nowrap}.fleet-agent>span,.fleet-task{display:none}.fleet-agent dl{margin-top:3px;display:block}.fleet-agent dl div{display:flex;justify-content:space-between;gap:2px}.fleet-agent dt,.fleet-agent dd{font-size:4.8px}
+    .fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}.fleet-agent{padding:3px 4px;border-radius:4px}.fleet-agent>header{display:block}.fleet-agent>header b{font-size:6.5px}.fleet-agent>header i{display:block;font-size:4.5px;white-space:nowrap}.fleet-agent>span,.fleet-task,.pi-instruction{display:none}.fleet-agent dl{margin-top:3px;display:block}.fleet-agent dl div{display:flex;justify-content:space-between;gap:2px}.fleet-agent dt,.fleet-agent dd{font-size:4.8px}
+    .model-grid{padding-top:8px}.pi-orb{top:-7px;width:14px;height:14px;font-size:7px}
   }
   @container (max-height: 105px) {
     .fleet-total,.fleet-grid{display:none}.fleet-compact{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin-top:3px}
@@ -562,8 +573,8 @@
   .app::before{content:"";position:fixed;inset:auto -8vw -22vh auto;width:54vw;height:50vh;pointer-events:none;background:radial-gradient(circle at 32% 35%,rgba(242,200,75,.13),transparent 34%),radial-gradient(circle at 66% 52%,rgba(239,127,116,.10),transparent 31%),radial-gradient(circle at 48% 80%,rgba(135,147,245,.09),transparent 34%);filter:blur(18px);z-index:-1}
   #meters{display:none!important}
   #neuralRow{border:1px solid rgba(184,202,191,.12);border-radius:16px;overflow:hidden;gap:0;background:rgba(17,23,21,.72)}
-  #telemetryHud,#fleetHud{border:0!important;border-radius:0!important;box-shadow:none!important;background-color:transparent!important;background-image:none!important}
-  #fleetHud{border-left:1px solid rgba(184,202,191,.11)!important}
+  #telemetryHud,#fleetHud,#piFleetHud{border:0!important;border-radius:0!important;box-shadow:none!important;background-color:transparent!important;background-image:none!important}
+  #fleetHud,#piFleetHud{border-left:1px solid rgba(184,202,191,.11)!important}
   .term{padding:7px 9px 9px!important}
   .term .bar{order:20;margin-top:7px;padding:7px 9px;border:1px solid rgba(203,214,207,.14)!important;border-radius:15px;background:rgba(29,35,32,.94);box-shadow:0 12px 34px rgba(0,0,0,.24);cursor:default}
   .term .tabs{gap:5px}
@@ -748,6 +759,7 @@
         <div id="neuralRow">
           <section id="telemetryHud" aria-label="Agent telemetry and media engine"></section>
           <section id="fleetHud" aria-label="Active AI models fleet"></section>
+          <section id="piFleetHud" aria-label="Pi agents fleet"></section>
         </div>
       </div>
       <div id="terminal" class="paneOff"></div>
@@ -899,6 +911,14 @@
     // v12 フルデュプレックス音声（VAD＋Barge-in）。マイク所有権はmainが調停
     if (window.BKLive) window.BKLive.init({ button: document.getElementById('liveBtn') });
     if (window.BKSettings) window.BKSettings.init(document.getElementById('settingsBtn'));
+  </script>
+  <script type="module">
+    // PI-AGENTS FLEET: mount the 13-agent box beside fleetHud, fed by the existing pi:fleet IPC path.
+    import { PiAgentsFleetBox } from '../../domain/pi-agent/components/pi-agents-fleet-box.js';
+    const piFleetBox = new PiAgentsFleetBox({ root: document.getElementById('piFleetHud') });
+    const applyPiFleet = (snapshot) => { if (snapshot && Array.isArray(snapshot.agents)) piFleetBox.update(snapshot); };
+    window.bigkiji.onFleet?.(applyPiFleet);
+    window.bigkiji.fleetSnapshot?.().then(applyPiFleet).catch(() => {});
   </script>
   <script type="module" src="../../domain/3d-canvas/components/synapse.js"></script>
 </body>

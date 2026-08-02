@@ -15,6 +15,7 @@ const providerId = (value) => /claude/i.test(value) ? 'claude-code' : /codex|ope
   : /gemini|google/i.test(value) ? 'gemini' : /glm|zai/i.test(value) ? 'glm'
     : /qwen|ollama/i.test(value) ? 'local-qwen' : 'pi-agent-core';
 const initial = (meta) => ({ ...meta, status: meta.id === 'pi-agent-core' ? 'IDLE' : 'OFFLINE', available: meta.id === 'pi-agent-core', connected: meta.id === 'pi-agent-core',
+  piAgent: '', instruction: '',
   metrics: { promptTokens: 0, completionTokens: 0, tokensUsed: 0, tokensSaved: 0, latencyMs: 0,
     lastActive: '', estimatedCostUsd: null, prunedContextRatio: null, filesHandled: 0, executedCommands: 0,
     tokensPerSecond: null, vramUsage: null, apiHealth: 'unknown' } });
@@ -22,7 +23,12 @@ const initial = (meta) => ({ ...meta, status: meta.id === 'pi-agent-core' ? 'IDL
 class ModelStatusStore extends EventEmitter {
   constructor({ knowledge } = {}) {
     super(); this.knowledge = knowledge; this.models = Object.fromEntries(Object.values(MODELS).map((meta) => [meta.id, initial(meta)]));
-    this.taskRecords = new Map(); this.persistTimer = null;
+    this.taskRecords = new Map(); this.persistTimer = null; this.swarmSaved = 0;
+  }
+  // Pi↔model bridge: context-pruner savings belong to the model that received the instruction.
+  _savedFor(id) {
+    return [...this.taskRecords.values()].filter((row) => row.modelId === id).reduce((sum, row) => sum + row.saved, 0)
+      + (id === 'pi-agent-core' ? this.swarmSaved : 0);
   }
   touch(id, patch = {}) {
     const current = this.models[id]; if (!current) return;
@@ -45,23 +51,27 @@ class ModelStatusStore extends EventEmitter {
     const terminal = ['completed', 'failed', 'blocked'].includes(task.status);
     if (task.id) this.taskRecords.set(task.id, { modelId: id, input: Number(task.tokens?.input || 0), output: Number(task.tokens?.output || 0),
       saved: Number(task.context?.tokensSaved || 0), files: Number(task.context?.includedFiles?.length || 0), command: task.startedAt ? 1 : 0,
-      status: task.status, activeTask: task.promptPreview || task.id, updatedAt: task.updatedAt });
+      status: task.status, activeTask: task.promptPreview || task.id,
+      piAgent: task.metadata?.agent || '', instruction: String(task.promptPreview || '').slice(0, 80), updatedAt: task.updatedAt });
     const records = [...this.taskRecords.values()].filter((row) => row.modelId === id);
     const activeRecords = records.filter((row) => row.status === 'running');
     const active = activeRecords.length > 0;
+    const live = activeRecords.at(-1);
     const status = active ? 'EXECUTING' : (terminal && ['failed', 'blocked'].includes(task.status) ? 'ERROR' : 'IDLE');
     const promptTokens = records.reduce((sum, row) => sum + row.input, 0), completionTokens = records.reduce((sum, row) => sum + row.output, 0);
     const started = task.startedAt ? new Date(task.startedAt).getTime() : 0;
     const latencyMs = started ? Math.max(0, new Date(task.finishedAt || task.updatedAt || Date.now()).getTime() - started) : 0;
-    this.touch(id, { available: true, connected: active, status, activeTask: active ? activeRecords.at(-1)?.activeTask : '',
-      metrics: { promptTokens, completionTokens, tokensUsed: promptTokens + completionTokens,
+    this.touch(id, { available: true, connected: active, status, activeTask: active ? live?.activeTask : '',
+      piAgent: (live || records.at(-1))?.piAgent || this.models[id].piAgent || '',
+      instruction: active ? (live?.instruction || '') : '',
+      metrics: { promptTokens, completionTokens, tokensUsed: promptTokens + completionTokens, tokensSaved: this._savedFor(id),
         latencyMs, lastActive: task.updatedAt || new Date().toISOString(), apiHealth: status === 'ERROR' ? 'error' : (active ? 'active' : 'ready · sleeping'),
         filesHandled: records.reduce((sum, row) => sum + row.files, 0), executedCommands: records.reduce((sum, row) => sum + row.command, 0) } });
     if (task.context) {
       const full = Number(task.context.fullContextTokens || 0), pruned = Number(task.context.prunedContextTokens || 0);
       const anyActive = [...this.taskRecords.values()].some((row) => row.status === 'running');
       this.touch('pi-agent-core', { connected: true, status: anyActive ? 'PRUNING' : 'IDLE',
-        metrics: { tokensSaved: [...this.taskRecords.values()].reduce((sum, row) => sum + row.saved, 0),
+        metrics: { tokensSaved: this._savedFor('pi-agent-core'),
           prunedContextRatio: full ? Math.max(0, Math.min(100, (1 - pruned / full) * 100)) : null,
           filesHandled: [...this.taskRecords.values()].reduce((sum, row) => sum + row.files, 0), lastActive: task.updatedAt } });
     }
@@ -73,8 +83,11 @@ class ModelStatusStore extends EventEmitter {
       tokensUsed: input + output, latencyMs, lastActive: new Date().toISOString(), tokensPerSecond: latencyMs && output ? output / (latencyMs / 1000) : null, apiHealth: 'healthy' } });
     setTimeout(() => this.touch(id, { connected: false, status: 'IDLE', metrics: { apiHealth: 'ready · sleeping' } }), 1600).unref?.();
   }
-  ingestSwarm(event = {}) { this.touch('pi-agent-core', { status: event.phase === 'abort' ? 'IDLE' : 'PRUNING',
-    metrics: { tokensSaved: this.models['pi-agent-core'].metrics.tokensSaved + Math.max(0, Number(event.savedTokens || 0)), lastActive: new Date().toISOString() } }); }
+  ingestSwarm(event = {}) {
+    this.swarmSaved += Math.max(0, Number(event.savedTokens || 0));
+    this.touch('pi-agent-core', { status: event.phase === 'abort' ? 'IDLE' : 'PRUNING',
+      metrics: { tokensSaved: this._savedFor('pi-agent-core'), lastActive: new Date().toISOString() } });
+  }
   ingestRun(event = {}) { const status = event.status === 'VERIFYING' ? 'EXECUTING' : event.status === 'REPAIRING' ? 'EXECUTING'
     : event.status === 'FAILED' ? 'ERROR' : ['EXECUTING', 'DISPATCHING'].includes(event.status) ? 'EXECUTING' : 'IDLE';
     this.touch('pi-agent-core', { connected: true, status, activeTask: event.promptPreview || event.id || '',

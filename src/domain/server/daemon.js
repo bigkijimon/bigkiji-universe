@@ -11,6 +11,7 @@ const { WebSocketServer } = require('ws');
 const { TaskRunner } = require('../pi-agent/task-runner');
 const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordinator');
 const { ModelStatusStore } = require('../hud/model-status-store');
+const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
 const { SessionStore } = require('./session-store');
 const { MobileDeviceStore } = require('./mobile-device-store');
@@ -82,7 +83,7 @@ class DaemonEngine extends EventEmitter {
       if (value) this.secrets.set(provider === 'claude-code' ? 'claude' : provider, String(value));
     }
     this.runner.setSecretProvider((provider) => this.secrets.get(provider === 'claude-code' ? 'claude' : provider) || '');
-    this.models = new ModelStatusStore({ knowledge }); this.runSessions = new Map(); this.activeSessionId = '';
+    this.models = new ModelStatusStore({ knowledge }); this.piFleet = new FleetMetricsStore({}); this.runSessions = new Map(); this.activeSessionId = '';
     const initialPolicy = this.runner.policy.resolve(this.workspace);
     this.securityState = { mode: 'strict-direct', status: 'ENFORCED', webSearch: 'broker-only', environment: 'minimal',
       blocked: 0, manifests: 0, recent: [], policyHash: initialPolicy.security?.policyHash || '',
@@ -98,7 +99,7 @@ class DaemonEngine extends EventEmitter {
     this.runner.qwenGuardrails.on('health', (health) => this.models.ingestQwenHealth(health));
     this.runner.qwenGuardrails.on('reset', (reset) => this.publish('commentary', { source: 'Local Qwen', status: 'RESET', text: `KV cache reset: ${reset.reason}` }));
     this.runner.on('task', (task) => {
-      this.models.ingestTask(task); this.publish('task', task);
+      this.models.ingestTask(task); this.piFleet.ingestTask(task); this.publish('task', task);
       const sessionId = task.metadata?.runId && this.runSessions.get(task.metadata.runId);
       if (sessionId) this.sessions.append(sessionId, { type: 'task', status: task.status, task });
       if (task.metadata?.kind === 'idea-enhancement' && ['completed', 'failed', 'blocked'].includes(task.status)) this.finishIdeaEnhancement(task);
@@ -115,8 +116,9 @@ class DaemonEngine extends EventEmitter {
         taskId: event.taskId, at: event.at }, ...this.securityState.recent].slice(0, 12);
       this.publish('security', this.securityState);
     });
-    this.coordinator.on('run', (run) => this.onRun(run));
-    this.models.on('update', (snapshot) => { this.publish('models', snapshot); this.publish('fleet', snapshot); });
+    this.coordinator.on('run', (run) => { this.piFleet.ingestRun(run); this.onRun(run); });
+    this.models.on('update', (snapshot) => this.publish('models', snapshot));
+    this.piFleet.on('update', (snapshot) => this.publish('fleet', snapshot));
     setImmediate(() => this.refreshInventory().catch(() => {}));
     this.inventoryTimer = setInterval(() => this.refreshInventory().catch((err) => {
       engine.publish('error', { source: 'daemon', error: `Inventory refresh failed: ${String(err.message).slice(0, 100)}` });

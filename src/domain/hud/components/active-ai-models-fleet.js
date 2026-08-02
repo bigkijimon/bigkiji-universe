@@ -9,8 +9,15 @@ export class ActiveAIModelsFleet {
     if (!this.root) return; const models = snapshot.models || [], totals = snapshot.totals || {};
     this.root.innerHTML = `<header class="fleet-head"><span><i></i> ACTIVE AI MODELS FLEET</span><b>${snapshot.connected || 0} CONNECTED NOW</b></header>
       <section class="fleet-total"><span>TOTAL TOKENS USED & SAVED</span><strong>${compact(totals.tokensUsed)} / ${compact(totals.tokensSaved)}</strong><em>actual telemetry only</em></section>
-      <div class="fleet-grid model-grid">${models.map((model) => { const displayStatus = model.status === 'ERROR' ? 'ERROR' : model.connected ? model.status : (model.available ? 'SLEEPING' : 'OFFLINE'); const progress = model.connected ? (model.status === 'THINKING' ? 42 : model.status === 'PRUNING' ? 28 : 58) : 0; return `<article class="fleet-agent model-card" data-state="${esc(displayStatus)}">
+      <div class="fleet-grid model-grid">${models.map((model) => { const displayStatus = model.status === 'ERROR' ? 'ERROR' : model.connected ? model.status : (model.available ? 'SLEEPING' : 'OFFLINE');
+        const share = (part, whole) => whole > 0 ? Math.min(100, Math.round((Number(part) || 0) / whole * 100)) : 0;
+        // Real telemetry only: this model's share of fleet tokensSaved, else its share of tokensUsed.
+        const progress = share(model.metrics.tokensSaved, totals.tokensSaved) || share(model.metrics.tokensUsed, totals.tokensUsed);
+        const piLive = !!(model.connected && model.instruction);
+        return `<article class="fleet-agent model-card" data-state="${esc(displayStatus)}">
+        <span class="pi-orb${piLive ? ' on' : ''}" title="${esc(model.piAgent ? `${model.piAgent} → ${model.displayName}` : 'PiAgent standby')}">π</span>
         <header><b>${esc(model.displayName)}</b><i>${esc(displayStatus)}</i></header><span>${esc(model.role)}</span>
+        ${model.instruction ? `<div class="pi-instruction" title="${esc(model.piAgent ? `${model.piAgent}: ` : '')}${esc(model.instruction)}"><b>${esc(model.piAgent || 'Pi')}</b>${esc(model.instruction)}</div>` : ''}
         <div class="fleet-task">${esc(model.activeTask || (model.connected ? model.metrics.apiHealth : model.available ? 'Available · starts only on PiAgent assignment' : 'Not available'))}</div>
         <div class="model-progress"><i style="width:${progress}%"></i></div>
         <dl><div><dt>TOKENS</dt><dd>${compact(model.metrics.tokensUsed)}</dd></div><div><dt>LATENCY</dt><dd>${metric(model.metrics.latencyMs,'ms')}</dd></div><div><dt>SAVED</dt><dd>${compact(model.metrics.tokensSaved)}</dd></div>
