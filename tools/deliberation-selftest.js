@@ -154,6 +154,27 @@ function fakeChild() {
   assert.strictEqual(direct.stage, 'execution');
   assert.strictEqual(direct.deliberation, undefined);
 
+  // ---- a provider that cannot start should not win the role ------------------
+  // Scoring used to ignore availability entirely, so a provider with no credential
+  // took the assignment and died at spawn — a full plan-approve-fail-repair cycle
+  // spent discovering something knowable before planning.
+  const coordinatorWith = (available) => new CoreExecutionCoordinator({
+    taskRunner: new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: () => fakeChild() }),
+    registry: new ModelCapabilityRegistry({ root: path.join(root, `cap-${Math.abs(String(available).length)}-${Date.now().toString(36)}`) }),
+    memory: new deliberate.DeliberationMemory({ root: path.join(root, 'no-recall', String(Date.now())) }),
+    skills: { scan() {}, brief() { return ''; } },
+    settingsProvider: () => ({ routing: { deliberationLenses: 0, maxAgents: 5 }, quality: { gate: 'strict' } }),
+    available,
+  });
+  const onlyGlm = coordinatorWith((provider) => provider === 'glm')
+    .submit({ prompt: 'Fix the null check and verify the daemon build', cwd: project });
+  assert(onlyGlm.assignments.every((item) => item.provider === 'glm'),
+    'every role must land on the one provider that can actually start');
+  const noneAvailable = coordinatorWith(() => false)
+    .submit({ prompt: 'Fix the null check and verify the daemon build', cwd: project });
+  assert(noneAvailable.assignments.length >= 1,
+    'with nothing available, plan anyway and fail loudly — never silently produce no run');
+
   fs.rmSync(root, { recursive: true, force: true });
-  console.log('deliberation selftest: PASS · marker parsing survives cleanText · code-merged consensus · recall dedup · degrades when mute · off means off');
+  console.log('deliberation selftest: PASS · marker parsing survives cleanText · code-merged consensus · recall dedup · degrades when mute · off means off · unstartable providers deprioritised');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

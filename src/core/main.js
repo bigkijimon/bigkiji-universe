@@ -1070,15 +1070,36 @@ function setupScan() {
 }
 
 ipcMain.handle('setup:state', () => {
-  const { defaultDataRoot, findVaultCandidates } = require('./data-root');
+  const { defaultDataRoot, findVaultCandidates, dataLayout } = require('./data-root');
+  const { findPendingManifest } = require('./data-migrator');
   const { state, all } = setupScan();
+  // A migration writes its manifest before it moves a byte, precisely so a crash
+  // mid-move can be finished or undone. Nothing ever looked for one, so that manifest
+  // was written for a reader that did not exist and an interrupted move stayed
+  // half-done in silence.
+  const pending = findPendingManifest(dataLayout(PATHS.dataRoot));
   return {
     kind: SETUP_STATUS.kind, version: APP_VERSION,
     defaultRoot: defaultDataRoot(), vault: PATHS.vaultRoot,
     vaultCandidates: findVaultCandidates(),
     stateBytes: state.totalBytes, modelsBytes: all.groups.models,
     found: state.entries.map((entry) => ({ label: entry.id, bytes: entry.bytes, files: entry.files })),
+    interrupted: pending ? { status: pending.manifest.status, startedAt: pending.manifest.startedAt || '',
+      dataRoot: pending.manifest.dataRoot || '', manifestPath: pending.manifestPath,
+      entries: (pending.manifest.entries || []).map((entry) => ({ id: entry.id, state: entry.state || 'pending' })) } : null,
   };
+});
+// Undo an interrupted move. Rollback is the safe direction: it puts back what was
+// moved and leaves what was not, so it is correct whether the crash happened at the
+// first entry or the last.
+ipcMain.handle('setup:rollback', async () => {
+  const { dataLayout } = require('./data-root');
+  const { findPendingManifest, rollbackMigration } = require('./data-migrator');
+  const pending = findPendingManifest(dataLayout(PATHS.dataRoot));
+  if (!pending) return { rolledBack: false, reason: 'No interrupted migration was found.' };
+  await stopDaemonForMigration();
+  const result = await rollbackMigration(pending);
+  return { rolledBack: true, reverted: result.reverted, status: result.manifest.status };
 });
 
 ipcMain.handle('setup:plan', (_event, choice = {}) => {

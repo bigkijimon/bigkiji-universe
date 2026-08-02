@@ -65,7 +65,12 @@ class TaskRunner extends EventEmitter {
   approve(id, expected = {}) {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Unknown task: ${id}`);
-    if (task.status !== 'awaiting_approval' && task.status !== 'failed') throw new Error(`Task is not approvable: ${task.status}`);
+    // A failed task's manifest describes files as they were before the failure, so
+    // approving it directly always ends in STALE_DISCLOSURE_MANIFEST after the owner
+    // has already committed. retry() re-seals it first; say so now instead.
+    if (task.status !== 'awaiting_approval') throw new Error(task.status === 'failed'
+      ? 'Retry this task before approving it: its disclosure is stale'
+      : `Task is not approvable: ${task.status}`);
     if (!expected.disclosureHash || expected.disclosureHash !== task.disclosure?.disclosureHash) throw new Error('STALE_DISCLOSURE_HASH');
     if ([...this.tasks.values()].filter((t) => t.status === 'running').length >= this.maxParallel) {
       task.status = 'queued'; this.emit('task', this.public(task)); return this.public(task);

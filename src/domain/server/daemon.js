@@ -127,7 +127,11 @@ class DaemonEngine extends EventEmitter {
     this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => ({
       routing: { executionMode: 'plan', maxAgents: 3, sessionLeader: 'auto', facilitationComplete: true },
       quality: { gate: 'strict', maxRepairCycles: 2 },
-    }) });
+    }),
+    // Local providers need no credential; a paid one without a key cannot start, and
+    // finding that out at spawn costs a whole plan-approve-fail-repair cycle.
+    available: (provider) => ['qwen', 'ollama'].includes(provider)
+      || this.secrets.has(provider === 'claude-code' ? 'claude' : provider) });
     setImmediate(() => { try { writeSystemMemory({ appRoot: this.appRoot }); } catch (error) {
       this.publish('commentary', { source: 'PiAgent Engine', status: 'WARN', text: `System memory indexing failed: ${String(error.message).slice(0, 160)}` });
     } });

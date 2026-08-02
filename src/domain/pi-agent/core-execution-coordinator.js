@@ -49,7 +49,8 @@ function publicRun(run) {
 
 class CoreExecutionCoordinator extends EventEmitter {
   constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry(),
-    skills = new SkillRegistry(), memory = new deliberate.DeliberationMemory({ root: knowledge.ROOT }) } = {}) {
+    skills = new SkillRegistry(), memory = new deliberate.DeliberationMemory({ root: knowledge.ROOT }),
+    available = null } = {}) {
     super();
     if (!taskRunner) throw new Error('CoreExecutionCoordinator requires TaskRunner');
     this.taskRunner = taskRunner;
@@ -64,6 +65,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     this.preview = preview;
     this.registry = registry;
     this.memory = memory;
+    // Scoring never knew whether a provider could actually start. A provider with no
+    // credential still won its role and then died at spawn, which costs a full
+    // plan-approve-fail-repair cycle to discover something knowable up front.
+    this.isAvailable = typeof available === 'function' ? available : () => true;
     this.runs = new Map();
     this.taskToRun = new Map();
     taskRunner.on('task', (task) => this._ingestTask(task));
@@ -116,7 +121,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     const used = new Set();
     const chosen = deliberate.LENSES.slice(0, lenses).map((lens) => {
       const candidates = [lens.provider, ...(FALLBACKS[lens.provider] || [])].filter((item) => !used.has(item));
-      const provider = this.registry.choose(lens.role, candidates.length ? candidates : [lens.provider]) || lens.provider;
+      const provider = this._pick(lens.role, candidates.length ? candidates : [lens.provider]);
       used.add(provider);
       return { ...lens, provider, model: resolveModel(provider, `${run.prompt} ${lens.title}`, lens.role) };
     });
@@ -148,7 +153,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     const blueprint = ROLE_BLUEPRINT.filter((item) => kept.has(item.role)).map((item) => {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
-      const provider = this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider;
+      const provider = this._pick(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]);
       return { ...item, provider, model: resolveModel(provider, `${run.prompt} ${item.title}`, item.role) };
     });
     run.planHash = (run.explicitPlanHash && run.revision === 1) ? run.explicitPlanHash
@@ -169,6 +174,14 @@ class CoreExecutionCoordinator extends EventEmitter {
         write: item.write, status: task.status, fallbackIndex: 0, disclosureHash: task.disclosure?.disclosureHash || '' };
     });
     this._seal(run);
+  }
+
+  // Prefer a provider that can actually start. If none of the candidates can, fall back
+  // to scoring alone rather than refusing to plan — an unstartable assignment that
+  // fails loudly is more useful than a run that never appears.
+  _pick(role, candidates) {
+    const startable = candidates.filter((provider) => this.isAvailable(provider));
+    return this.registry.choose(role, startable.length ? startable : candidates) || candidates[0];
   }
 
   _seal(run) {

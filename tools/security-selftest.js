@@ -119,6 +119,12 @@ function fakeChild() {
   const untiered = brokerRunner.get('tiered'); untiered.model = 'claude-opus-5';
   assert.match(brokerRunner.approve('tiered', { disclosureHash: tiered.disclosure.disclosureHash }).error, /STALE_MODEL_SELECTION/);
 
+  // A failed task's manifest describes the files as they were before it failed, so
+  // approving it directly always ended in STALE_DISCLOSURE_MANIFEST — after the owner
+  // had already committed. Say it before they commit, not after.
+  const failedTask = brokerRunner.get('tiered'); failedTask.status = 'failed';
+  assert.throws(() => brokerRunner.approve('tiered', { disclosureHash: tiered.disclosure.disclosureHash }), /Retry this task before approving/);
+
   delete process.env.BIGKIJI_CANARY_SECRET; fs.rmSync(root, { recursive: true, force: true });
   console.log('security selftest: PASS · path/symlink deny · payload redaction · vendor-labelled keys · brokered external tools · model bound to approval · tool gate · minimal env · stale disclosure/policy');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

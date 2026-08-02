@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   setupPlan: (choice) => ipcRenderer.invoke('setup:plan', choice),
   setupChooseFolder: (kind) => ipcRenderer.invoke('setup:choose-folder', kind),
   setupApply: (choice) => ipcRenderer.invoke('setup:apply', choice),
+  setupRollback: () => ipcRenderer.invoke('setup:rollback'),
   setupSkip: () => ipcRenderer.invoke('setup:skip'),
   setupFinish: () => ipcRenderer.invoke('setup:finish'),
   toolsDetect: () => ipcRenderer.invoke('tools:detect'),
