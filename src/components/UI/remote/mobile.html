@@ -576,8 +576,27 @@ const wrap = $('cvWrap');
 // compact JSON/SSE state; no desktop frames, video textures, or remote canvas are streamed.
 const renderer = new THREE.WebGLRenderer({ canvas: $('cv'), alpha: true, antialias: true,
   powerPreference: 'high-performance', desynchronized: true, preserveDrawingBuffer: false });
-const mobileBudget = (navigator.deviceMemory || 4) <= 2 || (navigator.hardwareConcurrency || 4) <= 4 ? 1.35 : 1.8;
+// The desktop adapts its stage to measured frame time; the phone did not, so it took
+// one guess from deviceMemory at load and lived with it. A phone that reports 8 GB and
+// still cannot hold 60 fps — because it is warm, or throttled, or in low power mode —
+// had no way to recover. The guess is now only the starting point.
+let mobileBudget = (navigator.deviceMemory || 4) <= 2 || (navigator.hardwareConcurrency || 4) <= 4 ? 1.35 : 1.8;
+const MOBILE_BUDGET_FLOOR = 1;
 renderer.setPixelRatio(Math.min(devicePixelRatio, mobileBudget));
+let slowFrames = 0; let fastFrames = 0;
+function adaptMobileBudget(dt) {
+  // Hysteresis on both sides: a single stutter must not drop resolution, and one
+  // smooth second must not raise it back into the stutter it just escaped.
+  if (dt > 0.028) { slowFrames += 1; fastFrames = 0; } else if (dt < 0.019) { fastFrames += 1; slowFrames = 0; }
+  else { slowFrames = 0; fastFrames = 0; }
+  if (slowFrames > 45 && mobileBudget > MOBILE_BUDGET_FLOOR) {
+    mobileBudget = Math.max(MOBILE_BUDGET_FLOOR, mobileBudget - 0.25); slowFrames = 0;
+    renderer.setPixelRatio(Math.min(devicePixelRatio, mobileBudget));
+  } else if (fastFrames > 240 && mobileBudget < 1.8) {
+    mobileBudget = Math.min(1.8, mobileBudget + 0.25); fastFrames = 0;
+    renderer.setPixelRatio(Math.min(devicePixelRatio, mobileBudget));
+  }
+}
 renderer.domElement.addEventListener('webglcontextlost', (event) => { event.preventDefault(); comm('[DEVICE GPU] Context paused — recovering…'); });
 renderer.domElement.addEventListener('webglcontextrestored', () => { comm('[DEVICE GPU] Local renderer restored'); resize(); });
 const scene = new THREE.Scene();
@@ -801,6 +820,7 @@ const clock = new THREE.Clock();
   requestAnimationFrame(tick);
   if (document.visibilityState !== 'visible') return;
   const dt = Math.min(clock.getDelta(), 0.05);
+  adaptMobileBudget(dt);
   G.rotation.y += dt * 0.05;
   for (const id of ids) {
     const n = nodes[id];
