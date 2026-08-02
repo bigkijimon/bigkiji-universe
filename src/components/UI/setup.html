@@ -84,6 +84,7 @@
   <section class="step on" data-step="0">
     <h2>Let's give BigKiji a home of its own</h2>
     <p class="lead">Until now the app scattered its state across several folders — including one that belonged to the person who built it. This takes one minute and fixes that for good.</p>
+    <div class="warn" id="interrupted" style="display:none"></div>
     <table id="found"><tr><td>Scanning…</td></tr></table>
     <p class="note">Your Obsidian vault is <strong>never</strong> moved and never written to. It stays exactly where it is.</p>
   </section>
@@ -214,6 +215,28 @@
     state.vault = info.vault || '';
     $('ver').textContent = `v${info.version || '—'} · ${state.kind === 'upgrade' ? 'upgrading an existing install' : 'new install'}`;
     $('rootDefaultPath').textContent = state.defaultRoot;
+
+    // A move that died halfway wrote its manifest first, precisely so this screen can
+    // say so. Show it before anything else: starting a second migration on top of an
+    // unfinished one is how two half-copies of the same data end up on disk.
+    if (info.interrupted) {
+      const done = info.interrupted.entries.filter((entry) => entry.state !== 'pending').length;
+      $('interrupted').style.display = 'block';
+      $('interrupted').innerHTML = `<strong>A previous move did not finish.</strong> `
+        + `${done} of ${info.interrupted.entries.length} folders had been moved to ${info.interrupted.dataRoot || 'the new location'}`
+        + `${info.interrupted.startedAt ? ` (started ${new Date(info.interrupted.startedAt).toLocaleString()})` : ''}. `
+        + 'Put everything back where it was before continuing. '
+        + '<button id="rollback" style="margin-top:8px">Undo the unfinished move</button>';
+      $('rollback').addEventListener('click', async () => {
+        $('rollback').disabled = true; $('rollback').textContent = 'Restoring…';
+        try {
+          const result = await api.setupRollback();
+          $('interrupted').innerHTML = result.rolledBack
+            ? `<strong>Restored.</strong> ${result.reverted.length} folders are back where they were. You can start again below.`
+            : `<strong>Nothing to undo.</strong> ${result.reason || ''}`;
+        } catch (error) { $('interrupted').innerHTML = `<strong>Could not restore:</strong> ${error.message}`; }
+      });
+    }
 
     const found = info.found || [];
     $('found').innerHTML = found.length
