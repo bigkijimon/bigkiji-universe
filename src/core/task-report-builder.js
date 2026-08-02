@@ -91,7 +91,9 @@ class TaskReportBuilder {
     }
     if (draft) {
       const add = (label, list) => (Array.isArray(list) ? list : []).slice(0, 3)
-        .forEach((v) => learnings.push(`${label}: ${String(v).replace(/\s+/g, ' ').slice(0, 120)}`));
+        .map((v) => String(v).replace(/\s+/g, ' ').trim())
+        .filter((v) => v && v !== '[object Object]') // 旧会話エンジンのレガシー汚染を除外
+        .forEach((v) => learnings.push(`${label}: ${v.slice(0, 120)}`));
       add('アイデア', draft.ideas); add('決定', draft.decisions);
       add('未解決', draft.openQuestions); add('TODO', draft.todos);
     }
