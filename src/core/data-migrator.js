@@ -98,21 +98,45 @@ function walk(root) {
 // Merge semantics: newer mtime wins. The knowledge stores under <userData> and under
 // ~/.pi have genuinely diverged copies of the same filenames, so a blind overwrite in
 // either direction would discard real data.
-async function mergeCopy(src, dst) {
+// Returns the source files that were actually written to the destination. Files we
+// skipped (because the destination copy is newer) are deliberately NOT reported, and
+// the caller must not delete them: their contents were never carried across, so
+// removing the source would silently discard the owner's older revision and would
+// also make rollback inexact.
+async function mergeCopy(src, dst, copied = []) {
   const stat = await fsp.lstat(src);
   if (!stat.isDirectory()) {
     await fsp.mkdir(path.dirname(dst), { recursive: true });
     let existing = null;
     try { existing = await fsp.lstat(dst); } catch (_) {}
-    if (existing && existing.mtimeMs >= stat.mtimeMs) return;
+    if (existing && existing.mtimeMs >= stat.mtimeMs) return copied;
     await fsp.copyFile(src, dst);
     await fsp.utimes(dst, stat.atime, stat.mtime);
-    return;
+    copied.push(src);
+    return copied;
   }
   await fsp.mkdir(dst, { recursive: true });
   for (const entry of await fsp.readdir(src, { withFileTypes: true })) {
-    await mergeCopy(path.join(src, entry.name), path.join(dst, entry.name));
+    await mergeCopy(path.join(src, entry.name), path.join(dst, entry.name), copied);
   }
+  return copied;
+}
+
+// Remove exactly the files we carried across, then any directories left empty.
+// Anything the merge skipped stays where it is.
+async function removeCopiedSources(root, copied) {
+  for (const file of copied) { try { await fsp.rm(file, { force: true }); } catch (_) {} }
+  const dirs = [];
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries = [];
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (_) { continue; }
+    dirs.push(dir);
+    for (const entry of entries) if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
+  }
+  for (const dir of dirs.reverse()) { try { await fsp.rmdir(dir); } catch (_) {} }
+  return !fs.existsSync(root);
 }
 
 function verifyCopy(src, dst) {
@@ -171,15 +195,21 @@ async function executeMigration({ plan, layout, userData, startedAt, settingsBef
       }
 
       if (record.strategy === 'copy' && record.state !== 'moved') {
-        await mergeCopy(record.src, record.dst);
+        const copied = await mergeCopy(record.src, record.dst);
+        record.copiedFiles = copied.length;
+        record.keptAtSource = Math.max(0, record.files - copied.length);
         record.state = 'copied'; save();
         const check = verifyCopy(record.src, record.dst);
         if (!check.ok) throw new Error(`verification failed, missing: ${check.missing.join(', ')}`);
         if (record.kind === 'file') record.digest = digestFile(record.dst, record.bytes);
         record.state = 'verified'; save();
         if (!record.copyOnly) {
-          await fsp.rm(record.src, { recursive: true, force: true });
-          record.state = 'moved';
+          // Delete only what we actually carried across. Where the destination already
+          // held a newer copy the merge skipped the source, so its contents were never
+          // transferred — removing it would discard the owner's older revision outright
+          // and would make rollback inexact.
+          const gone = await removeCopiedSources(record.src, copied);
+          record.state = gone ? 'moved' : 'moved-partial';
         } else {
           record.state = 'merged';
         }
@@ -213,7 +243,7 @@ async function rollbackMigration({ manifest, manifestPath }) {
         await fsp.mkdir(path.dirname(record.src), { recursive: true });
         await fsp.rename(record.dst, record.src);
         reverted.push(record.id);
-      } else if (record.state === 'moved') {
+      } else if (record.state === 'moved' || record.state === 'moved-partial') {
         await mergeCopy(record.dst, record.src);
         await fsp.rm(record.dst, { recursive: true, force: true });
         reverted.push(record.id);
