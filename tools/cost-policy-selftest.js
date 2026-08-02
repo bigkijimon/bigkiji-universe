@@ -28,6 +28,18 @@ assert.equal(knowledge.canSpend('gemini', true), true);
   assert.match(calls[0].url, /\/api\/generate$/);
   assert.strictEqual(calls[0].body.prompt, '', 'an empty prompt loads the weights without generating anything to discard');
   assert.strictEqual(calls[0].body.keep_alive, -1, 'resident, matching what the conversation turn itself asks for');
+  assert.strictEqual(calls[0].body.options, undefined, 'no options asked for, none sent');
+
+  // Ollama keys a loaded instance on its runtime options, so a warmup that omits the
+  // num_ctx the turn will use is unloaded and reloaded the moment real work arrives.
+  // Measured 2026-08-02 on qwen3.5:latest: warm without num_ctx left the next
+  // num_ctx:4096 request paying 3450ms; warming with it brought that to 254ms. This
+  // assertion exists because the failure is invisible — the warmup still reports ok.
+  const withCtx = [];
+  await router.warmModel('qwen3.5:latest', { options: { num_ctx: 4096 },
+    fetchImpl: async (url, init) => { withCtx.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; } });
+  assert.deepStrictEqual(withCtx[0].options, { num_ctx: 4096 },
+    'the warmup has to load the same instance the turn will ask for, or it warms nothing');
 
   // A model Ollama does not have must report, not throw: the next turn still works,
   // it is just slow, and a warmup that crashed the daemon would be far worse.

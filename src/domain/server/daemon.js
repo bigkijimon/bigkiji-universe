@@ -325,12 +325,17 @@ class DaemonEngine extends EventEmitter {
   // reported rather than retried, because the next turn loads the model anyway.
   warmConversation() {
     const model = this.conversation.model;
-    if (!model || this.warmedModel === model || this.warming) return null;
+    // The context size is part of the identity of a loaded model, so the warmup has to
+    // ask for the same one the turn will. Warming a different num_ctx just moves the
+    // load cost to the owner's first sentence while looking like it prevented it.
+    const numCtx = this.conversation.maxContextTokens;
+    const key = `${model}::${numCtx}`;
+    if (!model || this.warmedModel === key || this.warming) return null;
     this.warming = true;
-    const promise = warmModel(model, { keepAlive: -1 })
+    const promise = warmModel(model, { keepAlive: -1, options: { num_ctx: numCtx } })
       .then((result) => {
         this.warming = false;
-        if (result.ok) this.warmedModel = model;
+        if (result.ok) this.warmedModel = key;
         this.publish('knowledge', { status: result.ok ? 'CONVERSATION_WARM' : 'CONVERSATION_WARM_FAILED',
           conversation: { model: result.model, warmupMs: result.ms, error: result.error } });
         return result;

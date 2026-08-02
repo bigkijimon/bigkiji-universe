@@ -45,5 +45,86 @@ function ollama(value) {
   assert.equal(engine.runner.snapshot().filter((task) => task.status === 'running').length, 0, 'Gemini must remain asleep before exact approval');
   assert.throws(() => engine.approveIdeaEnhancement({ taskId:enhancement.task.id, draftHash:'stale', disclosureHash:enhancement.task.disclosure.disclosureHash }), /STALE/);
   engine.shutdown();
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval');
+
+  // ---- streaming, TTFT, and what a deadline is allowed to mean ----------------
+  // Ollama was called with stream:false everywhere, so "time to first token" was not a
+  // measurable event: the request waited for the whole JSON. Worse, the 8s budget
+  // covered the entire answer, so a model generating correctly but slowly lost all of
+  // it and the owner got the deterministic fallback for a turn that was working.
+  const streamOf = (chunks, { gapMs = 0, silent = false } = {}) => async (_url, init) => ({
+    ok: true,
+    body: {
+      getReader() {
+        let index = 0;
+        return {
+          read: () => new Promise((resolve, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) return reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+            signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+            if (silent) return undefined; // never resolves: only the stall deadline ends it
+            if (index >= chunks.length) return resolve({ done: true, value: undefined });
+            // An empty string models a reasoning chunk: Ollama sends `thinking` with an
+            // empty `response` while the model deliberates.
+            const piece = chunks[index++];
+            const line = `${JSON.stringify(piece ? { response: piece, done: false } : { response: '', thinking: '…', done: false })}\n`;
+            const emit = () => resolve({ done: false, value: new TextEncoder().encode(line) });
+            if (!gapMs) return emit();
+            setTimeout(emit, gapMs); // deliberately kept ref'd: it is this script's clock
+            return undefined;
+          }),
+        };
+      },
+    },
+  });
+
+  const answer = JSON.stringify({ kind: 'CHAT', reply: 'Streaming works.', confidence: 0.9 });
+  const pieces = answer.match(/.{1,12}/g);
+
+  const streamed = new ConversationEngine({ fetchImpl: streamOf(pieces), model: 'qwen2.5:0.5b' });
+  const streamedTurn = await streamed.turn({ text: 'Say something.', sessionId: 'stream' });
+  assert.strictEqual(streamedTurn.degraded, false, 'a streamed answer is a real answer, not a fallback');
+  assert.strictEqual(streamedTurn.reply, 'Streaming works.');
+  assert(Number.isFinite(streamedTurn.ttftMs) && streamedTurn.ttftMs >= 0,
+    'time to first token is now an observable event');
+
+  // Slow but alive: ten chunks 25ms apart is 250ms of work against a 60ms deadline.
+  // Under the old whole-turn budget this answer was discarded; it must now survive,
+  // because the model was never actually silent.
+  const slow = new ConversationEngine({ fetchImpl: streamOf(pieces, { gapMs: 25 }), model: 'qwen2.5:0.5b', timeoutMs: 60 });
+  const slowTurn = await slow.turn({ text: 'Take your time.', sessionId: 'slow' });
+  assert.strictEqual(slowTurn.degraded, false, 'steady progress is not a timeout, however long it takes in total');
+  assert.strictEqual(slowTurn.reply, 'Streaming works.');
+
+  // Silence is still a timeout, and it still says which kind it was.
+  // The abort timers are unref'd — as they were before this change — so in the daemon
+  // the HTTP server keeps the loop alive while a turn waits. This script has no server,
+  // so it has to hold the loop open itself or Node exits before the deadline fires.
+  const keepalive = setInterval(() => {}, 10);
+  const stalled = new ConversationEngine({ fetchImpl: streamOf([], { silent: true }), model: 'qwen2.5:0.5b', timeoutMs: 40 });
+  const stalledTurn = await stalled.turn({ text: 'Hello?', sessionId: 'stalled' });
+  clearInterval(keepalive);
+  assert.strictEqual(stalledTurn.degraded, true);
+  assert.match(stalledTurn.error, /timeout before first token/);
+  assert.strictEqual(stalledTurn.ttftMs, null, 'nothing arrived, so nothing is claimed to have been measured');
+
+  // A reasoning model streams `thinking` with an empty `response` for as long as it
+  // deliberates. qwen3.5:latest does exactly this. Counting only answer tokens as signs
+  // of life means the stall deadline fires while the model is working, and the owner
+  // gets the deterministic fallback for a turn that had not failed.
+  const thinking = ['', '', '', '', '', '', ...pieces];
+  const reasoner = new ConversationEngine({ fetchImpl: streamOf(thinking, { gapMs: 25 }), model: 'qwen3.5:latest', timeoutMs: 60 });
+  const reasonerTurn = await reasoner.turn({ text: 'Think it through.', sessionId: 'reasoning' });
+  assert.strictEqual(reasonerTurn.degraded, false, 'deliberating is not being silent');
+  assert.strictEqual(reasonerTurn.reply, 'Streaming works.');
+  assert(reasonerTurn.ttftMs >= 150,
+    'TTFT marks the first token of the answer, not the first sign of activity — thinking is not an answer');
+
+  // A response delivered in one piece still works — an injected fetch, a buffering
+  // proxy, or a server without a readable body all land here.
+  const whole = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'One piece.', confidence: 0.8 }), model: 'qwen2.5:0.5b' });
+  const wholeTurn = await whole.turn({ text: 'And this?', sessionId: 'whole' });
+  assert.strictEqual(wholeTurn.reply, 'One piece.');
+  assert.strictEqual(wholeTurn.ttftMs, null, 'null means not measured, never zero');
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out');
 })().catch((error) => { console.error(error); process.exit(1); });

@@ -73,13 +73,56 @@ function normalize(value, text) {
     confidence: Math.max(0, Math.min(1, Number(value?.confidence) || 0.5)) };
 }
 
+// Read Ollama's newline-delimited stream, or fall back to a single JSON body.
+//
+// The fallback is not only for tests: an injected fetch, a proxy that buffers, or a
+// server answering without a readable body all end up here, and a conversation that
+// only works against one shape of response is a conversation that breaks quietly.
+// onText receives (text, streamed). `streamed` is false for a body that arrived in one
+// piece, where there is no first-token event to observe — reporting one as 0ms would
+// claim an instant response that never happened.
+//
+// It is called for every chunk, including the ones carrying no answer text. Reasoning
+// models stream `thinking` with an empty `response` for as long as they deliberate:
+// qwen3.5:latest does exactly this, and a caller that only hears about answer tokens
+// concludes the model has gone silent and kills a turn that was working.
+async function drainOllamaStream(response, onText) {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const body = await response.json();
+    if (body?.error) throw new Error(body.error);
+    onText(String(body?.response || ''), false);
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let chunk; try { chunk = JSON.parse(line); } catch (_) { continue; }
+      if (chunk.error) throw new Error(chunk.error);
+      onText(String(chunk.response || ''), true);
+    }
+  }
+}
+
 class ConversationEngine extends EventEmitter {
   // 既定会話モデル: qwen2.5:0.5bは自然な日本語会話に品質不足（2026-08-02実測:
   // goal鸚鵡返し・破綻文）。常駐可能な8bクラスへ格上げ（0.5bは即時ACK専用に残る）
+  // timeoutMs is the stall deadline — the longest silence tolerated between tokens, not
+  // the budget for the whole answer. maxTurnMs is the hard ceiling that bounds a model
+  // which keeps emitting forever.
   constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen3.5:latest',
-    endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000,
+    endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000, maxTurnMs = 90000,
     maxContextTokens = 4096, maxTurns = 8 } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;
+    this.maxTurnMs = Math.max(timeoutMs, maxTurnMs);
     this.maxContextTokens = Math.min(8192, Math.max(1024, maxContextTokens)); this.maxTurns = Math.max(2, Math.min(16, maxTurns));
     this.histories = new Map(); this.active = 0;
   }
@@ -118,25 +161,51 @@ class ConversationEngine extends EventEmitter {
     const turnId = `turn-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`; const started = Date.now();
     const history = this.history(sessionId, seed); const compacted = this.compact(history); onStart?.({ turnId, model: this.model });
     this.emit('start', { turnId, sessionId, model: this.model, at: started }); this.active++;
-    let result; let provider = 'local-qwen'; let degraded = false;
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs); timer.unref?.();
+    let result; let provider = 'local-qwen'; let degraded = false; let ttftMs = null;
+    const controller = new AbortController();
+    // Streaming changes what a deadline can honestly mean. With stream:false the whole
+    // turn shared one 8s budget, so a model that was generating correctly but slowly
+    // lost everything it had produced — and the owner got the deterministic fallback
+    // for a turn that was working. The deadline is now a stall: while chunks keep
+    // arriving the model is alive, and only silence ends the turn. A hard ceiling still
+    // bounds the total so nothing can hang forever.
+    let stall = null;
+    const armStall = () => {
+      clearTimeout(stall);
+      stall = setTimeout(() => controller.abort(), this.timeoutMs); stall.unref?.();
+    };
+    const ceiling = setTimeout(() => controller.abort(), this.maxTurnMs); ceiling.unref?.();
+    armStall();
     try {
       if (!this.fetchImpl) throw new Error('Local conversation fetch unavailable');
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
-          prompt: this.prompt(ownerText, compacted.turns), stream: false, format: 'json', keep_alive: -1,
+          prompt: this.prompt(ownerText, compacted.turns), stream: true, format: 'json', keep_alive: -1,
           options: { temperature: 0.55, top_p: 0.9, num_ctx: this.maxContextTokens, num_predict: 650 } }) });
-      const body = await response.json(); if (!response.ok || body.error) throw new Error(body.error || `Ollama HTTP ${response.status}`);
-      const parsed = json(body.response); if (!parsed) throw new Error('Local conversation model returned invalid JSON');
+      if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
+      let raw = '';
+      await drainOllamaStream(response, (text, streamed) => {
+        // Any chunk means the model is alive, including a reasoning model's thinking
+        // tokens, which carry no answer text at all. TTFT stays honest: it marks the
+        // first token of the actual answer, which is the thing the owner waits for.
+        armStall();
+        if (streamed && ttftMs === null && text) ttftMs = Date.now() - started;
+        raw += text;
+      });
+      const parsed = json(raw); if (!parsed) throw new Error('Local conversation model returned invalid JSON');
       result = normalize(parsed, ownerText);
     } catch (error) {
       degraded = true; provider = 'deterministic-local'; result = fallback(ownerText);
-      result.error = clean(error.name === 'AbortError' ? 'Local conversation timeout' : error.message, 180);
-    } finally { clearTimeout(timer); this.active = Math.max(0, this.active - 1); }
+      result.error = clean(error.name === 'AbortError'
+        ? `Local conversation ${ttftMs === null ? 'timeout before first token' : 'stalled mid-answer'}`
+        : error.message, 180);
+    } finally { clearTimeout(stall); clearTimeout(ceiling); this.active = Math.max(0, this.active - 1); }
     history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.reply });
     while (history.length > this.maxTurns * 2) history.shift();
     onDelta?.(result.reply); const finished = Date.now();
-    const output = { ...result, turnId, sessionId, provider, model: this.model, degraded, latencyMs: finished - started,
+    // ttftMs is null when nothing was streamed — a fallback answer, or a response
+    // delivered in one piece. Null means "not measured", never zero.
+    const output = { ...result, turnId, sessionId, provider, model: this.model, degraded, latencyMs: finished - started, ttftMs,
       context: { turns: compacted.turns.length, estimatedTokens: compacted.tokens, limit: this.maxContextTokens }, redactions: inspected.findings };
     this.emit('finish', output); return output;
   }

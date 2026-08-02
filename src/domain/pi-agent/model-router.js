@@ -140,7 +140,14 @@ async function ollamaHealth(timeoutMs = 4000) {
 // An empty prompt is enough to make Ollama load the weights; the answer is discarded.
 // The duration is returned rather than logged so the caller can show a real number
 // instead of an animation that claims to know something it does not.
-async function warmModel(model, { keepAlive = -1, timeoutMs = 180000, fetchImpl = global.fetch,
+//
+// `options` must match what the turn will send. Ollama keys a loaded instance on its
+// runtime options, so warming with a different num_ctx unloads and reloads the model
+// the moment real work arrives — measured here 2026-08-02 on qwen3.5:latest: warming
+// without num_ctx left the next num_ctx:4096 request paying 3450ms, while warming with
+// the same num_ctx brought it to 254ms. A warmup that ignores this looks like it works
+// and does nothing, which is worse than not having one.
+async function warmModel(model, { keepAlive = -1, timeoutMs = 180000, fetchImpl = global.fetch, options = null,
   endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434' } = {}) {
   const target = String(model || '').trim();
   if (!target) return { model: '', ok: false, ms: 0, error: 'no model configured' };
@@ -150,7 +157,7 @@ async function warmModel(model, { keepAlive = -1, timeoutMs = 180000, fetchImpl 
   try {
     const response = await fetchImpl(`${endpoint.replace(/\/$/, '')}/api/generate`, {
       method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: target, prompt: '', keep_alive: keepAlive }),
+      body: JSON.stringify({ model: target, prompt: '', keep_alive: keepAlive, ...(options ? { options } : {}) }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || body.error) throw new Error(body.error || `Ollama HTTP ${response.status}`);
