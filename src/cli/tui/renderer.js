@@ -1,12 +1,37 @@
 'use strict';
 
 const { themeFor, stripAnsi } = require('../../domain/terminal/cli-theme');
+const APP_VERSION = require('../../../package.json').version;
 
 const ESC = '\x1b';
 const plain = (value) => stripAnsi(value);
 const clip = (value, width) => { const text = plain(value); return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text; };
 const pad = (value, width) => `${clip(value, width)}${' '.repeat(Math.max(0, width - plain(clip(value, width)).length))}`;
 const bar = (value, width = 12) => { const n = Math.max(0, Math.min(width, Math.round((Number(value) || 0) / 100 * width))); return `${'━'.repeat(n)}${'─'.repeat(width - n)}`; };
+
+// The daemon publishes phase either as a bare string ("EXECUTING") or as the
+// SSE payload { phase, status, progress }. Normalise before matching on it.
+const phaseName = (value) => {
+  if (value && typeof value === 'object') return String(value.phase || value.status || 'IDLE');
+  return String(value === undefined || value === null || value === '' ? 'IDLE' : value);
+};
+// Last resort only: a keyword guess used when nothing real is published.
+const keywordProgress = (phase) => {
+  const text = phaseName(phase).toUpperCase();
+  return text.includes('COMPLETED') ? 100 : text.includes('VERIFY') ? 88 : text.includes('EXEC') || text.includes('REPAIR') ? 58
+    : text.includes('AWAIT') ? 25 : text.includes('PREFLIGHT') || text.includes('PLANNING') ? 12 : 0;
+};
+// Real numbers win over the guess — never invent a percentage the daemon already knows.
+function progressOf(state = {}, phase = state?.phase) {
+  const real = [phase?.progress, state?.phase?.progress, state?.progress].find((value) => typeof value === 'number' && Number.isFinite(value));
+  if (typeof real === 'number') return Math.max(0, Math.min(100, Math.round(real)));
+  return keywordProgress(phase);
+}
+function phaseChip(name, current, index, C = themeFor('plan')) {
+  const normalized = phaseName(current).toUpperCase();
+  const active = normalized.includes(name) || (name === 'PREFLIGHT' && normalized.includes('AWAITING'));
+  return active ? `${C.strong}●${index} ${name}${C.reset}` : `${C.muted}○${index} ${name}${C.reset}`;
+}
 
 // Sticky Bottom TUI:
 //   Sticky Top    = キジトラマスコット + PHASE VECTOR + ACTIVE AI MODELS（固定ヘッダ）
@@ -28,16 +53,17 @@ class TUIRenderer {
     const fleet = state.models?.models || state.models || [];
     const runs = state.runs || []; const current = runs.at(-1); const connected = fleet.filter((model) => model.connected).length;
     const phase = state.phase || current?.status || 'IDLE';
+    const pct = this.progress(phase, state);
     const line = '─'.repeat(width - 2);
     const border = (text) => `${C.border}${text}${C.reset}`;
     const box = (content = '') => `${border('│')}${content}${' '.repeat(Math.max(0, width - 2 - plain(content).length))}${border('│')}`;
 
     const header = [border(`╭${line}╮`),
-      box(` ${C.bold}${C.ink}(=^･ω･^=)  BigKiji Universe${C.reset}   ${C.dim}Core 8777 · PID ${state.pid || '—'}${C.reset}`),
+      box(` ${C.bold}${C.ink}(=^･ω･^=)  BigKiji Universe v${APP_VERSION}${C.reset}   ${C.dim}Core 8777 · PID ${state.pid || '—'}${C.reset}`),
       box(` ${C.muted}Pi-Orchestrator · warm brown theme · ${String(mode).toUpperCase()} · models wake only when assigned${C.reset}`),
       border(`├${line}┤`),
       box(` ${C.bold}${C.ink}PHASE VECTOR${C.reset}  ${this.phase('PREFLIGHT', phase, 1, C)}  ${this.phase('EXECUTE', phase, 2, C)}  ${this.phase('VERIFY', phase, 3, C)}`),
-      box(` ${C.accent}${bar(this.progress(phase), Math.max(20, width - 24))}${C.reset}  ${pad(`${this.progress(phase)}%`, 5)} ${C.muted}${pad(phase, 14)}${C.reset}`),
+      box(` ${C.accent}${bar(pct, Math.max(20, width - 24))}${C.reset}  ${pad(`${pct}%`, 5)} ${C.muted}${pad(phaseName(phase), 14)}${C.reset}`),
       border(`├${line}┤`),
       box(` ${C.bold}${C.ink}ACTIVE AI MODELS${C.reset}  ${C.accent}${connected} connected${C.reset}`)];
     const footer = [border(`├${line}┤`),
@@ -64,11 +90,8 @@ class TUIRenderer {
 
   frame(state = {}, relay = []) { const { header, middle, footer } = this.sections(state, relay); return [...header, ...middle, ...footer].join('\n'); }
 
-  phase(name, current, index, C = themeFor('plan')) {
-    const normalized = String(current).toUpperCase(); const active = normalized.includes(name) || (name === 'PREFLIGHT' && normalized.includes('AWAITING'));
-    return active ? `${C.strong}● ${index} ${name}${C.reset}` : `${C.muted}○ ${index} ${name}${C.reset}`;
-  }
-  progress(phase) { const text = String(phase).toUpperCase(); return text.includes('COMPLETED') ? 100 : text.includes('VERIFY') ? 88 : text.includes('EXEC') || text.includes('REPAIR') ? 58 : text.includes('AWAIT') ? 25 : text.includes('PREFLIGHT') || text.includes('PLANNING') ? 12 : 0; }
+  phase(name, current, index, C = themeFor('plan')) { return phaseChip(name, current, index, C); }
+  progress(phase, state = {}) { return progressOf(state, phase); }
 
   draw(state, relay) {
     const { header, middle, footer, rows } = this.sections(state, relay);
@@ -83,24 +106,72 @@ class TUIRenderer {
 }
 
 // REPL 用 Sticky Bottom シェル:
-//   最下行 = readline 入力（π> プロンプト・固定）、上部 = 固定ヘッダ（マスコット）、
-//   中間 = DECSTBM スクロール領域（出力はここに流れる）。リサイズにも追従する。
+//   最下部 = 固定フッタ（既定1行 = readline 入力。footerHeight を上げると
+//            ローディング行/PHASE VECTOR/罫線で囲んだ入力/ステータス行を積める）、
+//   上部   = 固定ヘッダ（マスコット）、
+//   中間   = DECSTBM スクロール領域（出力はここに流れる）。リサイズにも追従する。
+//
+// Footer rows are painted absolutely (ESC[row;1H + ESC[2K), exactly like the
+// header rows, and live *outside* the scroll region so output never damages
+// them. A `null` footer line means "leave that row alone" — used for the
+// readline input row, which readline itself owns.
 class StickyScreen {
-  constructor({ output = process.stdout } = {}) { this.output = output; this.header = []; this.active = false; this.onLayout = null; this._resize = null; }
+  constructor({ output = process.stdout, footerHeight = 1 } = {}) {
+    this.output = output; this.header = []; this.footer = []; this.active = false; this.onLayout = null; this._resize = null;
+    this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
+    this.columns = this.cols; this.lines = this.rows;
+  }
   get rows() { return Math.max(8, Number(this.output.rows || 24)); }
-  get top() { return Math.min(this.header.length + 1, this.rows - 2); }
-  get bottom() { return this.rows - 1; }
-  start({ header = [], onLayout } = {}) {
+  get cols() { return Math.max(40, Number(this.output.columns || 80)); }
+  // Last row of the scrolling region. Never let the footer swallow the whole screen.
+  get bottom() { return Math.max(2, this.rows - this.footerHeight); }
+  get top() { return Math.max(1, Math.min(this.header.length + 1, this.bottom - 1)); }
+  get footerTop() { return this.bottom + 1; }
+  setFooterHeight(height) {
+    const next = Math.max(1, Math.trunc(Number(height) || 1));
+    if (next === this.footerHeight) return false;
+    this.footerHeight = next; if (this.active) { this.output.write(`${ESC}[2J`); this.layout(); }
+    return true;
+  }
+  start({ header = [], footer = [], footerHeight, onLayout } = {}) {
     if (!this.output.isTTY) return false;
-    this.header = header; this.onLayout = onLayout || null; this.active = true;
+    if (footerHeight !== undefined) this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
+    this.header = header; this.footer = footer; this.onLayout = onLayout || null; this.active = true;
+    this.columns = this.cols; this.lines = this.rows;
     this.output.write(`${ESC}[2J`); this.layout();
-    this._resize = () => { if (this.active) { this.output.write(`${ESC}[2J`); this.layout(); } };
+    this._resize = () => { if (!this.active) return; this.columns = this.cols; this.lines = this.rows; this.output.write(`${ESC}[2J`); this.layout(); };
     this.output.on('resize', this._resize);
     return true;
+  }
+  // ESC sequence for the footer rows only; `null`/`undefined` rows are skipped.
+  footerPaint() {
+    const first = this.footerTop; let out = '';
+    this.footer.slice(0, this.footerHeight).forEach((text, index) => {
+      if (text === null || text === undefined) return;
+      const row = first + index; if (row > this.rows) return;
+      out += `${ESC}[${row};1H${ESC}[2K${text}`;
+    });
+    return out;
+  }
+  // `paint: false` stores the rows without drawing them — callers that hand the
+  // input row to readline must draw *after* readline (its refresh emits ESC[0J,
+  // which erases every row below the prompt) and then restore the cursor.
+  setFooter(lines, { paint = true } = {}) {
+    if (Array.isArray(lines)) this.footer = lines;
+    if (!this.active || !paint) return false;
+    const out = this.footerPaint(); if (out) this.output.write(out);
+    return true;
+  }
+  // Repaint the footer without disturbing wherever the cursor currently is (DECSC/DECRC).
+  restoreFooter() {
+    if (!this.active) return '';
+    const out = this.footerPaint();
+    return out ? `${ESC}7${out}${ESC}8` : '';
   }
   layout() {
     let out = `${ESC}[r${ESC}[H`;
     this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
+    out += this.footerPaint();
     out += `${ESC}[${this.top};${this.bottom}r${ESC}[${this.bottom};1H`;
     this.output.write(out);
     this.onLayout?.();
@@ -120,4 +191,4 @@ class StickyScreen {
   }
 }
 
-module.exports = { TUIRenderer, StickyScreen, clip, pad, bar };
+module.exports = { TUIRenderer, StickyScreen, clip, pad, bar, phaseName, phaseChip, progressOf, keywordProgress, APP_VERSION };

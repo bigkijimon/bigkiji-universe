@@ -10,26 +10,41 @@ const { spawn } = require('child_process');
 const { DaemonClient } = require('../server/daemon-client');
 const { TUIMonitor } = require('../../cli/tui/monitor');
 const { StickyScreen } = require('../../cli/tui/renderer');
+const { buildFooter, footerHeightFor } = require('../../cli/tui/footer');
+const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
 const { CliPreferences } = require('./cli-preferences');
 const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
+const APP_VERSION = require('../../../package.json').version;
 let activeMode = 'plan'; let A = themeFor(activeMode);
 const prefs = new CliPreferences();
 function setMode(value, persist = true) { activeMode = normalizeMode(value); A = themeFor(activeMode); if (persist) prefs.update({ mode: activeMode }); return activeMode; }
 
+const BOOT_NOTES = ['Starting BigKiji Core Engine...', 'Checking port 8777...', 'Loading session memory...', 'Paws on vault data...'];
+
+// Boot spinner for the daemon handshake. It writes to **stdout** — stderr
+// bypassed the sticky DECSTBM region and corrupted the screen — and shares the
+// pluggable loading frame set with the REPL footer, so both animate the same cat.
 class KijiSpinner {
-  constructor(output = process.stderr) { this.output = output; this.timer = null; this.index = 0; }
+  constructor(output = process.stdout, frameSet = loadingFrames()) { this.output = output; this.frameSet = frameSet; this.timer = null; this.index = 0; }
+  get frames() { return this.frameSet.frames; }
+  get frameMs() { return this.frameSet.frameMs; }
+  frame(index = this.index) { return frameAt(index, this.frameSet).split('\n').join(' '); }
   start() {
-    if (!this.output.isTTY) { this.output.write('Starting BigKiji Core Engine...\n'); return; }
-    const frames = ['(ฅ•ω•ฅ) .  Starting BigKiji Core Engine...', '(ฅ•ω•ฅ) ｡  Checking port 8777...', '(ฅ>ω<ฅ) ･  Loading session memory...', '(ฅ`-ω-ฅ) ･  Paws on vault data...'];
-    this.timer = setInterval(() => { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); this.output.write(`${A.accent}${frames[this.index++ % frames.length]}${A.reset}`); }, 120);
+    if (!this.output.isTTY) { this.output.write(`${BOOT_NOTES[0]}\n`); return; }
+    this.timer = setInterval(() => {
+      const index = this.index++;
+      readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0);
+      this.output.write(`${A.accent}${this.frame(index)}  ${BOOT_NOTES[index % BOOT_NOTES.length]}${A.reset}`);
+    }, this.frameMs);
+    this.timer.unref?.();
   }
   stop(ok = true) { if (this.timer) clearInterval(this.timer); if (this.output.isTTY) { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); } this.output.write(`${ok ? A.accent : A.error}${ok ? '[Kiji] BigKiji Core Engine attached' : '[Kiji] BigKiji Core Engine failed'}${A.reset}\n`); }
 }
 
 function header(state = {}) {
-  return `${A.bold}${A.accent}[ Kiji 7kg ] (=^･ω･^=)${A.reset} ${A.bold}BigKiji Universe v2.0${A.reset}\n` +
+  return `${A.bold}${A.accent}[ Kiji 7kg ] (=^･ω･^=)${A.reset} ${A.bold}BigKiji Universe v${APP_VERSION}${A.reset}\n` +
     `${A.dim}Pi-Orchestrator · Context Compaction Active · PID ${state.pid || '—'}\n${state.workspace || process.cwd()}${A.reset}\n` +
     `${A.brownLight}● Claude${A.reset}  ${A.accent}● Codex${A.reset}  ${A.warning}● GLM${A.reset}  ${A.orangeBright}● Gemini${A.reset}  ${A.brown}● PiAgent / Local Qwen${A.reset}`;
 }
@@ -84,32 +99,64 @@ function stateText(state) {
 }
 function printState(state) { console.log(stateText(state)); }
 
+const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea'];
+
 async function repl(client) {
-  let mode = setMode(prefs.get().mode, false); let sessionId = ''; const state = await client.state();
+  let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
   const commandsLine = `${A.dim}Commands: /status /fleet /setting [key value] /mode ask|auto-edit|plan /ideas /idea plan|enhance|send|adopt|archive /run /resume /reload /hud /abort /clear /help /exit${A.reset}`;
-  // Sticky Bottom: 入力(π>)は常に最下行・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
+  // Sticky Bottom: 入力(π>)は罫線で挟んだ固定フッタの中・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
+  const frameSet = loadingFrames();
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}π>${A.reset} ` });
-  const sticky = new StickyScreen({ output: process.stdout });
-  const promptRow = () => process.stdout.write(`\x1b[${sticky.rows};1H\x1b[2K`);
-  const refreshPrompt = () => { if (sticky.active) promptRow(); rl.prompt(true); };
-  const stickyOn = sticky.start({ header: [...header(state).split('\n'), commandsLine], onLayout: () => { promptRow(); rl.prompt(true); } });
+  const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
+  let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
+  const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
+  // Readline owns the input row: re-issue the prompt or the line being typed gets
+  // eaten, then repair the rows underneath it — readline's refresh emits ESC[0J,
+  // which would otherwise erase the bottom rule and the MODE/SHELL/AGENT row.
+  const refreshPrompt = () => {
+    if (!sticky.active) { rl.prompt(true); return; }
+    promptRow(); rl.prompt(true); process.stdout.write(sticky.restoreFooter());
+  };
+  // Footer-only repaint: never touches the header or the scrolling relay above.
+  const paintFooter = (force = false) => {
+    if (!sticky.active) return;
+    const { lines, inputIndex } = buildFooter({ cols: sticky.cols, mode, state: live, phase: phaseInfo, comment,
+      busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet });
+    inputOffset = inputIndex;
+    const signature = lines.join(' ');
+    if (!force && signature === painted) return;
+    painted = signature;
+    sticky.setFooter(lines, { paint: false });
+    process.stdout.write('\x1b[?25l'); refreshPrompt(); process.stdout.write('\x1b[?25h');
+  };
+  const stickyOn = sticky.start({ header: [...header(live).split('\n'), commandsLine], onLayout: () => paintFooter(true) });
   const say = (value) => {
     const text = typeof value === 'string' ? value : util.inspect(value, { colors: process.env.NO_COLOR === undefined, depth: 4 });
     if (sticky.active) sticky.print(text); else console.log(text);
   };
-  if (!stickyOn) { console.log(header(state)); console.log(commandsLine); }
+  if (!stickyOn) { console.log(header(live)); console.log(commandsLine); }
+  // ~120ms ticker: animates the loading cat + elapsed clock, repainting only when the footer actually changed.
+  const ticker = setInterval(() => { if (turnStartedAt) frameIndex += 1; paintFooter(); }, frameSet.frameMs); ticker.unref?.();
+  // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
+  const statePoll = setInterval(() => { client.state().then((next) => { live = next; paintFooter(); }).catch(() => {}); }, 4000); statePoll.unref?.();
   client.on('event', ({ event, data }) => {
-    if (!['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea'].includes(event)) return;
+    if (event === 'state') live = { ...live, ...data };
+    else if (event === 'models') live = { ...live, models: data };
+    else if (event === 'phase') phaseInfo = data;
+    else if (event === 'run') phaseInfo = data.status || phaseInfo;
+    if (!RELAY_EVENTS.includes(event)) { paintFooter(); return; }
     const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
-    say(`${A.dim}[${event}]${A.reset} ${text}`); refreshPrompt();
+    if (text) comment = String(text).replace(/\s+/g, ' ').trim();
+    say(`${A.dim}[${event}]${A.reset} ${text}`); paintFooter(); refreshPrompt();
   }); client.connect();
   rl.on('line', async (line) => {
     const text = line.trim();
     if (sticky.active && text) say(`${A.prompt}π>${A.reset} ${text}`);
+    if (text) { turnStartedAt = Date.now(); frameIndex = 0; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
     try {
       if (!text) {}
       else if (['/exit', '/quit'].includes(text)) { rl.close(); return; }
-      else if (text === '/status' || text === '/fleet') say(stateText(await client.state()));
+      else if (text === '/status' || text === '/fleet') { live = await client.state(); say(stateText(live)); }
       else if (text === '/setting' || text === '/settings' || text.startsWith('/setting ') || text.startsWith('/settings ')) {
         const [, key, requested] = text.split(/\s+/); const value = prefs.get();
         if (key) {
@@ -148,9 +195,11 @@ async function repl(client) {
         if (result.draft) say(`${A.strong}Draft:${A.reset} ${result.draft.id} · ${result.draft.title}`);
         if (result.run) say(`${A.accent}Plan:${A.reset} ${result.run.id} · ${result.run.status}`); }
     } catch (error) { say(`${A.error}✗ ${error.message}${A.reset}`); }
-    refreshPrompt();
+    finally { turnStartedAt = 0; }
+    paintFooter(true); refreshPrompt();
   });
-  rl.on('close', () => { sticky.stop(); client.disconnect(); process.exit(0); }); refreshPrompt();
+  rl.on('close', () => { clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect(); process.exit(0); });
+  paintFooter(true); refreshPrompt();
 }
 
 async function main(argv = process.argv.slice(2)) {
