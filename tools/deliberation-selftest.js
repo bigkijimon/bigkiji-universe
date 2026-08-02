@@ -182,6 +182,15 @@ function fakeChild() {
   assert.strictEqual(new deliberate.DeliberationMemory({ root: path.join(root, 'coordinator-abort') }).lookup(goal), null,
     'a plan harvested from an aborted run must not be recalled later');
 
+  // An abort is the owner's decision, not a verdict on the provider. Recording blocked
+  // tasks as provider failures is what left the shipped registry holding 207 samples
+  // with zero successes and zero latency — every provider penalised toward the cap for
+  // work none of them was ever allowed to attempt.
+  assert(killable.taskRunner.snapshot().every((task) => task.status === 'blocked'),
+    'the aborted lenses are blocked, which is the state the next assertion is about');
+  assert.deepStrictEqual(new ModelCapabilityRegistry({ root: path.join(root, 'capability-abort') }).snapshot().performance.models, {},
+    'a run the owner killed must teach the router nothing');
+
   // ---- a provider that cannot start should not win the role ------------------
   // Scoring used to ignore availability entirely, so a provider with no credential
   // took the assignment and died at spawn — a full plan-approve-fail-repair cycle

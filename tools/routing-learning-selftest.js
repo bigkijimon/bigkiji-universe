@@ -72,5 +72,52 @@ const reopened = new ModelCapabilityRegistry({ root });
 assert(reopened.snapshot().capabilities.models.glm.penalties.debug > 0,
   'what PiAgent learned must outlive the process that learned it');
 
-fs.rmSync(root, { recursive: true, force: true });
-console.log('routing learning selftest: PASS · slow work penalised · keyed by (provider, model) · re-routes · decays · persists');
+// ---- an unmeasured duration is not a fast one -------------------------------
+// A task that dies before it starts has durationMs 0, and 0ms used to read as the
+// fastest possible run: `1 - 0/120000` handed it the full speed bonus. The provider
+// that failed earliest scored best on speed.
+const blank = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-routing-blank-'));
+const unmeasured = new ModelCapabilityRegistry({ root: blank });
+unmeasured.record({ provider: 'gemini', role: 'ui', ok: false, durationMs: 0 });
+const timed = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-routing-timed-')) });
+timed.record({ provider: 'gemini', role: 'ui', ok: false, durationMs: 2000 });
+assert.strictEqual(unmeasured.snapshot().performance.models.gemini.ewmaLatencyMs, 0);
+assert.strictEqual(unmeasured.snapshot().performance.models.gemini.latencySamples, undefined,
+  'no duration means no latency observation, not an observation of zero');
+assert(unmeasured.score('gemini', 'ui') < timed.score('gemini', 'ui'),
+  'a provider that never ran must not outscore one that genuinely answered in 2s');
+
+// ---- the poisoned file written before 2026-08-02 is repaired on open --------
+// Every row in the shipped registry had samples but no successes and no latency,
+// because blocked tasks were being recorded as provider failures. Left in place, the
+// old bug keeps steering routing long after the code that caused it is gone.
+const dirty = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-routing-dirty-'));
+fs.writeFileSync(path.join(dirty, 'model_performance.json'), JSON.stringify({
+  version: 1,
+  models: {
+    'claude-code': { samples: 46, successes: 0, failures: 46, ewmaLatencyMs: 0, successRate: 0, roles: {}, provider: 'claude-code' },
+    codex: { samples: 12, successes: 4, failures: 8, ewmaLatencyMs: 9000, successRate: 0.33, roles: {}, provider: 'codex' },
+  },
+}));
+fs.writeFileSync(path.join(dirty, 'model_capabilities.json'), JSON.stringify({
+  version: 1,
+  models: {
+    'claude-code': { roles: { leader: 1 }, penalties: { leader: 0.42 }, penaltyUpdatedAt: '2026-08-02T10:46:25.508Z' },
+    codex: { roles: { ui: 1 }, penalties: { ui: 0.06 } },
+  },
+}));
+const repaired = new ModelCapabilityRegistry({ root: dirty });
+const after = repaired.snapshot();
+assert.strictEqual(after.performance.models['claude-code'], undefined,
+  'a row that never observed a run is dropped — a seeded prior beats a fabricated observation');
+assert(after.performance.models.codex, 'a row with real successes and real latency is left alone');
+assert.strictEqual(after.performance.models.codex.samples, 12);
+assert.strictEqual(after.capabilities.models['claude-code'].penalties, undefined,
+  'penalties earned under the bug must not outlive it');
+assert.strictEqual(after.capabilities.models.codex.penalties, undefined);
+assert.strictEqual(after.performance.version, 2);
+assert.deepStrictEqual(new ModelCapabilityRegistry({ root: dirty }).snapshot().performance.models.codex.samples, 12,
+  'the repair runs once, not on every open');
+
+for (const dir of [root, blank, dirty]) fs.rmSync(dir, { recursive: true, force: true });
+console.log('routing learning selftest: PASS · slow work penalised · keyed by (provider, model) · re-routes · decays · persists · unmeasured latency stays neutral · poisoned history repaired once');

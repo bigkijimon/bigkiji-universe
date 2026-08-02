@@ -262,7 +262,15 @@ class CoreExecutionCoordinator extends EventEmitter {
     assignment.status = task.status; assignment.provider = task.provider; assignment.model = task.model || '';
     assignment.updatedAt = task.updatedAt;
     if (task.error) assignment.error = task.error;
-    if (['completed', 'failed', 'blocked'].includes(task.status) && !assignment.learned) {
+    // Only work that actually ran teaches the router anything. `blocked` is a security
+    // decision or an owner abort — the sandbox refused it, a credential was missing, or
+    // the owner killed the run — and none of that is a fact about how well the provider
+    // does its job. Recording it as a failure is what left this registry holding 207
+    // samples with zero successes and zero latency: every provider drifted toward the
+    // penalty cap, and the router was choosing between numbers that measured nothing.
+    // `learned` is set only when something is recorded, so a blocked task that is later
+    // retried still contributes its real result.
+    if (['completed', 'failed'].includes(task.status) && !assignment.learned) {
       assignment.learned = true;
       const durationMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0;
       const lesson = this.registry.record({ provider: task.provider, model: task.model, role: assignment.role,

@@ -19,6 +19,8 @@ const SEED = Object.freeze({
   qwen: { roles: { context: 1, learning: 1, research: .62, debug: .58 } },
 });
 
+const VERSION = 2;
+
 function read(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; } }
 function atomic(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 }); fs.renameSync(tmp, file); }
@@ -26,9 +28,39 @@ function atomic(file, value) { fs.mkdirSync(path.dirname(file), { recursive: tru
 class ModelCapabilityRegistry {
   constructor({ root = knowledge.ROOT } = {}) {
     this.root = root; this.capabilityFile = path.join(root, 'model_capabilities.json'); this.performanceFile = path.join(root, 'model_performance.json');
-    this.capabilities = read(this.capabilityFile, { version: 1, models: {} });
-    this.performance = read(this.performanceFile, { version: 1, models: {} }); this.seed();
+    this.capabilities = read(this.capabilityFile, { version: VERSION, models: {} });
+    this.performance = read(this.performanceFile, { version: VERSION, models: {} }); this.migrate(); this.seed();
   }
+
+  // One-time repair of data written before 2026-08-02.
+  //
+  // Until then a task that was blocked — by sandbox policy, by a missing credential, or
+  // by the owner aborting it — was handed to record() as a provider failure with no
+  // duration. This file could therefore only hold rows describing runs that never
+  // happened: 207 samples across six providers, zero successes, zero latency, and
+  // penalties sitting at or near the cap. The router was choosing between numbers that
+  // measured nothing.
+  //
+  // Rows carrying that exact signature are dropped rather than kept. A seeded prior is a
+  // better estimate than a fabricated observation, and leaving the penalties in place
+  // would let the old bug keep steering routing long after it was fixed.
+  migrate() {
+    if (Number(this.performance.version || 1) >= VERSION) return;
+    const poisoned = Object.entries(this.performance.models)
+      .filter(([, row]) => Number(row.samples || 0) > 0 && !Number(row.successes || 0) && !Number(row.ewmaLatencyMs || 0))
+      .map(([id]) => id);
+    for (const id of poisoned) delete this.performance.models[id];
+    this.performance.version = VERSION;
+    if (poisoned.length) {
+      for (const entry of Object.values(this.capabilities.models)) {
+        delete entry.penalties; delete entry.streaks; delete entry.penaltyUpdatedAt;
+      }
+      this.capabilities.version = VERSION;
+      atomic(this.capabilityFile, this.capabilities);
+    }
+    atomic(this.performanceFile, this.performance);
+  }
+
   seed() {
     for (const [provider, data] of Object.entries(SEED)) this.capabilities.models[provider] ||= {
       ...data, source: SOURCES[provider], sourceType: provider === 'qwen' ? 'local' : 'official', retrievedAt: '2026-08-01', confidence: .8,
@@ -50,8 +82,13 @@ class ModelCapabilityRegistry {
     const penalty = Number(penalties[model ? `${model}::${role}` : role] || penalties[role] || 0);
     const perf = this.performance.models[ModelCapabilityRegistry.key(provider, model)] || this.performance.models[provider];
     if (!perf?.samples) return Math.max(0, prior - penalty);
-    return Math.max(0, prior * .55 + Number(perf.successRate || 0) * .3
-      + Math.max(0, 1 - Number(perf.ewmaLatencyMs || 30000) / 120000) * .15 - penalty);
+    // An unmeasured latency is not a fast one. Reading a missing duration as 0ms handed
+    // the full speed bonus to assignments that never started, so the providers that
+    // failed earliest scored best on speed. Unknown stays neutral until something is
+    // actually timed.
+    const latency = Number(perf.latencySamples || 0)
+      ? Math.max(0, 1 - Number(perf.ewmaLatencyMs || 0) / 120000) : .5;
+    return Math.max(0, prior * .55 + Number(perf.successRate || 0) * .3 + latency * .15 - penalty);
   }
   choose(role, candidates) { return [...candidates].sort((a, b) => this.score(b, role) - this.score(a, role))[0] || null; }
 
@@ -61,7 +98,13 @@ class ModelCapabilityRegistry {
       const row = this.performance.models[id] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
       row.provider = provider; if (model) row.model = model;
       row.samples += 1; ok ? row.successes += 1 : row.failures += 1; row.successRate = row.successes / row.samples;
-      row.ewmaLatencyMs = row.samples === 1 ? durationMs : row.ewmaLatencyMs * .7 + durationMs * .3;
+      // Only a measured duration says anything about speed. A task that died before it
+      // started has a duration of zero, and averaging that in is how a provider that
+      // never ran came to look like the fastest one available.
+      if (durationMs > 0) {
+        row.latencySamples = Number(row.latencySamples || 0) + 1;
+        row.ewmaLatencyMs = row.latencySamples === 1 ? durationMs : row.ewmaLatencyMs * .7 + durationMs * .3;
+      }
       const roleRow = row.roles[role || 'general'] || { samples: 0, successes: 0 }; roleRow.samples += 1; if (ok) roleRow.successes += 1;
       roleRow.successRate = roleRow.successes / roleRow.samples; row.roles[role || 'general'] = roleRow;
       row.lastTokens = { input: Number(tokens.input || 0), output: Number(tokens.output || 0) }; row.updatedAt = new Date().toISOString();
