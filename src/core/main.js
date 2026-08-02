@@ -35,6 +35,7 @@ const { CmuxBridge } = require('./cmux-bridge');
 const { PreviewServer } = require('./preview-server');
 const { DaemonClient } = require('../domain/server/daemon-client');
 const { TailscaleRemoteAccess } = require('./tailscale-remote-access');
+const { TaskReportBuilder } = require('./task-report-builder');
 const facilitator = new fastRouter.FastFacilitatorRouter();
 const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'voice-cmux-local-qwen-v8';
 
@@ -979,6 +980,27 @@ ipcMain.handle('fleet:snapshot', () => piFleet.snapshot());
 ipcMain.handle('model:status:snapshot', () => fleetMetrics.snapshot());
 ipcMain.handle('relationship:snapshot', () => relationshipService.snapshot());
 ipcMain.handle('fast-router:status', async () => ({ priority: fastRouter.PRIORITY, available: await fastRouter.detect() }));
+// タスク完了レポート（2026-08-02オーナー指示）: Core消滅前にレンダラーが report:build を呼ぶ。
+// 取得経路は既存ハンドラと同じ（daemon接続時はdaemon state、非接続時はin-appストア）。
+const reportBuilder = new TaskReportBuilder({
+  listRuns: async () => daemonClient?.connected ? (await daemonClient.state()).runs : (coordinator?.snapshot() || []),
+  listTasks: async () => daemonClient?.connected ? (await daemonClient.state()).tasks : taskRunner.snapshot(),
+  getModelSnapshot: async () => daemonState?.models || fleetMetrics.snapshot(),
+  getIdeas: async () => daemonClient?.connected ? (await daemonClient.ideas()).ideas : [],
+  getPreviewStatus: () => previewServer?.snapshot() || { running: false },
+  captureWindow: async () => {
+    if (!mainWin || mainWin.isDestroyed()) return null;
+    const image = await mainWin.webContents.capturePage();
+    return image.isEmpty() ? null : image.toPNG();
+  },
+  recordingsRoots: [PATHS.recordingsRoot, path.join(APP_ROOT, 'recordings')],
+});
+ipcMain.handle('report:build', async (_e, detail) => {
+  const report = await reportBuilder.build(detail || {});
+  // tray通知はバス経由の1行（trayの実イベントフィードにそのまま載る・控えめトーン）
+  bus.push({ source: 'system', type: 'result', text: `📄→(=^･ω･^=) 完了レポートあり · ${path.basename(report.mdPath)}` });
+  return report;
+});
 ipcMain.handle('preview:status', () => previewServer?.snapshot() || ({ running: false }));
 ipcMain.handle('preview:start', () => previewServer?.start() || ({ running: false }));
 ipcMain.handle('preview:stop', () => { previewServer?.close(); const state = previewServer?.snapshot() || ({ running: false }); broadcast('preview:status', state); return state; });

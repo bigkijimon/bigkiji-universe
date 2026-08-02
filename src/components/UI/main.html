@@ -654,6 +654,64 @@
     .term .bar em { display: none; }
   }
 
+  /* タスク完了レポート（フライヤー風オーバーレイ・2026-08-02オーナー指示）
+     Core消滅前に必ず提示 → 「確認して閉じる」で bk:report-dismissed → 爆散。
+     家の様式: rgbaティント+hairline+inset光（新規backdrop-filterなし）・transform/opacityのみ */
+  #reportOverlay { position: fixed; inset: 0; z-index: 95; display: grid; place-items: center; padding: 26px;
+    background: rgba(3,7,9,.74); opacity: 0; pointer-events: none; transition: opacity 240ms var(--ease-out); }
+  #reportOverlay.on { opacity: 1; pointer-events: auto; }
+  .report-card { width: min(560px, 92vw); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--em) 30%, transparent); border-radius: 18px;
+    background: linear-gradient(168deg, rgba(17,24,21,.97), rgba(9,14,12,.985));
+    box-shadow: 0 30px 90px rgba(0,0,0,.5), inset 0 1px rgba(255,255,255,.06), 0 0 44px -18px color-mix(in srgb, var(--em) 60%, transparent);
+    transform: scale(.97) translateY(6px); opacity: 0;
+    transition: transform 260ms var(--ease-out), opacity 260ms var(--ease-out); }
+  #reportOverlay.on .report-card { transform: none; opacity: 1; }
+  .report-body { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+  .report-hero { position: relative; min-height: 96px; border-bottom: 1px solid var(--hairline); }
+  .report-hero img { display: block; width: 100%; max-height: 220px; object-fit: cover; object-position: top; }
+  .report-hero-text { position: absolute; inset: auto 0 0 0; padding: 26px 18px 12px;
+    background: linear-gradient(180deg, transparent, rgba(6,10,9,.9) 62%); }
+  .report-hero.noshot { display: flex; align-items: flex-end; background:
+    radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--em) 14%, transparent), transparent 46%), rgba(255,255,255,.02); }
+  .report-hero.noshot img { display: none; }
+  .report-hero.noshot .report-hero-text { position: static; background: none; }
+  .report-kicker { display: block; color: var(--em); font: 800 8.5px "SF Mono", Menlo, monospace; letter-spacing: .18em; }
+  .report-goal { margin-top: 6px; color: var(--ink); font: 700 15px/1.35 -apple-system, "Hiragino Sans", sans-serif; word-break: break-word; }
+  .report-stats { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 7px; padding: 12px 16px 4px; }
+  .report-stat { min-width: 0; padding: 7px 9px 8px; border: 1px solid var(--hairline); border-radius: 10px;
+    background: rgba(255,255,255,.028); box-shadow: inset 0 1px rgba(255,255,255,.04); }
+  .report-stat label { display: block; color: var(--label); font: 700 7.5px "SF Mono", Menlo, monospace; letter-spacing: .12em; }
+  .report-stat b { display: block; margin-top: 3px; color: var(--ink); font: 700 14px "SF Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .report-stat span { color: var(--faint); font: 600 8px "SF Mono", Menlo, monospace; }
+  .report-section { padding: 10px 16px 2px; }
+  .report-section > b { display: block; color: var(--label); font: 800 8px "SF Mono", Menlo, monospace; letter-spacing: .15em; }
+  .report-models { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; }
+  .report-model { display: grid; grid-template-columns: minmax(0,1.25fr) 1fr 1fr .8fr; gap: 8px; align-items: baseline;
+    padding: 5px 9px; border: 1px solid var(--hairline); border-left: 2px solid rgba(255,255,255,.14); border-radius: 8px;
+    background: rgba(255,255,255,.02); font: 9.5px "SF Mono", Menlo, monospace; color: var(--dim);
+    font-variant-numeric: tabular-nums; }
+  .report-model b { color: var(--ink); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .report-model em { font-style: normal; color: var(--em); font-weight: 700; }
+  .report-model .rm-none { color: var(--faint); }
+  .report-model.primary { border-left-color: var(--em);
+    background: color-mix(in srgb, var(--em) 6%, transparent); }
+  .report-model.primary b { color: color-mix(in srgb, var(--em) 55%, white 40%); }
+  .report-learn { margin: 7px 0 4px; padding-left: 0; list-style: none; }
+  .report-learn li { position: relative; padding: 2px 0 2px 14px; color: var(--dim);
+    font: 10.5px/1.55 -apple-system, "Hiragino Sans", sans-serif; word-break: break-word; }
+  .report-learn li::before { content: '›'; position: absolute; left: 2px; color: var(--em); }
+  .report-links { padding: 4px 16px 10px; color: var(--faint); font: 8.5px/1.6 "SF Mono", Menlo, monospace; word-break: break-all; }
+  .report-links a { color: var(--em); text-decoration: none; cursor: pointer; }
+  .report-foot { flex: none; padding: 10px 16px 14px; border-top: 1px solid var(--hairline); }
+  #reportClose { width: 100%; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--em) 40%, transparent);
+    border-radius: 11px; background: color-mix(in srgb, var(--em) 13%, transparent); cursor: pointer;
+    color: var(--ink); font: 700 11px -apple-system, "Hiragino Sans", sans-serif; letter-spacing: .06em;
+    transition: background var(--dur-fast) var(--ease-out); }
+  #reportClose:hover { background: color-mix(in srgb, var(--em) 22%, transparent); }
+  #reportClose:active { transform: scale(.985); }
+
   /* 起動シーケンス（初回のみ） */
   header, .stage, .term { opacity: 0; transform: translateY(6px); animation: boot 460ms var(--ease-out) forwards; }
   .stage { animation-delay: 100ms; } .term { animation-delay: 200ms; }
@@ -784,6 +842,28 @@
     <div class="cmux-command-list" data-command-list></div><pre class="cmux-palette-output" data-palette-output>Choose a command or type an exact cmux argv sequence.</pre>
   </div></div>
   <div class="grain"></div>
+
+  <!-- タスク完了レポート（フライヤー風・Core消滅前に必ず提示） -->
+  <div id="reportOverlay" aria-hidden="true">
+    <div class="report-card" role="dialog" aria-modal="true" aria-label="タスク完了レポート">
+      <div class="report-body">
+        <div class="report-hero noshot" id="reportHero">
+          <img id="reportShot" alt="実際に動いている画面のスクリーンショット" />
+          <div class="report-hero-text">
+            <span class="report-kicker">MISSION COMPLETE — TASK REPORT</span>
+            <h2 class="report-goal" id="reportGoal"></h2>
+          </div>
+        </div>
+        <div class="report-stats" id="reportStats"></div>
+        <div class="report-section"><b>MODEL USAGE — CLAUDE CODE · CODEX · GLM5</b>
+          <div class="report-models" id="reportModels"></div></div>
+        <div class="report-section"><b>LEARNINGS — 学んだこと</b>
+          <ul class="report-learn" id="reportLearn"></ul></div>
+        <div class="report-links" id="reportLinks"></div>
+      </div>
+      <div class="report-foot"><button id="reportClose" type="button">確認して閉じる ⏎</button></div>
+    </div>
+  </div>
 
   <script>
     // ---- SpaceX風・動く宇宙背景（アニメーションSVGを生成） ----
@@ -919,6 +999,80 @@
     const applyPiFleet = (snapshot) => { if (snapshot && Array.isArray(snapshot.agents)) piFleetBox.update(snapshot); };
     window.bigkiji.onFleet?.(applyPiFleet);
     window.bigkiji.fleetSnapshot?.().then(applyPiFleet).catch(() => {});
+  </script>
+  <script>
+    // タスク完了レポート（2026-08-02オーナー指示）
+    // synapse.jsが bk:task-report を発火 → report:build で実データを集めフライヤー表示。
+    // 表示できたら bk:task-report-shown（Coreは無期限に待つ）、閉じたら bk:report-dismissed（爆散）。
+    (function initTaskReport() {
+      const overlay = document.getElementById('reportOverlay');
+      const hero = document.getElementById('reportHero');
+      const shot = document.getElementById('reportShot');
+      const goalEl = document.getElementById('reportGoal');
+      const statsEl = document.getElementById('reportStats');
+      const modelsEl = document.getElementById('reportModels');
+      const learnEl = document.getElementById('reportLearn');
+      const linksEl = document.getElementById('reportLinks');
+      const closeBtn = document.getElementById('reportClose');
+      const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
+      const tok = (n) => Number(n || 0).toLocaleString('en-US');
+      let building = false;
+
+      function statTile(label, value, unit) {
+        const tile = el('div', 'report-stat');
+        tile.append(el('label', '', label), el('b', '', value));
+        if (unit) tile.append(el('span', '', unit));
+        return tile;
+      }
+      function render(report) {
+        goalEl.textContent = report.error ? 'レポート生成に失敗しました' : report.goal || '—';
+        hero.classList.toggle('noshot', !report.screenshotPath);
+        if (report.screenshotPath) shot.src = 'file://' + report.screenshotPath;
+        statsEl.replaceChildren(
+          statTile('時間', report.durationLabel || '実測なし'),
+          statTile('総トークン', tok(report.totals?.tokensUsed), 'used'),
+          statTile('総節約', report.totals?.savedPct == null ? '実測なし' : `${report.totals.savedPct}%`, 'saved/(saved+used)'));
+        modelsEl.replaceChildren(...(report.models || []).map((m) => {
+          const row = el('div', m.primary ? 'report-model primary' : 'report-model');
+          row.append(el('b', '', m.label), el('span', '', `used ${tok(m.tokensUsed)}`), el('span', '', `saved ${tok(m.tokensSaved)}`),
+            m.savedPct == null ? el('span', 'rm-none', '実測なし') : el('em', '', `${m.savedPct}%`));
+          return row;
+        }));
+        const learnings = report.error ? [String(report.error)] : (report.learnings?.length ? report.learnings : ['記録なし']);
+        learnEl.replaceChildren(...learnings.map((line) => el('li', '', line)));
+        linksEl.replaceChildren();
+        if (report.previewUrl) {
+          const a = el('a', '', `▶ PREVIEW ${report.previewUrl}`);
+          a.addEventListener('click', () => window.bigkiji.openExternal(report.previewUrl).catch(() => {}));
+          linksEl.append(a, el('br'));
+        }
+        for (const rec of report.recordings || []) linksEl.append(el('span', '', `🎞 ${rec}`), el('br'));
+        if (report.mdPath) linksEl.append(el('span', '', `📄 ${report.mdPath}`));
+      }
+      window.addEventListener('bk:task-report', async (evt) => {
+        if (building || overlay.classList.contains('on')) return;
+        building = true;
+        let report;
+        try { report = await window.bigkiji.buildTaskReport({ progress: evt.detail?.progress }); }
+        catch (error) { report = { error: String(error.message || error), models: [], totals: {}, recordings: [] }; }
+        render(report);
+        overlay.classList.add('on');
+        overlay.setAttribute('aria-hidden', 'false');
+        window.dispatchEvent(new Event('bk:task-report-shown'));
+        closeBtn.focus();
+        building = false;
+      });
+      const dismiss = () => {
+        if (!overlay.classList.contains('on')) return;
+        overlay.classList.remove('on');
+        overlay.setAttribute('aria-hidden', 'true');
+        window.dispatchEvent(new Event('bk:report-dismissed'));
+      };
+      closeBtn.addEventListener('click', dismiss);
+      window.addEventListener('keydown', (event) => {
+        if (overlay.classList.contains('on') && (event.key === 'Enter' || event.key === 'Escape')) dismiss();
+      });
+    })();
   </script>
   <script type="module" src="../../domain/3d-canvas/components/synapse.js"></script>
 </body>

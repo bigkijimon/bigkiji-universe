@@ -2134,9 +2134,20 @@ renderer.domElement.addEventListener('pointerup', () => { gestureStart = null; h
 renderer.domElement.addEventListener('pointercancel', () => { gestureStart = null; suppressGestureClick = false; hybridOrbit.endInteraction(); });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('keydown', (event) => {
+  if (event.key === 'F9') { runCoreSequenceDemo(); return; } // 演出プレビュー（実データ不要の目視確認用）
   if (event.key !== 'Escape') return;
   filePopup.close(); clearFocus(); cameraFocus.cancel(); hybridOrbit.select(null);
 });
+// F9デモ: 会話開始→(8秒後)70%リング変形→(16秒後)100%完了レポート→消滅 を通しで再生。
+// 演出パイプラインのみを駆動し、実タスク・実トークンには一切触れない。
+let demoRunning = false;
+function runCoreSequenceDemo() {
+  if (demoRunning || coreSeq.state !== 'dormant') return;
+  demoRunning = true;
+  triggerCoreAwakening();
+  setTimeout(() => { coreSeq.progress = Math.max(coreSeq.progress, 72); }, 8000);
+  setTimeout(() => { coreSeq.progress = 100; notifyCoreTaskComplete(); demoRunning = false; }, 16000);
+}
 
 let galaxyO = 0, museumO = 0;
 const UP_Y = new THREE.Vector3(0, 1, 0);

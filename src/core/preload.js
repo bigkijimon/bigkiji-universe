@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   onPreviewError: (cb) => ipcRenderer.on('preview:error', (_e, status) => cb(status)),
   knowledgeState: () => ipcRenderer.invoke('knowledge:state'),
   fastRouterStatus: () => ipcRenderer.invoke('fast-router:status'),
+  buildTaskReport: (detail) => ipcRenderer.invoke('report:build', detail),
   comfyStatus: () => ipcRenderer.invoke('comfy:status'),
   comfyGenerate: (spec) => ipcRenderer.invoke('comfy:generate', spec),
   comfyCancel: (jobId) => ipcRenderer.invoke('comfy:cancel', jobId),
