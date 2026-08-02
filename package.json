@@ -20,6 +20,7 @@
     "dev": "electron . --show-main",
     "dist": "node tools/build-host.js",
     "dist:mac": "APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64 --x64",
+    "dist:local": "electron-builder --mac --dir --arm64 -c.mac.identity=\"BigKiji Universe Dev Signer\" -c.mac.notarize=false -c.mac.forceCodeSigning=false",
     "dist:win": "electron-builder --win nsis zip --x64 --arm64",
     "dist:linux": "electron-builder --linux AppImage deb --x64 --arm64",
     "dist:dir": "electron-builder --mac --dir --arm64",
