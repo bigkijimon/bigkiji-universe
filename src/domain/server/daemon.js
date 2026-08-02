@@ -118,7 +118,9 @@ class DaemonEngine extends EventEmitter {
     this.coordinator.on('run', (run) => this.onRun(run));
     this.models.on('update', (snapshot) => { this.publish('models', snapshot); this.publish('fleet', snapshot); });
     setImmediate(() => this.refreshInventory().catch(() => {}));
-    this.inventoryTimer = setInterval(() => this.refreshInventory().catch(() => {}), 300000);
+    this.inventoryTimer = setInterval(() => this.refreshInventory().catch((err) => {
+      engine.publish('error', { source: 'daemon', error: `Inventory refresh failed: ${String(err.message).slice(0, 100)}` });
+    }), 300000);
     this.inventoryTimer.unref();
   }
 
@@ -466,6 +468,15 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
     else console.log(`[BIGKIJI DAEMON READY] http://${config.bind}:${config.port}`);
   });
   server.on('error', (error) => { console.error(`[BIGKIJI DAEMON ERROR] ${error.message}`); process.exitCode = 1; });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[DAEMON UNHANDLED REJECTION]', reason);
+    engine.publish('error', { source: 'daemon', error: String(reason).slice(0, 200) });
+  });
+  process.on('uncaughtException', (error) => {
+    console.error('[DAEMON UNCAUGHT EXCEPTION]', error);
+    engine.publish('error', { source: 'daemon', error: String(error.message).slice(0, 200) });
+    process.exit(1);
+  });
   const close = () => { clearInterval(ping); for (const socket of sockets) socket.close(); wss.close(); engine.shutdown(); server.close(() => process.exit(0)); };
   process.once('SIGTERM', close); process.once('SIGINT', close);
   return { server, engine, config, mobileDevices, close };

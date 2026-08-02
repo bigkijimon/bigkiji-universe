@@ -1,0 +1,42 @@
+{
+  "header": "BigKiji Universe",
+  "prompt": "π>",
+  "prompt_help": "コマンドまたはチャットを入力",
+  "idle_kaomoji": "( -ω- )zzz",
+  "active_kaomoji": "(=^･ω･^=)",
+  "status_online": "オンライン",
+  "status_offline": "オフライン",
+  "status_connecting": "接続中",
+  "models_wake": "モデルは割り当時のみ起動",
+  "mode_plan": "プラン",
+  "mode_auto_edit": "自動編集",
+  "mode_ask": "確認",
+  "phase_preflight": "事前チェック",
+  "phase_execute": "実行",
+  "phase_verify": "検証",
+  "no_transmissions": "送信なし — 待機中",
+  "commands": {
+    "status": "システム状態を表示",
+    "setting": "設定を変更",
+    "help": "ヘルプを表示",
+    "quit": "終了",
+    "reload": "フックを再読み込み",
+    "abort": "現在の実行を中止"
+  },
+  "errors": {
+    "daemon_not_ready": "BigKiji Core Engineが準備できていません",
+    "token_missing": "認証トークンがありません",
+    "file_not_found": "アセットが見つかりません",
+    "unauthorized": "認証されていません",
+    "model_unavailable": "モデルが利用できません",
+    "quota_exceeded": "クォータ超過"
+  },
+  "ui": {
+    "language": "言語",
+    "theme": "テーマ",
+    "mode": "モード",
+    "workspace": "ワークスペース",
+    "api_keys": "APIキー",
+    "ollama_endpoint": "Ollamaエンドポイント"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "header": "BigKiji Universe",
+  "prompt": "pi>",
+  "prompt_help": "Enter command or chat with Pi",
+  "idle_kaomoji": "( -ω- )zzz",
+  "active_kaomoji": "(=^･ω･^=)",
+  "status_online": "Online",
+  "status_offline": "Offline",
+  "status_connecting": "Connecting",
+  "models_wake": "models wake only when assigned",
+  "mode_plan": "PLAN",
+  "mode_auto_edit": "AUTO-EDIT",
+  "mode_ask": "ASK",
+  "phase_preflight": "PREFLIGHT",
+  "phase_execute": "EXECUTE",
+  "phase_verify": "VERIFY",
+  "no_transmissions": "No transmissions — standing by",
+  "commands": {
+    "status": "Show system status",
+    "setting": "Configure settings",
+    "help": "Show help",
+    "quit": "Quit",
+    "reload": "Reload hooks",
+    "abort": "Abort current run"
+  },
+  "errors": {
+    "daemon_not_ready": "BigKiji Core Engine not ready",
+    "token_missing": "Authentication token missing",
+    "file_not_found": "Asset not found",
+    "unauthorized": "unauthorized",
+    "model_unavailable": "Model unavailable",
+    "quota_exceeded": "quota exceeded"
+  },
+  "ui": {
+    "language": "Language",
+    "theme": "Theme",
+    "mode": "Mode",
+    "workspace": "Workspace",
+    "api_keys": "API Keys",
+    "ollama_endpoint": "Ollama Endpoint"
+  }
+}

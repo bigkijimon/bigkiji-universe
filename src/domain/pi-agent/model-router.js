@@ -7,10 +7,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// 役割定義（スペック§1①）。上から品質順に試し、429/沈黙で即降格
+// 役割定義（スペック§1①）。2段階モデル構造：
+// - 会話モデル（常駐）: qwen2.5:0.5b（keep_alive: -1）
+// - 思考モデル（オンデマンド）: qwen3.5:35b-a3b（PiAgent起動時のみ）
 const TIERS = [
+  { id: 'ollama/qwen2.5:0.5b', need: 'ollama', role: '常駐 · Fast ACK · 会話', tag: 'CHAT', keepAlive: -1 },
   { id: 'zai/glm-4.7-flash', need: 'zai', role: 'approved paid execution · fast tooling', tag: 'GLM' },
-  { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'local ¥0 · planning · private', tag: 'LOCAL' },
+  { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'PiAgentオンデマンド · 思考', tag: 'PIAGENT', keepAlive: 0 },
 ];
 
 // The planning router is local-only. It must not inspect external-provider

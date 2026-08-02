@@ -110,7 +110,15 @@ class DaemonClient extends EventEmitter {
       socket.once('open', () => { opened = true; this.connected = true; this.emit('connect', { transport: 'websocket' }); });
       socket.on('message', (raw) => { try { const message = JSON.parse(String(raw)); this.emit('event', message); } catch (_) {} });
       socket.once('error', (error) => { if (!opened) reject(error); });
-      socket.once('close', () => { signal.removeEventListener('abort', abort); this.connected = false; if (opened && !signal.aborted) reject(new Error('Daemon WebSocket closed')); else resolve(); });
+      socket.once('close', () => {
+        signal.removeEventListener('abort', abort);
+        this.connected = false;
+        if (opened && !signal.aborted) {
+          this._isReconnecting = true;
+          setTimeout(() => { this.connect().catch(() => { this._isReconnecting = false; }); }, 2000);
+        }
+        resolve();
+      });
     });
   }
 }
