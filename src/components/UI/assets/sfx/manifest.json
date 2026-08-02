@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "format": "WAV / 48000 Hz / 16-bit PCM / mono, peak-normalised to -3.0 dBFS",
+  "harmonicSource": "docs/reference-analysis.md section 4 (SE2.mp4). C dim7 = C-Eb-Gb-A; flattening exactly one voice gives B7 / D7/C / F7/C / Ab7/C. Three of the four are notated /C, so every cue keeps a C in the voicing and only the moving voice changes. B7 is spelled B-D#-F#-A: the reel's own caption misprints D# as G#.",
+  "hueRule": "hue = the note-to-hue mapping from SE1.mp4 applied to the DESTINATION of the moving voice, i.e. the one note that changed. That is the note that distinguishes each cue from its siblings, so the on-screen wave changes colour per cue while the shared C pedal keeps the family recognisable.",
+  "hueMap": { "C": 32, "D": 99, "E": 163, "F": 241, "G": 278, "A": 340, "B": 25, "Ab": 309 },
+  "hueMapNotes": "C/D/E/F/G/A are measured values from SE1.mp4. B = 25 is the measured 'Si' value in reference-analysis.md (the brief's list omits B). Ab = 309 is interpolated midway between G (278) and A (340); it is the only value in this file that is neither measured nor stated.",
+  "cues": [
+    {
+      "id": "notify",
+      "file": "notify.wav",
+      "category": "alert",
+      "durationMs": 1204,
+      "peakDbfs": -3.0,
+      "chord": "C°7 -> B7",
+      "pitches": ["C4", "Eb4", "Gb4", "A4", "B3", "D#4", "F#4", "A4"],
+      "hue": 25,
+      "source": "synthesised",
+      "why": "The pivot itself, played gently: mellow partial set, 10-12 ms attack, quiet first chord so the resolution — not the onset — is what you notice."
+    },
+    {
+      "id": "agent-done",
+      "file": "agent-done.wav",
+      "category": "ui",
+      "durationMs": 1304,
+      "peakDbfs": -3.0,
+      "chord": "C°7 -> D7/C",
+      "pitches": ["C4", "Eb4", "Gb4", "A4", "C4", "F#4", "A4", "D5"],
+      "hue": 99,
+      "source": "synthesised",
+      "why": "Flattening Eb gives D, but the D is voiced an octave up so the top line rises A4 -> D5: the pitch classes stay D7/C while the gesture reads as resolving upward and satisfied."
+    },
+    {
+      "id": "approval",
+      "file": "approval.wav",
+      "category": "alert",
+      "durationMs": 1354,
+      "peakDbfs": -3.0,
+      "chord": "C°7 -> Ab7/C",
+      "pitches": ["C4", "Eb4", "Gb4", "A4", "C4", "Eb4", "Gb4", "Ab4", "Ab5"],
+      "hue": 309,
+      "source": "synthesised",
+      "why": "Attention comes from one clear Ab5 octave ping on the resolution, not from loudness or height; nothing above ~4 kHz and the move is a soft semitone descent. Short and consonant-ending so it survives being heard many times a day."
+    },
+    {
+      "id": "send",
+      "file": "send.wav",
+      "category": "ui",
+      "durationMs": 153,
+      "peakDbfs": -3.0,
+      "chord": "C (single note + sub-octave)",
+      "pitches": ["C4", "C3"],
+      "hue": 32,
+      "source": "synthesised",
+      "why": "One C4 over a weaker C3, dark partials, 45 ms decay. Felt more than heard: it is over before it registers as a pitch, and it states the family's root."
+    },
+    {
+      "id": "error",
+      "file": "error.wav",
+      "category": "alert",
+      "durationMs": 1554,
+      "peakDbfs": -3.0,
+      "chord": "C°7 -> F7/C",
+      "pitches": ["C3", "Gb3", "A3", "Eb4", "C3", "F3", "A3", "Eb4"],
+      "hue": 241,
+      "source": "synthesised",
+      "why": "Darker by construction: voiced an octave below the rest of the set, only 4 partials, and an 18-22 ms attack so it swells rather than strikes. It must not startle, so nothing here is percussive."
+    },
+    {
+      "id": "phase",
+      "file": "phase.wav",
+      "category": "ui",
+      "durationMs": 504,
+      "peakDbfs": -3.0,
+      "chord": "C5 -> D5 (the Eb->D flatten, as a bare step)",
+      "pitches": ["C5", "D5"],
+      "hue": 99,
+      "source": "synthesised",
+      "why": "Two notes, one step up, 160 ms apart. It borrows the same Eb->D move that agent-done resolves with, so progress cues and completion cues share a colour of motion without being confusable."
+    },
+    {
+      "id": "startup",
+      "file": "startup.wav",
+      "category": "ambient",
+      "durationMs": 2304,
+      "peakDbfs": -3.0,
+      "chord": "C pedal + C°7 -> D7/C",
+      "pitches": ["C2", "C3", "C4", "Eb4", "Gb4", "A4", "C4", "F#4", "A4", "D5", "C6"],
+      "hue": 99,
+      "source": "synthesised",
+      "why": "The fullest cue: 4-octave spread, a low C pedal underneath, a 40 ms rolled C°7 (the source reel's piano is arpeggiated) and a C6 sparkle on the resolution. Routed to the ambient bus so the default 0.3 gain keeps a 2.3 s launch stinger modest."
+    },
+    {
+      "id": "report",
+      "file": "report.wav",
+      "category": "alert",
+      "durationMs": 1804,
+      "peakDbfs": -3.0,
+      "chord": "C°7 -> C major",
+      "pitches": ["C4", "Eb4", "Gb4", "A4", "C3", "C4", "E4", "G4", "C5"],
+      "hue": 32,
+      "source": "synthesised",
+      "why": "The only consonance in the set. The reel never resolves its dim7 to a plain triad, so reserving that one release for 'the report is ready' makes this unambiguously the most final sound the app can make."
+    },
+    {
+      "id": "agent-start",
+      "file": "agent-start.wav",
+      "category": "ui",
+      "durationMs": 364,
+      "peakDbfs": -3.0,
+      "chord": "C4 -> G4 (open fifth)",
+      "pitches": ["C4", "G4"],
+      "hue": 278,
+      "source": "synthesised",
+      "why": "ADDED, not in the brief. agent-done had no counterpart, so parallel sub-agents were audible finishing but not starting — with several running you could not tell how many had spun up. Deliberately the quietest gesture in the set (rising bare fifth, 90 ms decay) so N of them in a row is not a fanfare."
+    },
+    {
+      "id": "shutdown",
+      "file": "shutdown.wav",
+      "category": "ambient",
+      "durationMs": 1154,
+      "peakDbfs": -3.0,
+      "chord": "E/G -> C (descending)",
+      "pitches": ["E4", "G4", "C4", "C3"],
+      "hue": 32,
+      "source": "synthesised",
+      "why": "ADDED, not in the brief. Bookends startup: launching was marked and quitting was silent. Mirrors startup's contour downward and shares its ambient bus. Optional — drop it if the owner prefers a silent quit."
+    }
+  ],
+  "production": {
+    "tool": "Python 3.11 + numpy/scipy additive synthesis (/tmp/bksfx/synth.py)",
+    "aceStepAttempted": true,
+    "aceStepResult": "ACE-Step 1.5 (local, 127.0.0.1:8001, acestep-5Hz-lm-0.6B + v15-turbo) was tried first, 2 requests / 4 takes. It composes its own diatonic harmony and ignored the chord-symbol conditioning: takes returned C major and Bb/G minor piano phrases with no diminished seventh anywhere, multi-onset phrases rather than one-shots, and a floor of ~5.1 s against a 2 s budget. No ACE-Step audio is used in this set.",
+    "whySynthesised": "Exact voicings needed sample-accurate pitch and click-free sub-second envelopes. Every partial is an exact integer multiple of a 12-TET fundamental (A4=440), verified by FFT to within +-1 cent.",
+    "clickSafety": "Each file fades in over 4 ms and out over 15-25 ms, then carries a 1.5-2 ms hard-zero guard at both ends, so the first and last 64 samples are exactly 0.",
+    "phaseLocking": "Partials are generated against an absolute time reference with one fixed phase per frequency, so components that share a frequency (e.g. Ab5 and Ab4's 2nd partial, C5 and C4's 2nd) add coherently instead of cancelling."
+  }
+}

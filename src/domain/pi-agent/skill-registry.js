@@ -21,7 +21,40 @@ const path = require('path');
 // versions of the owner's skills because BigKiji's system language is English, and
 // falls back to the Japanese originals for anything not yet translated.
 const APP_SKILLS = path.resolve(__dirname, '..', '..', '..', 'skills');
-const DEFAULT_ROOTS = [APP_SKILLS, path.join(os.homedir(), '.claude', 'skills')];
+const HOME = os.homedir();
+const DEFAULT_ROOTS = [
+  APP_SKILLS,
+  path.join(HOME, '.claude', 'skills'),           // the owner's own, hand-written
+  path.join(HOME, '.claude', 'plugins', 'cache'), // installed plugins (figma, vercel, sonarqube, ...)
+  path.join(HOME, 'Documents', 'CEOBigKiji'),     // per-project skills inside the vault
+  ...toolRepoSkillRoots(),                        // tool repos that ship their own (ACE-Step, LTX-2, ...)
+];
+
+// Local tool checkouts carry the operational knowledge for the tool itself, and it is
+// often more current than the owner's notes about it: the ACE-Step skill in ~/.claude
+// still records a path that no longer exists, while the repo's own copy sits next to
+// the code. Bounded to one level under ~/Documents so this stays a cheap lookup.
+function toolRepoSkillRoots(home = HOME) {
+  const roots = [];
+  let entries = [];
+  try { entries = fs.readdirSync(path.join(home, 'Documents'), { withFileTypes: true }); } catch (_) { return roots; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === 'CEOBigKiji') continue;
+    for (const relative of [path.join('.claude', 'skills'), 'skills']) {
+      const candidate = path.join(home, 'Documents', entry.name, relative);
+      if (fs.existsSync(candidate)) roots.push(candidate);
+    }
+  }
+  return roots;
+}
+
+// Paths that must never be indexed as authoritative.
+//   _archive / cleanup- : superseded snapshots. Indexing a stale copy of a skill is
+//                         worse than having none, because it reads as current.
+//   jobs                : scratch space from a previous run
+//   upstream            : vendored copies that would shadow their parent skill
+const EXCLUDE = /(?:^|[\\/])(?:node_modules|\.git|_archive|cleanup-\d+|jobs|upstream|dist|graphify-out)(?:[\\/]|$)/;
+const MAX_DEPTH = 6;
 const MAX_DIGEST_CHARS = 1400;
 
 // Frontmatter is a small, fixed YAML subset here: `key: value` lines between --- fences.
@@ -82,6 +115,23 @@ function buildDigest(body) {
   return picked.join('\n').slice(0, MAX_DIGEST_CHARS);
 }
 
+// Plugins ship several versions side by side (figma 2.2.81 and 2.2.87). Prefer the
+// earlier-declared root, then the higher version, then the newer file.
+function versionOf(file) {
+  const match = /[\\/](\d+)\.(\d+)\.(\d+)[\\/]/.exec(file);
+  return match ? Number(match[1]) * 1e6 + Number(match[2]) * 1e3 + Number(match[3]) : -1;
+}
+
+function preferSkill(candidate, current) {
+  if (candidate.rootIndex !== current.rootIndex) return candidate.rootIndex < current.rootIndex;
+  const a = versionOf(candidate.file); const b = versionOf(current.file);
+  if (a !== b) return a > b;
+  let ma = 0; let mb = 0;
+  try { ma = fs.statSync(candidate.file).mtimeMs; } catch (_) {}
+  try { mb = fs.statSync(current.file).mtimeMs; } catch (_) {}
+  return ma > mb;
+}
+
 function readSkill(dir) {
   const file = path.join(dir, 'SKILL.md');
   let text = '';
@@ -112,27 +162,43 @@ class SkillRegistry {
     this.skills = [];
   }
 
-  scan() {
-    const seen = new Set();
-    this.skills = [];
+  // Skills are scattered: the owner's own, bundles that nest theirs a level down,
+  // installed plugins several levels deep, and per-project ones inside the vault.
+  // Walk rather than assume a shape, bounded in depth and filtered by EXCLUDE.
+  discover() {
+    const found = [];
     for (const root of this.roots) {
-      let entries = [];
-      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { continue; }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || seen.has(entry.name)) continue;
-        const dir = path.join(root, entry.name);
-        const skill = readSkill(dir);
-        if (skill) { seen.add(entry.name); this.skills.push(skill); continue; }
-        // Bundles keep their skills one level down, e.g. n8n-skills/skills/<name>/SKILL.md
-        let nested = [];
-        try { nested = fs.readdirSync(path.join(dir, 'skills'), { withFileTypes: true }); } catch (_) { continue; }
-        for (const child of nested) {
-          if (!child.isDirectory()) continue;
-          const inner = readSkill(path.join(dir, 'skills', child.name));
-          if (inner && !seen.has(inner.id)) { seen.add(inner.id); this.skills.push(inner); }
+      const stack = [[root, 0]];
+      while (stack.length) {
+        const [dir, depth] = stack.pop();
+        if (depth > MAX_DEPTH || EXCLUDE.test(dir)) continue;
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }
+        if (entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md')) {
+          found.push({ dir, root });
+          continue; // a skill directory owns its subtree
+        }
+        for (const entry of entries) {
+          if (entry.isDirectory()) stack.push([path.join(dir, entry.name), depth + 1]);
         }
       }
     }
+    return found;
+  }
+
+  scan() {
+    const byId = new Map();
+    for (const { dir, root } of this.discover()) {
+      const skill = readSkill(dir);
+      if (!skill) continue;
+      skill.origin = root === APP_SKILLS ? 'app'
+        : dir.includes(`${path.sep}plugins${path.sep}`) ? 'plugin'
+          : root === path.join(HOME, '.claude', 'skills') ? 'owner' : 'project';
+      skill.rootIndex = this.roots.indexOf(root);
+      const previous = byId.get(skill.id);
+      if (!previous || preferSkill(skill, previous)) byId.set(skill.id, skill);
+    }
+    this.skills = [...byId.values()];
     this.pruneCommonTerms();
     return this.skills;
   }
@@ -204,8 +270,9 @@ class SkillRegistry {
       version: 1,
       scannedAt: new Date().toISOString(),
       roots: this.roots,
-      skills: this.skills.map(({ id, file, description, allowedTools, manualOnly, words, grams }) =>
-        ({ id, file, description, allowedTools, manualOnly, termCount: words.length + grams.length })),
+      counts: this.skills.reduce((acc, skill) => ({ ...acc, [skill.origin]: (acc[skill.origin] || 0) + 1 }), {}),
+      skills: this.skills.map(({ id, file, description, allowedTools, manualOnly, origin, words, grams }) =>
+        ({ id, file, origin, description, allowedTools, manualOnly, termCount: words.length + grams.length })),
       note: 'Frontmatter terms state purpose and are weighted heavily; body terms only corroborate.',
     };
   }
@@ -221,4 +288,4 @@ class SkillRegistry {
   }
 }
 
-module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, parseFrontmatter, extractTerms, buildDigest };
+module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, EXCLUDE, parseFrontmatter, extractTerms, buildDigest, versionOf };
