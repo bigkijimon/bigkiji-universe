@@ -7,11 +7,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const textIndex = require('./text-index');
 
-const STOP = new Set([
-  'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'is', 'are', 'be', 'with', 'at',
-  'it', 'this', 'that', 'you', 'i', 'we', 'me', 'my', 'your', 'please', 'from', 'into', 'about',
-]);
+// The stop-word list moved to text-index.js as CACHE_STOP when the three bigram
+// implementations were unified; nothing here reads it any more.
 const TASK_WORDS = /作成|実装|構築|調査|分析|修正|設計|生成|レポート|まとめ|移行|検証|テスト|リファクタ|自動化|build|implement|creat|research|analy|fix|design|generat|report|refactor|migrat|test|audit|writ|develop|automat/i;
 
 let cfg = null; // { kbPath, C, emit:{liveComment,broadcast}, model, knowledge }
@@ -74,23 +73,11 @@ function saveKB(kb) {
   } catch (_) {}
 }
 
-function keywords(text) {
-  const words = String(text).toLowerCase().split(/[^a-z0-9぀-ヿ一-鿿]+/).filter(Boolean);
-  const out = new Set();
-  for (const w of words) {
-    if (out.size >= 40) break;
-    if (STOP.has(w)) continue;
-    if (/^[a-z0-9]+$/.test(w)) { if (w.length >= 3) out.add(w); continue; }
-    for (let i = 0; i < w.length - 1 && out.size < 40; i++) out.add(w.slice(i, i + 2)); // CJKはbigram
-  }
-  return [...out];
-}
-function jaccard(a, b) {
-  const A = new Set(a); const B = new Set(b);
-  let inter = 0;
-  for (const x of A) if (B.has(x)) inter++;
-  return inter / ((A.size + B.size - inter) || 1);
-}
+// The cache mode is frozen: its output is persisted as intent_keywords and hashed
+// into task_pattern_hash in task_knowledge_base.json, so a single character of drift
+// would orphan every playbook the owner has accumulated.
+function keywords(text) { return textIndex.extractTerms(text, 'cache'); }
+const jaccard = textIndex.jaccard;
 
 async function llmJson(prompt) {
   const started = Date.now();

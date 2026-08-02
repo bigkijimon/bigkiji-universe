@@ -1,5 +1,7 @@
 'use strict';
 
+const textIndex = require('./text-index');
+
 const fs = require('fs');
 const path = require('path');
 const { isInside } = require('../../core/path-config');
@@ -15,10 +17,11 @@ function estimateTokens(text) {
   return Math.ceil(ascii / 4 + wide / 1.5);
 }
 
-function termsFor(prompt) {
-  return [...new Set(String(prompt || '').match(/[A-Za-z_$][\w$.-]{2,}|[\u3040-\u30ff\u3400-\u9fff]{2,}/g) || [])]
-    .filter((term) => !/^(the|and|for|with|this|that|from|into|する|して|これ|それ)$/i.test(term)).slice(0, 24);
-}
+// Delegates to the shared index. This mode deliberately does NOT build bigrams — it
+// keeps runs of CJK characters whole, which is the one thing that made it different
+// from the other two implementations and the reason a naive "unification" would have
+// broken it. tools/text-index-selftest.js pins the equivalence across 436 inputs.
+function termsFor(prompt) { return textIndex.extractTerms(prompt, 'prune'); }
 
 class ContextPruner {
   constructor({ graphPath = '', maxFiles = 10, maxChars = 48000, maxTokens = 12000 } = {}) {
