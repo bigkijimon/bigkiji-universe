@@ -45,7 +45,7 @@ function guardedKind(modelKind, text) {
 }
 function fallback(text, kind = heuristicKind(text)) {
   const japanese = /[\u3040-\u30ff\u3400-\u9fff]/.test(text);
-  if (kind === 'TASK') return { kind, reply: japanese ? '内容を実行計画として整理しました。変更を始める前に、対象と開示内容を確認できます。' : 'I organized that as an execution plan. You can review the scope and disclosure before any change starts.' };
+  if (kind === 'TASK') return { kind, reply: japanese ? `「${deriveTitle(text)}」を実行計画として整理しています。始める前に対象と手順を一緒に確認しましょう。決めておきたい条件はありますか？` : `I am organizing “${deriveTitle(text)}” into an execution plan. Let's review the scope and steps before starting—any constraints you want fixed up front?` };
   if (kind === 'IDEA') return { kind, reply: japanese
     ? `いい視点です。「${deriveTitle(text)}」としてローカル下書きに残しました。核になる要素と、まだ決めなくてよい部分を分けておくと、会話を止めずに後で育てられます。`
     : `That is worth keeping, so I saved “${deriveTitle(text)}” as a private local draft. Separating its core idea from decisions that can wait will make it easier to develop without interrupting the conversation.` };
@@ -53,8 +53,17 @@ function fallback(text, kind = heuristicKind(text)) {
 }
 function normalize(value, text) {
   const kind = guardedKind(value?.kind, text);
-  const base = fallback(text, kind); const arr = (key) => [...new Set((Array.isArray(value?.[key]) ? value[key] : []).map((item) => clean(item, 500)).filter(Boolean))].slice(0, 10);
-  return { kind, reply: clean(value?.reply || base.reply, 1800),
+  const base = fallback(text, kind);
+  // 小型モデルは配列要素をオブジェクト({question:...}等)で返すことがある。
+  // String(obj)="[object Object]" がpromptSpecまで流れていた実バグの修正。
+  const asText = (item) => typeof item === 'object' && item !== null
+    ? (item.q || item.question || item.text || item.title || item.reply || '') : item;
+  const arr = (key) => [...new Set((Array.isArray(value?.[key]) ? value[key] : []).map((item) => clean(asText(item), 500)).filter(Boolean))].slice(0, 10);
+  // 劣化応答ガード: 返答が欠落・極端に短い・goal/summaryの鸚鵡返しなら文脈フォールバックへ
+  let reply = clean(asText(value?.reply), 1800);
+  const echo = clean(asText(value?.summary), 200);
+  if (!reply || reply.length < 6 || (echo && reply === echo)) reply = base.reply;
+  return { kind, reply,
     // IDEA titles become durable filenames and UI labels. Derive them from the
     // owner's own words instead of trusting a tiny model's occasionally
     // unrelated heading.
@@ -65,7 +74,9 @@ function normalize(value, text) {
 }
 
 class ConversationEngine extends EventEmitter {
-  constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen2.5:0.5b',
+  // 既定会話モデル: qwen2.5:0.5bは自然な日本語会話に品質不足（2026-08-02実測:
+  // goal鸚鵡返し・破綻文）。常駐可能な8bクラスへ格上げ（0.5bは即時ACK専用に残る）
+  constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen3.5:latest',
     endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000,
     maxContextTokens = 4096, maxTurns = 8 } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;

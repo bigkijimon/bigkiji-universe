@@ -86,8 +86,14 @@ class SecurityPolicy {
   }
 
   minimalEnv(provider, { runtime, secret = '', extra = {} } = {}) {
+    // Finder起動のElectronはGUIのPATH(/usr/bin:/bin:…)しか持たず、pi子プロセスが
+    // `env: node: No such file or directory` で死ぬ（~/.bigkiji/logs/pi-stderr.log 実測）。
+    // node/piが実在する既知のbinディレクトリを補完する（実在するものだけ）。
+    const basePath = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin';
+    const knownBins = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.npm-global', 'bin')]
+      .filter((dir) => !basePath.split(':').includes(dir) && fs.existsSync(dir));
     const env = {
-      PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
+      PATH: [basePath, ...knownBins].join(':'),
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8',
       TERM: process.env.TERM || 'xterm-256color',
