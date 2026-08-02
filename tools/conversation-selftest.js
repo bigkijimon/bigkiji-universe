@@ -119,6 +119,19 @@ function ollama(value) {
   assert(reasonerTurn.ttftMs >= 150,
     'TTFT marks the first token of the answer, not the first sign of activity — thinking is not an answer');
 
+  // Deliberation comes out of the same num_predict budget as the answer, so a
+  // reasoning model can spend the whole allowance thinking and return nothing —
+  // which is what qwen3.5 did, and why the conversation model was a 0.5b that
+  // could not hold a conversation. `think: false` is what makes a capable model
+  // usable here, so the request has to actually carry it.
+  let sent = null;
+  const capture = async (url, init) => { sent = JSON.parse(init.body); return ollama({ kind: 'CHAT', reply: 'ok', confidence: 0.9 })(url, init); };
+  const asking = new ConversationEngine({ fetchImpl: capture, model: 'qwen3.5:latest' });
+  await asking.turn({ text: 'anything', sessionId: 'think-off' });
+  assert.strictEqual(sent.think, false, 'the request must switch reasoning off, or the answer budget goes to thinking');
+  assert.strictEqual(sent.keep_alive, -1, 'and the model stays resident between turns');
+  assert.strictEqual(sent.options.num_ctx, 4096);
+
   // A response delivered in one piece still works — an injected fetch, a buffering
   // proxy, or a server without a readable body all land here.
   const whole = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'One piece.', confidence: 0.8 }), model: 'qwen2.5:0.5b' });

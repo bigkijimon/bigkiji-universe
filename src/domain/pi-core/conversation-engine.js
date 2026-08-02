@@ -113,8 +113,13 @@ async function drainOllamaStream(response, onText) {
 }
 
 class ConversationEngine extends EventEmitter {
-  // 既定会話モデル: qwen2.5:0.5bは自然な日本語会話に品質不足（2026-08-02実測:
-  // goal鸚鵡返し・破綻文）。常駐可能な8bクラスへ格上げ（0.5bは即時ACK専用に残る）
+  // The conversation model is qwen3.5:latest. qwen2.5:0.5b was the default and it
+  // could not hold a conversation — asked "機能してる？" it answered "はい、機能が
+  // 存在します… でも、具体的な問題についてはお手伝いできませんので" in the owner's
+  // own window: self-contradictory, and not grammatical Japanese either. Measured
+  // 2026-08-03 against the same prompt: 0.5b rambles for 69 tokens, qwen3.5
+  // answers correctly in 25. It stays as the fast-ACK tier, which is what a 0.5b
+  // model is for.
   // timeoutMs is the stall deadline — the longest silence tolerated between tokens, not
   // the budget for the whole answer. maxTurnMs is the hard ceiling that bounds a model
   // which keeps emitting forever.
@@ -181,6 +186,12 @@ class ConversationEngine extends EventEmitter {
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
           prompt: this.prompt(ownerText, compacted.turns), stream: true, format: 'json', keep_alive: -1,
+          // A reasoning model deliberates before it answers, and that deliberation
+          // comes out of the same num_predict budget as the answer: qwen3.5 spent
+          // the whole 650 thinking and returned nothing. Ollama 0.30.8 takes
+          // `think: false` and skips it — measured, and the reason a capable model
+          // is usable here at all. Models that do not reason ignore the field.
+          think: false,
           options: { temperature: 0.55, top_p: 0.9, num_ctx: this.maxContextTokens, num_predict: 650 } }) });
       if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
       let raw = '';

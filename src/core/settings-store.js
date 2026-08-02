@@ -55,7 +55,10 @@ const DEFAULTS = Object.freeze({
     deliberationLenses: 2,
   },
   conversation: {
-    model: 'qwen2.5:0.5b',
+    // Measured 2026-08-03 against the owner's own question: qwen2.5:0.5b
+    // contradicts itself in ungrammatical Japanese, qwen3.5 answers correctly.
+    // See conversation-engine.js. The 0.5b model stays as the fast-ACK tier.
+    model: 'qwen3.5:latest',
     contextTokens: 4096,
     autoIdeas: true,
     cloudEnhancementApproval: 'always',
@@ -195,7 +198,7 @@ class SettingsStore {
     next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)
       ? next.routing.sessionLeader : 'auto';
     next.conversation = next.conversation || clone(DEFAULTS.conversation);
-    next.conversation.model = String(next.conversation.model || 'qwen2.5:0.5b').slice(0, 120);
+    next.conversation.model = String(next.conversation.model || 'qwen3.5:latest').slice(0, 120);
     next.conversation.contextTokens = clamp(next.conversation.contextTokens, 1024, 8192, 4096);
     next.conversation.autoIdeas = next.conversation.autoIdeas !== false;
     next.conversation.cloudEnhancementApproval = 'always';
