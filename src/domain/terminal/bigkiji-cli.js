@@ -12,6 +12,10 @@ const { TUIMonitor } = require('../../cli/tui/monitor');
 const { StickyScreen } = require('../../cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../../cli/tui/footer');
 const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
+const {
+  glyphs, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
+  renderUserTurn, shortenPath, stringWidth, truncateToWidth,
+} = require('../../cli/tui/transcript');
 const { CliPreferences } = require('./cli-preferences');
 const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
 
@@ -43,11 +47,26 @@ class KijiSpinner {
   stop(ok = true) { if (this.timer) clearInterval(this.timer); if (this.output.isTTY) { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); } this.output.write(`${ok ? A.accent : A.error}${ok ? '[Kiji] BigKiji Core Engine attached' : '[Kiji] BigKiji Core Engine failed'}${A.reset}\n`); }
 }
 
-function header(state = {}) {
-  return `${A.bold}${A.accent}[ Kiji 7kg ] (=^･ω･^=)${A.reset} ${A.bold}BigKiji Universe v${APP_VERSION}${A.reset}\n` +
-    `${A.dim}Pi-Orchestrator · Context Compaction Active · PID ${state.pid || '—'}\n${state.workspace || process.cwd()}${A.reset}\n` +
-    `${A.brownLight}● Claude${A.reset}  ${A.accent}● Codex${A.reset}  ${A.warning}● GLM${A.reset}  ${A.orangeBright}● Gemini${A.reset}  ${A.brown}● PiAgent / Local Qwen${A.reset}`;
+/** Terminal width, honest about the fact that a pipe has none. */
+function screenWidth(output = process.stdout) { return Math.max(40, Math.min(200, Number(output.columns) || 80)); }
+
+// Three lines, no frame. Mascot and version on the left, daemon facts dim on the
+// right, workspace and hints muted underneath. The old banner also drew five
+// permanently lit model dots; they were decoration, not state — every dot was
+// always on regardless of whether the model was reachable — so they are gone and
+// /status carries the real fleet.
+function header(state = {}, width = screenWidth()) {
+  const mark = glyphs();
+  const title = `${A.bold}${A.accent}(=^･ω･^=)${A.reset} ${A.bold}${A.ink}BigKiji Universe v${APP_VERSION}${A.reset}`;
+  const facts = `${A.dim}Core 8777 ${mark.note} PID ${state.pid || '—'}${A.reset}`;
+  const room = width - stringWidth(title) - stringWidth(facts);
+  const line1 = room > 1 ? `${title}${' '.repeat(room)}${facts}` : truncateToWidth(`(=^･ω･^=) BigKiji v${APP_VERSION}`, width);
+  const line2 = `${A.muted}${truncateToWidth(`${shortenPath(state.workspace || process.cwd())} ${mark.note} Pi-Orchestrator ${mark.note} context compaction active`, width)}${A.reset}`;
+  return `${line1}\n${line2}`;
 }
+
+const HINTS = '/help commands · /status fleet · /mode ask|auto-edit|plan · /exit';
+function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HINTS, width)}${A.reset}`; }
 
 async function ensureClient() {
   const client = new DaemonClient({ appRoot: APP_ROOT }); const health = await client.health();
@@ -90,12 +109,11 @@ async function selectSession(client) {
   });
 }
 
-function stateText(state) {
-  const fleet = state.models?.models || [];
-  const lines = [header(state), '',
-    `${A.bold}Phase${A.reset} ${state.phase || 'IDLE'}  ${A.bold}Sessions${A.reset} ${(state.sessions || []).length}  ${A.bold}Runs${A.reset} ${(state.runs || []).length}  ${A.bold}Files${A.reset} ${state.inventory?.files?.length || 0}${state.inventory?.truncated ? '+' : ''}`];
-  for (const model of fleet) lines.push(` ${model.connected ? A.accent : A.dim}● ${model.displayName.padEnd(18)} ${(model.status || 'IDLE').padEnd(11)} ${model.metrics?.tokensUsed || 0} tok · ${model.metrics?.latencyMs || 0}ms${A.reset}`);
-  return lines.join('\n');
+// /status no longer reprints the whole banner — it is a single gutter headline
+// with the fleet folded underneath, and metrics the daemon never measured show
+// as '—' instead of a fabricated 0.
+function stateText(state, width = screenWidth()) {
+  return renderStatus(state, { width, theme: A, mark: glyphs() }).join('\n');
 }
 function printState(state) { console.log(stateText(state)); }
 
@@ -103,7 +121,6 @@ const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', '
 
 async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
-  const commandsLine = `${A.dim}Commands: /status /fleet /setting [key value] /mode ask|auto-edit|plan /ideas /idea plan|enhance|send|adopt|archive /run /resume /reload /hud /abort /clear /help /exit${A.reset}`;
   // Sticky Bottom: 入力(π>)は罫線で挟んだ固定フッタの中・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
   const frameSet = loadingFrames();
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}π>${A.reset} ` });
@@ -129,12 +146,17 @@ async function repl(client) {
     sticky.setFooter(lines, { paint: false });
     process.stdout.write('\x1b[?25l'); refreshPrompt(); process.stdout.write('\x1b[?25h');
   };
-  const stickyOn = sticky.start({ header: [...header(live).split('\n'), commandsLine], onLayout: () => paintFooter(true) });
+  const stickyOn = sticky.start({ header: [...header(live, sticky.cols).split('\n'), hintLine(sticky.cols)], onLayout: () => paintFooter(true) });
   const say = (value) => {
     const text = typeof value === 'string' ? value : util.inspect(value, { colors: process.env.NO_COLOR === undefined, depth: 4 });
     if (sticky.active) sticky.print(text); else console.log(text);
   };
-  if (!stickyOn) { console.log(header(live)); console.log(commandsLine); }
+  // Transcript width and shared render options: every renderer measures against
+  // the live terminal so wrapped lines hang at the content column and nothing
+  // is ever allowed to run past the right edge.
+  const view = () => ({ width: sticky.active ? sticky.cols : screenWidth(), theme: A, mark: glyphs() });
+  const emit = (lines) => { const list = Array.isArray(lines) ? lines : [lines]; if (list.length) say(list.join('\n')); };
+  if (!stickyOn) { console.log(header(live)); console.log(hintLine()); }
   // ~120ms ticker: animates the loading cat + elapsed clock, repainting only when the footer actually changed.
   const ticker = setInterval(() => { if (turnStartedAt) frameIndex += 1; paintFooter(); }, frameSet.frameMs); ticker.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
@@ -145,18 +167,23 @@ async function repl(client) {
     else if (event === 'phase') phaseInfo = data;
     else if (event === 'run') phaseInfo = data.status || phaseInfo;
     if (!RELAY_EVENTS.includes(event)) { paintFooter(); return; }
+    // The footer's comment slot still shows every event, so the transcript can
+    // afford to stay quiet: phase ticks and the daemon echoing back the prompt
+    // the owner just typed are dropped by renderEvent rather than printed.
     const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
     if (text) comment = String(text).replace(/\s+/g, ' ').trim();
-    say(`${A.dim}[${event}]${A.reset} ${text}`); paintFooter(); refreshPrompt();
+    const lines = renderEvent(event, data, { ...view(), resultLines: 4 });
+    if (lines.length) emit(lines);
+    paintFooter(); refreshPrompt();
   }); client.connect();
   rl.on('line', async (line) => {
     const text = line.trim();
-    if (sticky.active && text) say(`${A.prompt}π>${A.reset} ${text}`);
+    if (sticky.active && text) emit(renderUserTurn(text, view()));
     if (text) { turnStartedAt = Date.now(); frameIndex = 0; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
     try {
       if (!text) {}
       else if (['/exit', '/quit'].includes(text)) { rl.close(); return; }
-      else if (text === '/status' || text === '/fleet') { live = await client.state(); say(stateText(live)); }
+      else if (text === '/status' || text === '/fleet') { live = await client.state(); emit(renderStatus(live, view())); }
       else if (text === '/setting' || text === '/settings' || text.startsWith('/setting ') || text.startsWith('/settings ')) {
         const [, key, requested] = text.split(/\s+/); const value = prefs.get();
         if (key) {
@@ -167,34 +194,47 @@ async function repl(client) {
           else throw new Error('Usage: /setting mode ask|auto-edit|plan | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
           A = themeFor(mode);
         }
-        const current = prefs.get(); say(`${A.strong}SETTINGS${A.reset}\n  theme: warm-brown\n  mode accent: ${current.modeAccent}\n  contrast: ${current.contrast}\n  cat commentary: ${current.catCommentary}\n  mode: ${mode}`);
+        const current = prefs.get();
+        emit([...renderToolCall('Settings', `theme warm-brown · mode ${mode}`, view()),
+          ...renderToolResult(`mode accent: ${current.modeAccent}\ncontrast: ${current.contrast}\ncat commentary: ${current.catCommentary}`, { ...view(), maxLines: 6 })]);
       }
-      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); say(`${A.accent}Mode: ${mode}${A.reset}`); }
-      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; say(`Resumed ${session.id}: ${session.promptSummary}`); } }
-      else if (text === '/reload') say(await client.reload());
+      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); emit(renderToolCall('Mode', mode, view())); }
+      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; emit([...renderToolCall('Resume', session.id, view()), ...renderToolResult(session.promptSummary, { ...view(), maxLines: 2 })]); } }
+      else if (text === '/reload') { const result = await client.reload(); emit([...renderToolCall('Reload', `${result.cleared ?? '—'} hooks`, view())]); }
       else if (text === '/ideas') {
-        const { ideas } = await client.ideas(); ideas.forEach((idea) => say(`${A.strong}${idea.id}${A.reset}  ${idea.status.padEnd(9)} ${idea.title}  ${String(idea.draftHash).slice(0,10)}`));
+        const { ideas } = await client.ideas();
+        emit([...renderToolCall('Ideas', `${ideas.length} draft${ideas.length === 1 ? '' : 's'}`, view()),
+          ...renderToolResult(ideas.map((idea) => `${idea.id}  ${idea.status.padEnd(9)} ${idea.title}`).join('\n') || 'none', { ...view(), maxLines: 8 })]);
       }
       else if (text.startsWith('/idea ')) {
         const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('Usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
         const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('Idea not found');
-        if (action === 'plan') say(await client.planIdea(id, idea.draftHash));
+        const ideaResult = (label, payload) => emit([...renderToolCall('Idea', `${action} · ${id}`, view()),
+          ...renderToolResult(typeof payload === 'string' ? payload : util.inspect(payload, { depth: 2, colors: false }), { ...view(), maxLines: 5 })]);
+        if (action === 'plan') ideaResult(action, await client.planIdea(id, idea.draftHash));
         else if (action === 'enhance') { const planned = await client.enhanceIdea(id, idea.draftHash); const d = planned.task.disclosure;
-          say(`${A.strong}Gemini disclosure${A.reset} ${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
-        else if (action === 'send') say(await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
-        else if (action === 'adopt') say(await client.promoteIdea(id, idea.draftHash));
-        else if (action === 'archive') say(await client.archiveIdea(id, idea.draftHash));
+          ideaResult(action, `${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
+        else if (action === 'send') ideaResult(action, await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
+        else if (action === 'adopt') ideaResult(action, await client.promoteIdea(id, idea.draftHash));
+        else if (action === 'archive') ideaResult(action, await client.archiveIdea(id, idea.draftHash));
         else throw new Error('Unknown idea action');
       }
-      else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; say(`${A.accent}Plan ready:${A.reset} ${result.run.id} · ${result.run.status}`); }
-      else if (text === '/hud') say(launchHud());
-      else if (text === '/abort') say(await client.post('/api/abort'));
+      else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
+        emit(renderEvent('run', result.run, view())); }
+      else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('HUD', launched.launched || 'launched', view())); }
+      else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('Abort', result.status || 'sent', view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') say('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.');
-      else { say(`${A.accent}[Kiji] (=^･ω･^=) Received in ${mode} mode${A.reset}`); const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; say(`${A.ink}${result.reply}${A.reset}`);
-        if (result.draft) say(`${A.strong}Draft:${A.reset} ${result.draft.id} · ${result.draft.title}`);
-        if (result.run) say(`${A.accent}Plan:${A.reset} ${result.run.id} · ${result.run.status}`); }
-    } catch (error) { say(`${A.error}✗ ${error.message}${A.reset}`); }
+      else if (text === '/help') emit(renderAssistantText('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.', view()));
+      else {
+        // No "received in plan mode" acknowledgement: the footer's loading cat,
+        // elapsed clock and phase bar already say the turn is in flight, and the
+        // transcript should hold nothing but the question and the answer.
+        const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
+        emit(renderAssistantText(result.reply, view()));
+        if (result.draft) emit(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, view()));
+        if (result.run) emit(renderEvent('run', result.run, view()));
+      }
+    } catch (error) { emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true })); }
     finally { turnStartedAt = 0; }
     paintFooter(true); refreshPrompt();
   });
@@ -211,9 +251,14 @@ async function main(argv = process.argv.slice(2)) {
   if (command === 'reload') { console.log(await client.reload()); return; }
   if (command === 'resume') { const session = await selectSession(client); if (session) console.log(JSON.stringify(await client.session(session.id), null, 2)); return; }
   if (args.length) {
-    const result = await client.turn(args.join(' '), { mode: auto ? 'auto' : transportMode(activeMode) }); console.log(`${A.ink}${result.reply}${A.reset}`);
-    if (result.draft) console.log(`  draft   ${result.draft.id} · ${result.draft.title}`);
-    if (result.run) { console.log(`  run     ${result.run.id} · ${result.run.status}`); console.log(`${A.strong}  Awaiting owner directive. Open “bigkiji monitor” and press a to accept.${A.reset}`); }
+    const options = { width: screenWidth(), theme: A, mark: glyphs() };
+    const result = await client.turn(args.join(' '), { mode: auto ? 'auto' : transportMode(activeMode) });
+    console.log(renderAssistantText(result.reply, options).join('\n'));
+    if (result.draft) console.log(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, options).join('\n'));
+    if (result.run) {
+      console.log(renderEvent('run', result.run, options).join('\n'));
+      console.log(renderNote('Awaiting owner directive — open “bigkiji monitor” and press a to accept.', options).join('\n'));
+    }
     return;
   }
   await repl(client);

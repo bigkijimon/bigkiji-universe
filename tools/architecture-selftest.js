@@ -9,7 +9,7 @@ const exists = (file) => fs.existsSync(path.join(root, file));
 const required = [
   'src/core/main.js', 'src/core/preload.js', 'src/core/orchestrator.js', 'src/core/tts-policy.js',
   'src/core/natural-tts-service.js', 'src/core/settings-store.js', 'src/core/path-config.js', 'src/core/cmux-bridge.js',
-  'src/core/data-root.js', 'src/core/migration-plan.js', 'src/core/data-migrator.js', 'src/components/UI/setup.html',
+  'src/core/data-root.js', 'src/core/migration-plan.js', 'src/core/data-migrator.js', 'src/core/workspace-registry.js', 'src/domain/pi-agent/tool-registry.js', 'src/components/UI/setup.html',
   'src/domain/server/speech-to-text.js',
   'src/domain/3d-canvas/components/synapse.js', 'src/domain/3d-canvas/components/roadmap-3d.js',
   'src/domain/3d-canvas/shaders/core-accretion-field.js', 'src/domain/3d-canvas/shaders/viral-membrane.js',

@@ -18,6 +18,7 @@
 const path = require('path');
 const { stripAnsi, themeFor } = require('../../domain/terminal/cli-theme');
 const { bar, clip, phaseChip, phaseName, progressOf } = require('./renderer');
+const { stringWidth } = require('./transcript');
 const { LOADING_TEXT, frameRows, loadingFrames } = require('./loading-frames');
 
 const DASH = '—';
@@ -74,10 +75,12 @@ function agentLabel(state = {}, C = themeFor('plan')) {
   return { text: `${model.id} ●${word}`, colored: `${C.ink}${model.id}${C.reset} ${tone}●${word}${C.reset}` };
 }
 
-// Join a left and a right segment inside `width` columns, measuring plain text.
+// Join a left and a right segment inside `width` columns, measuring *display*
+// width rather than String#length — the comment slot regularly carries Japanese,
+// where a character costs two columns and length would overflow the row.
 function spread(left, right, width, leftPlain = plain(left), rightPlain = plain(right)) {
-  const room = width - leftPlain.length - rightPlain.length;
-  if (room < 1) return { text: clip(`${leftPlain} ${rightPlain}`, width), width: Math.min(width, leftPlain.length + rightPlain.length + 1) };
+  const room = width - stringWidth(leftPlain) - stringWidth(rightPlain);
+  if (room < 1) return { text: clip(`${leftPlain} ${rightPlain}`, width), width: Math.min(width, stringWidth(leftPlain) + stringWidth(rightPlain) + 1) };
   return { text: `${left}${' '.repeat(room)}${right}`, width };
 }
 
@@ -99,13 +102,15 @@ function buildFooter(options = {}) {
   for (const extra of art.slice(0, -1)) lines.push(`${MARGIN}${C.brownLight}${extra}${C.reset}`);
 
   // Row n — icon · status · comment ............ elapsed · tokens
+  // `icon` may itself carry ANSI when a coloured (pixel) frame set is selected,
+  // so every measurement below goes through stringWidth, never String#length.
   const icon = art[art.length - 1];
   const statusText = clip(busy ? LOADING_TEXT : (status || phaseName(phase)), 18);
   const tokens = tokenTotals(state);
   const rightPlain = `${formatElapsed(elapsedMs)}  ${formatTokens(tokens.used)} tok`;
   const right = `${C.muted}${rightPlain}${C.reset}`;
-  const headPlain = `${icon}  ${statusText}`;
-  const room = inner - headPlain.length - rightPlain.length - 4;
+  const headPlain = `${plain(icon)}  ${statusText}`;
+  const room = inner - stringWidth(headPlain) - stringWidth(rightPlain) - 4;
   const note = room > 6 ? clip(String(comment || '').trim() || DASH, room) : '';
   const leftPlain = note ? `${headPlain}  ${note}` : headPlain;
   const left = `${C.brownLight}${icon}${C.reset}  ${busy ? C.accent : C.strong}${statusText}${C.reset}${note ? `  ${C.muted}${note}${C.reset}` : ''}`;
@@ -115,7 +120,7 @@ function buildFooter(options = {}) {
   const percent = progressOf(state, phase);
   const chips = `${phaseChip('PREFLIGHT', phase, 1, C)}  ${phaseChip('EXECUTE', phase, 2, C)}  ${phaseChip('VERIFY', phase, 3, C)}`;
   const vectorLeft = `${C.bold}${C.ink}PHASE VECTOR${C.reset}  ${chips}`;
-  const vectorLeftPlain = `PHASE VECTOR  ${plain(chips)}`;
+  const vectorLeftPlain = `PHASE VECTOR  ${plain(chips)}`; // measured by spread() in display columns
   const meterPlain = `${bar(percent, METER_WIDTH)} ${String(percent).padStart(3)}%`;
   const meter = `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${String(percent).padStart(3)}%${C.reset}`;
   lines.push(MARGIN + spread(vectorLeft, meter, inner, vectorLeftPlain, meterPlain).text);
@@ -130,7 +135,7 @@ function buildFooter(options = {}) {
   const agent = agentLabel(state, C);
   const statusRow = `${C.muted}MODE:${C.reset} ${C.strong}${mode}${C.reset}    ${C.muted}SHELL:${C.reset} ${C.ink}${shellLabel()}${C.reset}    ${C.muted}AGENT:${C.reset} ${agent.colored}`;
   const statusRowPlain = `MODE: ${mode}    SHELL: ${shellLabel()}    AGENT: ${agent.text}`;
-  lines.push(MARGIN + (statusRowPlain.length > inner ? clip(statusRowPlain, inner) : statusRow));
+  lines.push(MARGIN + (stringWidth(statusRowPlain) > inner ? clip(statusRowPlain, inner) : statusRow));
 
   return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };
 }

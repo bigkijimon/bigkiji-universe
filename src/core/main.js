@@ -1121,6 +1121,42 @@ ipcMain.handle('setup:skip', () => {
 
 ipcMain.handle('setup:finish', () => { app.relaunch(); app.exit(0); });
 
+// ---- local tool connections ------------------------------------------------
+// BigKiji never bundles, copies or installs a tool: it detects what the owner already has,
+// lets them point at anything it missed, and remembers only the path — the gigabytes stay
+// where they are. Detection is synchronous and cheap so opening Settings is instant;
+// health probes are separate, bounded and never throw, so a dead port cannot stall the UI.
+const TOOL_PROBE_TIMEOUT_MS = 2000; // a cold CLI answers `--version` in ~750ms here
+ipcMain.handle('tools:detect', () => {
+  const registry = require('../domain/pi-agent/tool-registry');
+  return registry.detectAll({ saved: settingsStore?.get()?.paths || {} });
+});
+ipcMain.handle('tools:probe', async (_event, id) => {
+  const registry = require('../domain/pi-agent/tool-registry');
+  const row = registry.detectAll({ saved: settingsStore?.get()?.paths || {} }).find((tool) => tool.id === String(id));
+  if (!row) return { id: String(id), status: 'missing', checked: false, detail: 'Unknown tool' };
+  // A tool with no health check is re-detected, never probed: merging an unchecked probe
+  // result would overwrite a status detection had already established.
+  if (!row.probe) return row;
+  return { ...row, ...(await registry.probe(row, { timeoutMs: TOOL_PROBE_TIMEOUT_MS })) };
+});
+ipcMain.handle('tools:probe-all', () => {
+  const registry = require('../domain/pi-agent/tool-registry');
+  return registry.detectAndProbeAll({ saved: settingsStore?.get()?.paths || {}, timeoutMs: TOOL_PROBE_TIMEOUT_MS });
+});
+ipcMain.handle('tools:choose', async (_event, id) => {
+  const registry = require('../domain/pi-agent/tool-registry');
+  const tool = registry.findTool(id);
+  if (!tool || tool.kind === 'http') return '';
+  const directory = tool.kind === 'directory';
+  const result = await require('electron').dialog.showOpenDialog(mainWin || undefined, {
+    title: `Locate ${tool.label}`,
+    message: `BigKiji only remembers where ${tool.label} is. Nothing is copied, moved or installed.`,
+    properties: [directory ? 'openDirectory' : 'openFile'],
+  });
+  return result.canceled ? '' : result.filePaths[0];
+});
+
 ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});

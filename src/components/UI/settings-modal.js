@@ -11,6 +11,9 @@
   const PERCENT_OUTPUTS = new Set(['audio.pauseNaturalness', 'audio.ownerVolume', 'audio.agentVolume',
     'audio.sfx.ui', 'audio.sfx.alert', 'audio.sfx.ambient']);
   let state = null; let root = null; let saveTimer = null;
+  // Detected local tools, filled once before the modal renders so every row exists by the
+  // time bind() attaches the standard [data-setting] listeners.
+  let tools = []; let toolsProbed = false;
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pct = (value) => `${Math.round(Number(value) * 100)}%`;
   const speakerOptions = (current) => speakers.map((v) => `<option ${v === current ? 'selected' : ''}>${v}</option>`).join('');
@@ -54,6 +57,9 @@
       document.documentElement.style.fontSize = `${state.appearance.textScale * 100}%`;
       document.body.classList.toggle('reduce-motion', !!state.appearance.reduceMotion);
       applyPiAgentName(piAgentName()); // the store trims and caps, so reflect the stored value back
+      // A few keys (the vault, the graph file, the ComfyUI root) are editable from two
+      // tabs. Pushing the stored value back keeps the other copy from lying.
+      syncControls();
     }, 120);
   }
   // `path` is the full dotted settings path, so a rail can drive any 0-1 value.
@@ -65,13 +71,113 @@
     const label = id === 'pi' ? `<span data-piagent-name>${esc(piAgentName())}</span>` : esc(providerLabels[id] || id);
     return `<div class="setting-row"><label>${label}<small style="display:block;color:#61736e">${esc(profile.label)}</small></label><select data-setting="audio.profiles.${id}.speaker">${speakerOptions(profile.speaker)}</select><button data-preview="${id}">🔊 Test</button></div>`;
   }
+  // ---- local tool connections ----------------------------------------------
+  // Three states, never a boolean: `connected` means a health check answered, `found`
+  // means it is installed but unverified, `missing` means nothing is there. A check that
+  // has not run says so — an unchecked tool is never painted green.
+  function badgeClass(tool) {
+    if (tool.checking) return '';
+    if (tool.status === 'connected') return 'ok';
+    if (tool.status === 'missing') return tool.optional ? '' : 'bad';
+    return '';
+  }
+  function badgeText(tool) {
+    if (tool.checking) return 'Checking…';
+    if (tool.status === 'connected') return 'Connected';
+    if (tool.status === 'missing') return tool.optional ? 'Not present · optional' : 'Not found';
+    if (!tool.probe) return 'Installed';
+    return tool.checked ? 'Installed · not answering' : 'Installed · not checked';
+  }
+  // The placeholder carries what detection resolved, so emptying the field visibly hands
+  // the row back to detection instead of pinning a blank path.
+  function toolPlaceholder(tool) {
+    if (tool.status === 'missing') return tool.optional ? 'Optional · not present on this machine' : 'Not found — choose it if it is installed';
+    return tool.path || '';
+  }
+  function toolRow(tool) {
+    const setting = `paths.${tool.settingKey}`;
+    const saved = get(state, setting);
+    const choose = tool.kind === 'directory' ? 'Choose folder…' : tool.kind === 'http' ? '' : 'Choose file…';
+    return `<div class="setting-row"><label>${esc(tool.label)}<small style="display:block;color:#61736e">${esc(tool.purpose)}</small></label>`
+      + `<input data-setting="${setting}" data-tool-input="${esc(tool.id)}" spellcheck="false" autocomplete="off" placeholder="${esc(toolPlaceholder(tool))}" value="${esc(typeof saved === 'string' ? saved : '')}">`
+      // Each .setting-row is its own grid, so the status column is pinned to a fixed
+      // width: without it the longest badge ("Installed · not answering") would push one
+      // row's path field narrower than its neighbours and the column would read ragged.
+      + `<span style="display:flex;align-items:center;gap:7px;justify-self:end">`
+      + `<b class="connection ${badgeClass(tool)}" style="min-width:146px" data-tool-status="${esc(tool.id)}" title="${esc(tool.detail || '')}"><i></i>${esc(badgeText(tool))}</b>`
+      + (choose ? `<button data-tool-choose="${esc(tool.id)}" style="min-width:94px">${choose}</button>` : '')
+      + `<button data-tool-test="${esc(tool.id)}">Test</button></span></div>`;
+  }
+  function toolsPage() {
+    const rows = tools.map(toolRow).join('')
+      || '<p class="settings-copy">Tool detection is not available in this window.</p>';
+    return `<section class="settings-page" data-page-panel="tools"><div class="settings-grid">
+      <div class="settings-card wide"><h3>LOCAL TOOL CONNECTIONS</h3>${rows}
+        <div class="cmux-controls" style="margin-top:12px"><button data-tools="detect">Re-detect</button><button data-tools="test">Test all connections</button></div>
+        <p class="settings-copy" style="margin-top:9px" data-tools-note>Nothing has been checked yet.</p></div>
+      <div class="settings-card wide"><h3>HOW THESE CONNECTIONS WORK</h3>
+        <p class="settings-copy">BigKiji never bundles, copies or installs these tools. It remembers a path and nothing else, so the model weights, virtual environments and checkouts stay exactly where you already keep them and the app stays small. Emptying a field returns that row to automatic detection.</p>
+        <p class="settings-copy" style="margin-top:8px"><b>Installed is not connected.</b> A row turns Connected only after a health check answered. A tool that is installed but not running stays Installed, and a check that has not run says “not checked”. BigKiji does not guess a status it has not measured.</p>
+        <p class="settings-copy" style="margin-top:8px">The Obsidian vault is read only: BigKiji reads it and never writes into it or moves it. The GPU arbitration script belongs to your own workspace and is optional — without it BigKiji simply does not serialise GPU jobs, rather than pretending it can.</p></div>
+    </div></section>`;
+  }
+  function toolsSummary() {
+    const count = (status) => tools.filter((tool) => tool.status === status).length;
+    return `Checked ${new Date().toLocaleTimeString()} · ${count('connected')} connected · ${count('found')} installed · ${count('missing')} not found.`;
+  }
+  function applyTool(update) {
+    if (!update || !update.id || !root) return;
+    const index = tools.findIndex((tool) => tool.id === update.id);
+    const merged = index >= 0 ? Object.assign(tools[index], update) : update;
+    const badge = root.querySelector(`[data-tool-status="${merged.id}"]`);
+    if (badge) {
+      badge.className = `connection ${badgeClass(merged)}`;
+      badge.title = merged.detail || '';
+      badge.innerHTML = `<i></i>${esc(badgeText(merged))}`;
+    }
+    const input = root.querySelector(`[data-tool-input="${merged.id}"]`);
+    if (input) input.placeholder = toolPlaceholder(merged);
+  }
+  async function refreshTools() {
+    try { (await window.bigkiji.toolsDetect()).forEach((tool) => applyTool({ ...tool, checking: false })); }
+    catch (_) { /* detection is best-effort; the rows keep their last honest state */ }
+  }
+  async function testTool(id) {
+    applyTool({ id, checking: true });
+    try { applyTool({ ...(await window.bigkiji.toolsProbe(id)), checking: false }); }
+    catch (error) { applyTool({ id, checking: false, detail: `Check could not run: ${error.message}` }); }
+  }
+  async function testAllTools() {
+    const note = root.querySelector('[data-tools-note]');
+    tools.forEach((tool) => { if (tool.probe) applyTool({ id: tool.id, checking: true }); });
+    if (note) note.textContent = 'Checking every connection…';
+    try {
+      (await window.bigkiji.toolsProbeAll()).forEach((tool) => applyTool({ ...tool, checking: false }));
+      toolsProbed = true;
+      if (note) note.textContent = toolsSummary();
+    } catch (error) {
+      tools.forEach((tool) => applyTool({ id: tool.id, checking: false }));
+      if (note) note.textContent = `Connection check could not run: ${error.message}`;
+    }
+  }
+  // Detection reads the stored value and saving is debounced, so wait out the debounce
+  // before re-detecting — otherwise the row would report on the previous path.
+  async function afterToolPathChange(id) {
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    await refreshTools();
+    const tool = tools.find((row) => row.id === id);
+    if (tool && tool.probe) await testTool(id);
+  }
+  // Probes are deliberately not part of opening Settings: they run once the owner looks
+  // at this tab, so a sleeping port can never delay the modal.
+  function ensureToolProbes() { if (!toolsProbed && tools.length) testAllTools(); }
   function render() {
     const sfx = { ui: 0.5, alert: 0.6, ambient: 0.3, ...(state.audio.sfx || {}) };
     const renderPriority = state.appearance.renderPriority || 'auto';
     root = document.createElement('div'); root.className = 'settings-shell'; root.id = 'settingsModal'; root.setAttribute('aria-hidden', 'true');
     root.innerHTML = `<div class="settings-deck" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <div class="settings-head"><span class="sigil"><i></i></span><div class="settings-title"><b id="settingsTitle">BIGKIJI SETTINGS</b><span>Voice, specialist routing, quality and local workspace</span></div><button class="settings-close" aria-label="Close settings">×</button></div>
-      <nav class="settings-tabs"><button class="on" data-page="audio">Audio</button><button data-page="models">AI & Routing</button><button data-page="security">Security</button><button data-page="quality">Quality & Repair</button><button data-page="preview">Preview</button><button data-page="mobile">Mobile</button><button data-page="cmux">Terminal & cmux</button></nav>
+      <nav class="settings-tabs"><button class="on" data-page="audio">Audio</button><button data-page="models">AI & Routing</button><button data-page="security">Security</button><button data-page="quality">Quality & Repair</button><button data-page="preview">Preview</button><button data-page="mobile">Mobile</button><button data-page="cmux">Terminal & cmux</button><button data-page="tools">Environment</button></nav>
       <div class="settings-body">
         <section class="settings-page on" data-page-panel="audio">
           <div class="sla-strip"><b>FIRST SPEECH SLA</b><i></i><span>meaningful answer ≤ ${Math.round(state.audio.firstSpeechDeadlineMs / 1000)}s</span></div>
@@ -111,6 +217,7 @@
           <div class="settings-card mobile-note"><h3>MOBILE AUTHORITY</h3><p class="settings-copy">A paired phone may send directives and approve only the exact current revision, plan hash and disclosure hash. Changed or already-processed plans are rejected. Code mutation still never starts without an explicit Owner action.</p></div>
         </div></section>
         <section class="settings-page" data-page-panel="cmux"><div class="settings-grid"><div class="settings-card wide"><h3>CMUX CONTROL PLANE · MACOS EXTENSION</h3><div class="setting-row"><label>CLI</label><input data-setting="cmux.cliPath" value="${esc(state.cmux.cliPath)}"><span id="cmuxStatus" class="connection"><i></i>Checking</span></div><div class="setting-row"><label>Socket password</label><input data-secret="cmux" type="password" autocomplete="off" placeholder="OS encrypted storage"><span class="connection" data-secret-status="cmux"><i></i>Not saved</span></div><div class="setting-row"><label>Theme</label><select id="cmuxTheme"><option value="">Load themes…</option></select><button data-cmux="theme">Apply</button></div><div class="setting-row"><label>Workspace</label><select id="cmuxWorkspace"><option value="">Current workspace</option></select><select id="cmuxColor"><option>Aqua</option><option>Green</option><option>Amber</option><option>Indigo</option><option>Purple</option><option>Rose</option><option>Charcoal</option></select></div><div class="cmux-controls"><button data-cmux="color">Set color</button><button data-cmux="terminal">New terminal</button><button data-cmux="split">Split right</button><button data-cmux="workspace">New workspace</button><button data-cmux="palette">All commands</button><button data-cmux="native">Open native</button></div></div><div class="settings-card wide"><h3>SAFETY</h3><div class="setting-row"><label>Confirm destructive commands</label><input type="checkbox" checked disabled><span>Required</span></div><p style="font-size:10px;line-height:1.55;color:#78938a">All cmux commands are available through the Operations Index. Commands run as argv without a shell. Close, remove, logout, hook and VM deletion operations show their exact target before execution.</p></div></div></section>
+        ${toolsPage()}
       </div></div>`;
     document.body.appendChild(root); bind(); refreshStatus();
   }
@@ -120,6 +227,7 @@
     root.querySelectorAll('[data-page]').forEach((button) => button.onclick = () => {
       root.querySelectorAll('[data-page]').forEach((b) => b.classList.toggle('on', b === button));
       root.querySelectorAll('[data-page-panel]').forEach((p) => p.classList.toggle('on', p.dataset.pagePanel === button.dataset.page));
+      if (button.dataset.page === 'tools') ensureToolProbes();
     });
     root.querySelectorAll('[data-setting]').forEach((input) => input.addEventListener('input', () => {
       const key = input.dataset.setting;
@@ -132,6 +240,29 @@
     }));
     root.querySelectorAll('[data-preview]').forEach((button) => button.onclick = () => window.bigkiji.ttsPreview({ agent: button.dataset.preview, text: button.dataset.preview === 'pi' ? 'Systems are synchronized. I am ready for the next operation.' : 'BigKiji Universe is ready. This is my English voice profile.' }));
     root.querySelectorAll('[data-secret]').forEach((input) => input.addEventListener('change', async () => { if (input.value) { await window.bigkiji.settingsSecret(input.dataset.secret, input.value); input.value = ''; refreshStatus(); } }));
+    // The path field itself already saves through the shared [data-setting] listener;
+    // `change` (blur or Enter, never per keystroke) is where re-detection belongs.
+    root.querySelectorAll('[data-tool-input]').forEach((input) => input.addEventListener('change', () => afterToolPathChange(input.dataset.toolInput)));
+    root.querySelectorAll('[data-tool-choose]').forEach((button) => button.onclick = async () => {
+      const id = button.dataset.toolChoose;
+      const tool = tools.find((row) => row.id === id);
+      if (!tool) return;
+      button.disabled = true;
+      try {
+        const chosen = await window.bigkiji.toolsChoose(id);
+        if (!chosen) return;
+        set(state, `paths.${tool.settingKey}`, chosen);
+        syncControls(); // the same key can be shown on two tabs
+        scheduleSave();
+        await afterToolPathChange(id);
+      } catch (error) { applyTool({ id, checking: false, detail: `Could not open the chooser: ${error.message}` }); }
+      finally { button.disabled = false; }
+    });
+    root.querySelectorAll('[data-tool-test]').forEach((button) => button.onclick = () => testTool(button.dataset.toolTest));
+    root.querySelectorAll('[data-tools]').forEach((button) => button.onclick = () => {
+      if (button.dataset.tools === 'detect') refreshTools();
+      if (button.dataset.tools === 'test') testAllTools();
+    });
     root.querySelectorAll('[data-cmux]').forEach((button) => button.onclick = async () => {
       const a = button.dataset.cmux;
       if (a === 'refresh') await window.bigkiji.cmuxRefresh();
@@ -204,6 +335,9 @@
   window.BKSettings = {
     async init(button) {
       state = await window.bigkiji.settingsGet();
+      // Detection is synchronous in the main process, so this costs milliseconds and lets
+      // every tool row exist before bind() attaches the shared [data-setting] listeners.
+      try { tools = await window.bigkiji.toolsDetect(); } catch (_) { tools = []; }
       window.BKAudio?.apply(state.audio);
       document.documentElement.style.fontSize = `${state.appearance.textScale * 100}%`;
       document.body.classList.toggle('reduce-motion', !!state.appearance.reduceMotion);

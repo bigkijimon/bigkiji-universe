@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { TOOL_PATH_IDS, TOOL_SETTING_ALIASES, expandPath } = require('../domain/pi-agent/tool-registry');
 
 // Owner-facing PiAgent name. Kept short so it fits every HUD label without truncation.
 const PI_AGENT_NAME_MAX = 32;
@@ -96,6 +97,9 @@ const DEFAULTS = Object.freeze({
     comfyRoot: '',
     whisperBin: '',
     whisperModel: '',
+    // Local tool connections: id -> absolute path. Empty means "detect it", never
+    // "there is none", so clearing a row hands the decision back to detection.
+    tools: {},
   },
   cmux: {
     enabled: process.platform === 'darwin',
@@ -118,6 +122,38 @@ function merge(base, patch) {
 }
 function clamp(n, min, max, fallback) {
   n = Number(n); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+// `paths.tools` is an id -> absolute-path map for tools that live outside the app and are
+// never copied into it. Hand-edited settings files reach detection unfiltered otherwise,
+// so: unknown ids are dropped, `~` is expanded, a non-string is ignored and an emptied
+// value is removed rather than pinned as '' — an empty string would suppress detection
+// forever, which is the opposite of what clearing a field means.
+//
+// Three tools already own a dedicated key (comfyRoot, vaultRoot, graphifyGraphPath) that
+// path-config.js and the ComfyUI bridge read. Those keys stay authoritative; a value that
+// arrives under `paths.tools.<id>` folds into the dedicated key instead of becoming a
+// second source of truth that can disagree with it.
+function normalizePaths(next) {
+  if (!next.paths || typeof next.paths !== 'object' || Array.isArray(next.paths)) next.paths = clone(DEFAULTS.paths);
+  const incoming = (next.paths.tools && typeof next.paths.tools === 'object' && !Array.isArray(next.paths.tools))
+    ? next.paths.tools : {};
+  const tools = {};
+  for (const [id, value] of Object.entries(incoming)) {
+    if (typeof value !== 'string') continue;
+    const resolved = expandPath(value);
+    if (!resolved) continue;
+    const dedicated = TOOL_SETTING_ALIASES[id];
+    if (dedicated) { next.paths[dedicated] = resolved; continue; }
+    if (!TOOL_PATH_IDS.includes(id)) continue;
+    tools[id] = resolved;
+  }
+  next.paths.tools = tools;
+  for (const key of Object.keys(DEFAULTS.paths)) {
+    if (key === 'tools') continue;
+    if (typeof next.paths[key] !== 'string') next.paths[key] = '';
+  }
+  return next.paths;
 }
 
 class SettingsStore {
@@ -176,6 +212,7 @@ class SettingsStore {
     next.piAgent.displayName = String(next.piAgent.displayName ?? '').trim().slice(0, PI_AGENT_NAME_MAX)
       || PI_AGENT_NAME_FALLBACK;
     next.terminal.maxTabs = clamp(next.terminal.maxTabs, 2, 16, 8); next.terminal.pinnedSession = true;
+    normalizePaths(next);
     next.cmux.enabled = process.platform === 'darwin' && next.cmux.enabled !== false;
     next.cmux.cliPath = String(next.cmux.cliPath || 'cmux');
     next.cmux.pollMs = clamp(next.cmux.pollMs, 350, 5000, 700);
@@ -217,4 +254,4 @@ class SettingsStore {
   }
 }
 
-module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, SFX_CATEGORIES };
+module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, SFX_CATEGORIES, normalizePaths };
