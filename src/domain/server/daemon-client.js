@@ -7,21 +7,31 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 
-function daemonSpawnEnv(baseEnv, workspace, parentPid, versions = process.versions) {
+function daemonSpawnEnv(baseEnv, workspace, parentPid, versions = process.versions, dataRoot = '') {
   const env = { ...baseEnv, BIGKIJI_DAEMON_PARENT: String(parentPid), BIGKIJI_WORKSPACE: workspace };
+  // The daemon and the app MUST agree on the data root or they silently read and
+  // write different directories.
+  if (dataRoot) env.BIGKIJI_DATA_ROOT = dataRoot;
   if (versions?.electron) env.ELECTRON_RUN_AS_NODE = '1';
   return env;
 }
 
 class DaemonClient extends EventEmitter {
-  constructor({ appRoot, host = '127.0.0.1', port = 8777, token = '', workspace = process.cwd() } = {}) {
+  constructor({ appRoot, host = '127.0.0.1', port = 8777, token = '', workspace = process.cwd(), dataRoot = '' } = {}) {
     super(); this.appRoot = path.resolve(appRoot || path.resolve(__dirname, '..', '..', '..'));
     this.host = host; this.port = Number(port || 8777); this.token = token || this.loadToken(); this.workspace = path.resolve(workspace);
-    this.controller = null; this.connected = false; this.childPid = null;
+    this.dataRoot = dataRoot; this.controller = null; this.connected = false; this.childPid = null;
   }
   get base() { return `http://${this.host}:${this.port}`; }
   loadToken() {
-    try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.bigkiji', 'remote.json'), 'utf8')).token || ''; } catch (_) { return ''; }
+    const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
+    const data = resolveDataRoot({ userData: defaultUserData() });
+    const candidates = [dataLayout(data.dataRoot, data.overrides).remoteConfigFile,
+      path.join(os.homedir(), '.bigkiji', 'remote.json')]; // pre-2.5 fallback: reach a daemon that has not migrated yet
+    for (const file of candidates) {
+      try { const token = JSON.parse(fs.readFileSync(file, 'utf8')).token; if (token) return token; } catch (_) {}
+    }
+    return '';
   }
   async health(timeoutMs = 650) {
     const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -35,7 +45,7 @@ class DaemonClient extends EventEmitter {
     // Inside Electron, process.execPath points at Electron.app rather than a
     // standalone Node binary. ELECTRON_RUN_AS_NODE keeps the daemon headless
     // and prevents an orphaned duplicate Electron application process.
-    const childEnv = daemonSpawnEnv(process.env, this.workspace, process.pid);
+    const childEnv = daemonSpawnEnv(process.env, this.workspace, process.pid, process.versions, this.dataRoot);
     const child = spawn(process.execPath, [entry], { cwd: this.appRoot, detached: true, stdio: 'ignore', env: childEnv });
     this.childPid = child.pid; child.unref();
     const deadline = Date.now() + timeoutMs;

@@ -20,11 +20,22 @@ const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 const { ConversationEngine } = require('../pi-core/conversation-engine');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
+const stt = require('./speech-to-text');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
-const STATE_ROOT = path.join(os.homedir(), '.bigkiji');
-const CONFIG_FILE = path.join(STATE_ROOT, 'remote.json');
-const PID_FILE = path.join(STATE_ROOT, 'daemon.pid');
+// The daemon is a separate process from Electron, so it resolves the data root the
+// same way the app does. BIGKIJI_DATA_ROOT is exported by main.js before spawn; when
+// the daemon is started standalone it falls back to the pointer / the default.
+const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
+const DATA = resolveDataRoot({ userData: defaultUserData() });
+const LAYOUT = dataLayout(DATA.dataRoot, DATA.overrides);
+const STATE_ROOT = LAYOUT.stateRoot;
+const CONFIG_FILE = LAYOUT.remoteConfigFile;
+const PID_FILE = LAYOUT.daemonPidFile;
+const APP_VERSION = require('../../../package.json').version;
+// whisper/recordings locations for the mobile voice route
+const { createPathConfig } = require('../../core/path-config');
+const PATHS = createPathConfig({ appRoot: APP_ROOT });
 
 const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
@@ -55,6 +66,16 @@ function cookies(req) {
     .filter(([key, value]) => key && value).map(([key, value]) => [key, decodeURIComponent(value)]));
 }
 
+async function readBuffer(req, max = 8 * 1024 * 1024) {
+  const chunks = []; let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > max) throw new Error('Request body too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(req, max = 1024 * 1024) {
   const chunks = []; let size = 0;
   for await (const chunk of req) {
@@ -66,14 +87,18 @@ async function readJson(req, max = 1024 * 1024) {
 }
 
 class DaemonEngine extends EventEmitter {
-  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd(),
+  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd(),
     conversationEngine = null, ideaStore = null, knowledgeStore = knowledge } = {}) {
     super();
     this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = path.resolve(workspace);
-    this.startedAt = Date.now(); this.sessions = new SessionStore({ root: path.join(this.stateRoot, 'sessions') });
+    // Tests inject a throwaway stateRoot; production uses the resolved data layout,
+    // where sessions/ideas are siblings of state/ rather than children of it.
+    this.customState = path.resolve(stateRoot) !== path.resolve(STATE_ROOT);
+    const rootFor = (key, name) => (this.customState ? path.join(this.stateRoot, name) : layout[key]);
+    this.startedAt = Date.now(); this.sessions = new SessionStore({ root: rootFor('sessionsRoot', 'sessions') });
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace, maxParallel: 3 });
     this.conversation = conversationEngine || new ConversationEngine();
-    this.ideas = ideaStore || new IdeaDraftStore({ root: path.join(this.stateRoot, 'ideas'), workspace: this.workspace });
+    this.ideas = ideaStore || new IdeaDraftStore({ root: rootFor('ideasRoot', 'ideas'), workspace: this.workspace });
     this.ideaEnhancements = new Map();
     this.knowledge = knowledgeStore;
     this.conversationConfig = { autoIdeas: true, cloudEnhancementApproval: 'always' };
@@ -349,7 +374,8 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, source: 'bigkiji-daemon', version: 2, pid: process.pid, uptimeMs: Date.now() - engine.startedAt });
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, source: 'bigkiji-daemon', version: 2, appVersion: APP_VERSION,
+      dataRoot: DATA.dataRoot, stateRoot: engine.stateRoot, pid: process.pid, uptimeMs: Date.now() - engine.startedAt });
     const jar = cookies(req); const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
     const masterToken = bearer || url.searchParams.get('t') || jar.bk_t || ''; const isMaster = masterToken === config.token;
     const mobileDevice = jar.bk_mobile ? mobileDevices.authenticate(jar.bk_mobile) : null;
@@ -376,6 +402,31 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         if (!mobileDevices.verifyCsrf(mobileDevice, req.headers['x-bigkiji-csrf'])) return json(res, 403, { error: 'csrf check failed' });
       }
       if (req.method === 'POST' && url.pathname === '/api/mobile/pairing') return json(res, 201, mobileDevices.createPairing());
+      // Owner-only. Used by the data-root migration to quiesce the daemon before files
+      // move underneath it; a paired phone must never be able to stop the engine.
+      if (req.method === 'POST' && url.pathname === '/api/shutdown') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        json(res, 200, { stopping: true, pid: process.pid });
+        setTimeout(() => { try { engine.shutdown(); } catch (_) {} process.exit(0); }, 120);
+        return;
+      }
+      // The phone records 16 kHz mono PCM16 and posts the WAV as the raw body.
+      // Before V2.5 this route did not exist here at all, so the microphone always 404'd.
+      if (req.method === 'POST' && url.pathname === '/api/voice') {
+        const audio = await readBuffer(req);
+        if (!audio.length) return json(res, 400, { error: 'empty audio' });
+        fs.mkdirSync(PATHS.recordingsRoot, { recursive: true });
+        const wav = path.join(PATHS.recordingsRoot, `mobile-${Date.now()}.wav`);
+        fs.writeFileSync(wav, audio);
+        try {
+          const heard = await stt.transcribeWav({ wav, whisperBin: PATHS.whisperBin, whisperModel: PATHS.whisperModel });
+          if (heard.error) return json(res, 503, { error: heard.error });
+          if (!stt.isMeaningful(heard.text)) return json(res, 200, { text: '', lang: heard.lang, skipped: 'noise' });
+          engine.publish('commentary', { text: `🎙 STT(${heard.lang}): ${heard.text.slice(0, 120)}`, source: 'mobile' });
+          const turn = await engine.turn(heard.text, { mode: 'auto' });
+          return json(res, 200, { text: heard.text, lang: heard.lang, reply: turn?.reply || '' });
+        } finally { try { fs.unlinkSync(wav); } catch (_) {} }
+      }
       if (req.method === 'POST' && url.pathname === '/api/security/credentials') {
         if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
         const body = await readJson(req, 64 * 1024);

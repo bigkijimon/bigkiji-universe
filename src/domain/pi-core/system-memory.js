@@ -7,7 +7,11 @@ const crypto = require('crypto');
 const { isSensitivePath } = require('./security/security-policy');
 
 const MEMORY_VERSION = 2;
-const DEFAULT_FILE = path.join(os.homedir(), '.bigkiji', 'system_memory.json');
+const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
+const DEFAULT_FILE = (() => {
+  const data = resolveDataRoot({ userData: defaultUserData() });
+  return dataLayout(data.dataRoot, data.overrides).systemMemoryFile;
+})();
 const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.md', '.html', '.css', '.yml', '.yaml']);
 const OMIT = /(?:^|\/)(?:node_modules|\.git|dist|build|recordings|graphify-out|\.obsidian)(?:\/|$)|(?:^|\/)\.env(?:\.|$)/;
 const EVENT_RE = /(?:emit|publish|broadcast|handle|on|addEventListener)\(\s*['"]([^'"]{2,80})['"]/g;

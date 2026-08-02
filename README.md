@@ -6,7 +6,7 @@ The central **Core Accretion Field** receives live data through curved synapse s
 
 > Local planning, memory, context pruning, and speech use Qwen/Ollama. The only authorized paid execution providers are Claude, Codex, Gemini, and GLM.
 
-Natural conversation is local-first too. A lightweight resident Qwen model handles chat and idea capture without waking paid models. Ideas begin as private Markdown drafts under `~/.bigkiji/ideas/`; adopting a draft, improving it with Gemini, or turning it into code always remains an explicit Owner action.
+Natural conversation is local-first too. A lightweight resident Qwen model handles chat and idea capture without waking paid models. Ideas begin as private Markdown drafts under `<data root>/ideas/`; adopting a draft, improving it with Gemini, or turning it into code always remains an explicit Owner action.
 
 ## What you get
 
@@ -62,7 +62,9 @@ BigKiji resolves paths in this order:
 2. values saved in **Settings → Models & API → Portable Data Paths**
 3. OS-safe defaults
 
-The default Vault is `~/Documents/BigKiji`. Existing installations with `~/Documents/CEOBigKiji` are detected automatically. Knowledge and generated runtime data live in Electron's per-user application-data directory.
+BigKiji keeps everything it owns — sessions, context, logs, reports, knowledge, generated media — under a single **data root**, `~/BigKijiUniverse` by default. A first-run setup wizard lets you put it somewhere else, and offers either a verified physical move of any pre-2.5 data or a reference mode that moves nothing. Override it with `BIGKIJI_DATA_ROOT`.
+
+Your Obsidian vault is separate and belongs to you: BigKiji detects any directory containing `.obsidian/`, reads it, and never writes to it or moves it.
 
 Common `.env` settings:
 
@@ -105,7 +107,7 @@ Before an external executor starts, BigKiji:
 6. waits for Owner approval of the exact revision, plan hash, disclosure hash, and policy hash;
 7. emits `fullContextTokens`, `prunedContextTokens`, and `tokensSaved` to the Active AI Models Fleet HUD.
 
-The daemon also maintains `~/.bigkiji/system_memory.json`, a secret-free structural index keyed by a source hash. Local Qwen receives at most 8,192 tokens (6,144 normally and 4,096 when degraded), and its work is split into short PiAgent-managed steps. Run `npm run index:memory` to inspect or refresh the index explicitly.
+The daemon also maintains `<data root>/state/system_memory.json`, a secret-free structural index keyed by a source hash. Local Qwen receives at most 8,192 tokens (6,144 normally and 4,096 when degraded), and its work is split into short PiAgent-managed steps. Run `npm run index:memory` to inspect or refresh the index explicitly.
 
 Example sandbox:
 
@@ -177,7 +179,7 @@ bigkiji resume       # select a JSONL-backed session
 bigkiji reload       # reload local PiAgent hooks/extensions
 ```
 
-The daemon binds to `127.0.0.1:8777` by default. It stores private runtime credentials in `~/.bigkiji/remote.json` and session events in `~/.bigkiji/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves the exact current revision. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
+The daemon binds to `127.0.0.1:8777` by default. It stores private runtime credentials in `<data root>/state/remote.json` and session events in `<data root>/sessions/*.jsonl`. A submitted plan remains in `AWAITING_OWNER_DIRECTIVE`; external Claude, Codex, Gemini, or GLM processes are not started until the owner approves the exact current revision. Opening Electron later attaches to the existing daemon instead of spawning a second orchestration core.
 
 ## Small Window and phone access
 

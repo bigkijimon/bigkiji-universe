@@ -58,4 +58,51 @@ const portablePaths = createPathConfig({ appRoot: project, userData: path.join(t
 } });
 assert.strictEqual(portablePaths.appRoot, project); assert.strictEqual(portablePaths.uiRoot, path.join(project, 'ui'));
 assert.strictEqual(portablePaths.knowledgeRoot, path.join(project, 'knowledge'));
+// ---- V2.5 data-root contract ------------------------------------------------
+// Regression guard for the defect this replaced: path-config used to hardcode one
+// person's Obsidian vault as a default, so every fresh install inherited it.
+const pathConfigSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'path-config.js'), 'utf8');
+assert.doesNotMatch(pathConfigSource, /CEOBigKiji/, 'path-config must not hardcode a personal vault path');
+assert.doesNotMatch(pathConfigSource, /homedir\(\)[^)]*,\s*'\.bigkiji'/, 'path-config must not fall back to the pre-2.5 ~/.bigkiji layout');
+
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-home-'));
+// A directory shaped like the old default must NOT win automatically...
+fs.mkdirSync(path.join(fakeHome, 'Documents', 'CEOBigKiji'), { recursive: true });
+const clean = createPathConfig({ appRoot: project, userData: path.join(fakeHome, 'ud'), env: {}, home: fakeHome });
+assert.notStrictEqual(clean.vaultRoot, path.join(fakeHome, 'Documents', 'CEOBigKiji'),
+  'a folder named CEOBigKiji must not be selected as a vault without .obsidian');
+assert.strictEqual(clean.dataRoot, path.join(fakeHome, 'BigKijiUniverse'), 'default data root must be owner-independent');
+assert.strictEqual(clean.knowledgeRoot, path.join(clean.dataRoot, 'knowledge'), 'knowledge lives under the data root');
+assert.strictEqual(clean.sessionsRoot, path.join(clean.dataRoot, 'sessions'));
+assert.strictEqual(clean.reportsRoot, path.join(clean.dataRoot, 'reports'));
+
+// ...but any directory containing .obsidian is detected generically, for anyone.
+fs.mkdirSync(path.join(fakeHome, 'Documents', 'MyNotes', '.obsidian'), { recursive: true });
+const detected = createPathConfig({ appRoot: project, userData: path.join(fakeHome, 'ud'), env: {}, home: fakeHome });
+assert.strictEqual(detected.vaultRoot, path.join(fakeHome, 'Documents', 'MyNotes'), 'vault detection must be generic');
+
+// BIGKIJI_DATA_ROOT is the contract between the app and its child processes.
+const forced = createPathConfig({ appRoot: project, userData: path.join(fakeHome, 'ud'),
+  env: { BIGKIJI_DATA_ROOT: path.join(fakeHome, 'elsewhere') }, home: fakeHome });
+assert.strictEqual(forced.dataRoot, path.join(fakeHome, 'elsewhere'));
+assert.strictEqual(forced.dataRootSource, 'env');
+
+// The pointer written by the setup wizard is honoured on the next launch.
+const dataRootModule = require('../src/core/data-root');
+const ud = path.join(fakeHome, 'ud2');
+dataRootModule.writePointer(ud, { dataRoot: path.join(fakeHome, 'pointed') });
+assert.strictEqual(dataRootModule.resolveDataRoot({ userData: ud, env: {}, home: fakeHome }).dataRoot, path.join(fakeHome, 'pointed'));
+
+// Reference mode must keep each root pointing at its existing location.
+const layout = dataRootModule.dataLayout(path.join(fakeHome, 'newroot'), { sessionsRoot: '/legacy/sessions' });
+assert.strictEqual(layout.sessionsRoot, '/legacy/sessions');
+assert.strictEqual(layout.ideasRoot, path.join(fakeHome, 'newroot', 'ideas'));
+
+// The migration whitelist must never include the owner's vault or foreign scripts.
+const { entryTable } = require('../src/core/migration-plan');
+for (const entry of entryTable({ layout: dataRootModule.dataLayout(path.join(fakeHome, 'newroot')), home: fakeHome, userData: ud })) {
+  assert.doesNotMatch(entry.src, /\.bigkiji\/?$/, 'never migrate ~/.bigkiji wholesale');
+  assert.doesNotMatch(entry.src, /\.(sh|Modelfile)$/, 'shell automation is not ours to move');
+}
+
 console.log('sandbox/context routing selftest: PASS');

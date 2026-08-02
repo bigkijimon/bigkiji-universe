@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;" />
+<title>BigKiji Universe — Setup</title>
+<style>
+  /* This window is deliberately opaque (transparent:false, no setVibrancy). That is why
+     it may use backdrop-filter-free flat surfaces without fighting the vibrancy layer
+     the main window relies on. */
+  :root {
+    --bg: #101215; --bg-1: #16191d; --bg-2: #1d2126; --line: #2a2f36; --line-2: #363c44;
+    --ink: #e9ecef; --dim: #a6adb6; --faint: #6f777f;
+    --accent: #d8a24a; --accent-ink: #1a1408; --danger: #e06c5b; --ok: #4fb286;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --ease: cubic-bezier(.2, .8, .2, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--ink); font: 13px/1.55 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; user-select: none;
+  }
+  header { flex: none; padding: 18px 26px 12px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
+  .sub { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+  /* Goal-gradient: the owner is never shown an empty bar — opening the wizard is step 1. */
+  .track { display: flex; gap: 4px; margin-top: 12px; }
+  .track i { flex: 1; height: 2px; background: var(--line-2); border-radius: 2px;
+    transition: background 180ms var(--ease); }
+  .track i.on { background: var(--accent); }
+  main { flex: 1; overflow-y: auto; padding: 20px 26px; scrollbar-width: none; }
+  main::-webkit-scrollbar { width: 0; }
+  .step { display: none; }
+  .step.on { display: block; animation: enter 200ms var(--ease) both; }
+  @keyframes enter { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+  h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  p.lead { margin: 0 0 16px; color: var(--dim); font-size: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; background: var(--bg-1);
+    padding: 12px 14px; margin-bottom: 8px; cursor: pointer;
+    transition: border-color 160ms var(--ease), background 160ms var(--ease); }
+  .card:hover { border-color: var(--line-2); background: var(--bg-2); }
+  .card:active { transform: scale(0.995); }
+  .card.sel { border-color: var(--accent); background: var(--bg-2); }
+  .card .t { font-weight: 600; font-size: 13px; display: flex; align-items: baseline; gap: 8px; }
+  .card .t em { font-style: normal; font-size: 10px; font-family: var(--mono); color: var(--accent);
+    letter-spacing: .06em; text-transform: uppercase; }
+  .card .d { color: var(--dim); font-size: 11.5px; margin-top: 3px; }
+  .card .path { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 5px;
+    word-break: break-all; }
+  .warn { border-left: 2px solid var(--danger); background: rgba(224,108,91,.07);
+    padding: 8px 11px; border-radius: 0 5px 5px 0; color: #f0b6ac; font-size: 11.5px; margin: 8px 0; }
+  .note { color: var(--faint); font-size: 11px; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; margin-top: 6px; }
+  td { padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--dim); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+  td.s { text-align: right; width: 74px; color: var(--faint); }
+  td.s.done { color: var(--ok); }
+  td.s.failed { color: var(--danger); }
+  label.opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; cursor: pointer; }
+  label.opt input { margin-top: 3px; accent-color: var(--accent); }
+  footer { flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 13px 26px; border-top: 1px solid var(--line); background: var(--bg-1); }
+  footer .grow { flex: 1; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+  button { font: inherit; font-size: 12px; font-weight: 550; padding: 7px 15px; border-radius: 6px;
+    border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); cursor: pointer;
+    transition: opacity 140ms var(--ease), border-color 140ms var(--ease); }
+  button:hover { border-color: var(--faint); }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button[disabled] { opacity: .4; cursor: default; transform: none; }
+  button.ghost { background: none; border-color: transparent; color: var(--faint); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>BigKiji Universe — first-run setup</h1>
+  <div class="sub" id="ver">v—</div>
+  <div class="track" id="track"></div>
+</header>
+
+<main>
+  <section class="step on" data-step="0">
+    <h2>Let's give BigKiji a home of its own</h2>
+    <p class="lead">Until now the app scattered its state across several folders — including one that belonged to the person who built it. This takes one minute and fixes that for good.</p>
+    <table id="found"><tr><td>Scanning…</td></tr></table>
+    <p class="note">Your Obsidian vault is <strong>never</strong> moved and never written to. It stays exactly where it is.</p>
+  </section>
+
+  <section class="step" data-step="1">
+    <h2>Where should BigKiji keep its data?</h2>
+    <p class="lead">Sessions, context, logs, reports and knowledge all live here.</p>
+    <div class="card sel" id="rootDefault" data-root="default">
+      <div class="t">A visible folder in your home directory <em>recommended</em></div>
+      <div class="d">Easy to find, browse and back up yourself.</div>
+      <div class="path" id="rootDefaultPath">—</div>
+    </div>
+    <div class="card" id="rootCustom" data-root="custom">
+      <div class="t">Choose a different folder…</div>
+      <div class="d">Any location you like, including an external drive.</div>
+      <div class="path" id="rootCustomPath">Not selected</div>
+    </div>
+  </section>
+
+  <section class="step" data-step="2">
+    <h2>How should the existing data move?</h2>
+    <p class="lead" id="moveLead">—</p>
+    <div class="card sel" id="modeMove" data-mode="move">
+      <div class="t">Move the files <em>recommended</em></div>
+      <div class="d">A real relocation, so the old locations are genuinely empty afterwards.
+        Each item is verified byte-for-byte before the original is removed, and the whole
+        operation can be rolled back.</div>
+    </div>
+    <div class="card" id="modeRef" data-mode="reference">
+      <div class="t">Leave everything where it is</div>
+      <div class="d">Nothing moves. BigKiji just records where each folder already lives.
+        Safest, but the old scattered layout stays.</div>
+    </div>
+    <label class="opt"><input type="checkbox" id="withModels" />
+      <span><strong>Also move local models</strong> <span id="modelSize" class="path" style="display:inline"></span><br />
+      <span style="color:var(--dim)">Off by default — these are large and slow to copy.</span></span></label>
+    <div class="warn" id="venvWarn" style="display:none">
+      The text-to-speech engine is a Python virtualenv, which stores absolute paths internally.
+      Moving it will break speech until the virtualenv is re-created at the new location.
+    </div>
+  </section>
+
+  <section class="step" data-step="3">
+    <h2>Which Obsidian vault should BigKiji read?</h2>
+    <p class="lead">Read-only. BigKiji shows your notes in the 3D map and never writes to <code>.obsidian</code>.</p>
+    <div id="vaults"></div>
+    <div class="card" id="vaultPick"><div class="t">Choose a folder…</div>
+      <div class="path" id="vaultPickPath">Not selected</div></div>
+  </section>
+
+  <section class="step" data-step="4">
+    <h2 id="runTitle">Ready when you are</h2>
+    <p class="lead" id="runLead">—</p>
+    <table id="plan"></table>
+    <div class="warn" id="runErr" style="display:none"></div>
+  </section>
+</main>
+
+<footer>
+  <button class="ghost" id="skip">Decide later</button>
+  <div class="grow" id="hint"></div>
+  <button id="back" disabled>Back</button>
+  <button class="primary" id="next">Continue</button>
+</footer>
+
+<script>
+(() => {
+  const api = window.bigkiji || {};
+  const $ = (id) => document.getElementById(id);
+  const steps = [...document.querySelectorAll('.step')];
+  const state = { step: 0, kind: 'fresh', rootChoice: 'default', customRoot: '', mode: 'move',
+    withModels: false, vault: '', defaultRoot: '', plan: null, running: false, done: false };
+
+  const mb = (bytes) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB`
+    : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+  const chosenRoot = () => (state.rootChoice === 'custom' && state.customRoot) ? state.customRoot : state.defaultRoot;
+  // A fresh install has nothing to move, so the "how should it move" step is skipped.
+  const visible = () => state.kind === 'fresh' ? [0, 1, 3, 4] : [0, 1, 2, 3, 4];
+
+  function paintTrack() {
+    const list = visible();
+    $('track').innerHTML = list.map((s) => `<i class="${s <= state.step ? 'on' : ''}"></i>`).join('');
+  }
+  function show(step) {
+    state.step = step;
+    steps.forEach((el) => el.classList.toggle('on', Number(el.dataset.step) === step));
+    const list = visible();
+    $('back').disabled = list.indexOf(step) <= 0 || state.running;
+    $('next').textContent = step === 4 ? (state.done ? 'Restart BigKiji' : (state.mode === 'reference' ? 'Save and restart' : 'Move my data')) : 'Continue';
+    $('hint').textContent = `Step ${list.indexOf(step) + 1} of ${list.length}`;
+    paintTrack();
+    if (step === 4) refreshPlan();
+  }
+  function step(delta) {
+    const list = visible(); const at = list.indexOf(state.step);
+    const nextIndex = Math.min(list.length - 1, Math.max(0, at + delta));
+    show(list[nextIndex]);
+  }
+
+  function selectCard(group, el) {
+    document.querySelectorAll(`[data-${group}]`).forEach((card) => card.classList.toggle('sel', card === el));
+  }
+
+  async function refreshPlan() {
+    const plan = await api.setupPlan({ dataRoot: chosenRoot(), includeModels: state.withModels });
+    state.plan = plan;
+    if (state.mode === 'reference') {
+      $('runLead').textContent = 'Nothing will be moved. BigKiji will record where each folder already lives and restart.';
+      $('plan').innerHTML = '';
+      return;
+    }
+    const rows = (plan.entries || []).map((entry) =>
+      `<tr data-id="${entry.id}"><td>${entry.id}</td><td class="n">${mb(entry.bytes)}</td>` +
+      `<td class="n">${entry.files} files</td><td class="s">waiting</td></tr>`).join('');
+    $('plan').innerHTML = rows || '<tr><td>Nothing to move — this is already a clean install.</td></tr>';
+    $('runLead').textContent = plan.entries?.length
+      ? `${plan.totalFiles} files · ${mb(plan.totalBytes)} → ${chosenRoot()}`
+      : 'Nothing to move.';
+    $('runErr').style.display = plan.preflight?.ok === false ? 'block' : 'none';
+    if (plan.preflight?.ok === false) $('runErr').textContent = plan.preflight.errors.join(' ');
+    $('next').disabled = plan.preflight?.ok === false;
+  }
+
+  async function boot() {
+    const info = await api.setupState();
+    state.kind = info.kind || 'fresh';
+    state.defaultRoot = info.defaultRoot || '';
+    state.vault = info.vault || '';
+    $('ver').textContent = `v${info.version || '—'} · ${state.kind === 'upgrade' ? 'upgrading an existing install' : 'new install'}`;
+    $('rootDefaultPath').textContent = state.defaultRoot;
+
+    const found = info.found || [];
+    $('found').innerHTML = found.length
+      ? found.map((f) => `<tr><td>${f.label}</td><td class="n">${mb(f.bytes)}</td><td class="s">${f.files} files</td></tr>`).join('')
+      : '<tr><td>No previous BigKiji data found — nothing to migrate.</td></tr>';
+    $('modelSize').textContent = info.modelsBytes ? `(${mb(info.modelsBytes)})` : '';
+    $('moveLead').textContent = `Found ${mb(info.stateBytes || 0)} of app data in the old locations.`;
+
+    $('vaults').innerHTML = (info.vaultCandidates || []).map((v, i) =>
+      `<div class="card${i === 0 ? ' sel' : ''}" data-vault="${v}"><div class="t">${v.split('/').pop()}</div>` +
+      `<div class="path">${v}</div></div>`).join('')
+      || '<p class="lead">No Obsidian vault detected. You can pick one below or skip and set it later in Settings.</p>';
+    document.querySelectorAll('[data-vault]').forEach((card) => card.addEventListener('click', () => {
+      state.vault = card.dataset.vault; selectCard('vault', card);
+    }));
+    show(0);
+  }
+
+  $('rootDefault').addEventListener('click', () => { state.rootChoice = 'default'; selectCard('root', $('rootDefault')); });
+  $('rootCustom').addEventListener('click', async () => {
+    const picked = await api.setupChooseFolder('dataRoot');
+    if (picked) { state.customRoot = picked; state.rootChoice = 'custom'; $('rootCustomPath').textContent = picked; selectCard('root', $('rootCustom')); }
+  });
+  $('modeMove').addEventListener('click', () => { state.mode = 'move'; selectCard('mode', $('modeMove')); });
+  $('modeRef').addEventListener('click', () => { state.mode = 'reference'; selectCard('mode', $('modeRef')); });
+  $('withModels').addEventListener('change', (e) => {
+    state.withModels = e.target.checked;
+    $('venvWarn').style.display = e.target.checked ? 'block' : 'none';
+  });
+  $('vaultPick').addEventListener('click', async () => {
+    const picked = await api.setupChooseFolder('vault');
+    if (picked) { state.vault = picked; $('vaultPickPath').textContent = picked; selectCard('vault', $('vaultPick')); }
+  });
+  $('back').addEventListener('click', () => step(-1));
+  $('skip').addEventListener('click', () => api.setupSkip());
+
+  api.onSetupProgress?.((update) => {
+    const row = document.querySelector(`#plan tr[data-id="${update.id}"] td.s`);
+    if (!row) return;
+    row.textContent = update.state === 'start' ? 'moving…' : update.state;
+    row.classList.toggle('done', ['moved', 'merged', 'verified'].includes(update.state));
+    row.classList.toggle('failed', update.state === 'failed');
+  });
+
+  $('next').addEventListener('click', async () => {
+    if (state.step !== 4) { step(1); return; }
+    if (state.done) { api.setupFinish(); return; }
+    state.running = true; $('next').disabled = true; $('back').disabled = true;
+    $('runTitle').textContent = state.mode === 'reference' ? 'Saving…' : 'Moving your data…';
+    const result = await api.setupApply({
+      dataRoot: chosenRoot(), mode: state.mode, includeModels: state.withModels, vault: state.vault,
+    });
+    state.running = false;
+    if (result?.ok) {
+      state.done = true;
+      $('runTitle').textContent = 'Done';
+      $('runLead').textContent = result.moved
+        ? `Everything is in ${result.dataRoot}. BigKiji needs a restart to pick up the new paths.`
+        : `Saved. BigKiji needs a restart to pick up the new paths.`;
+      $('next').disabled = false; $('next').textContent = 'Restart BigKiji';
+    } else {
+      $('runErr').style.display = 'block';
+      $('runErr').textContent = `${result?.error || 'Migration failed.'} ${result?.rolledBack ? 'Your files were rolled back to their original locations.' : ''}`;
+      $('next').disabled = false; $('back').disabled = false;
+    }
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>

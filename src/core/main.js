@@ -13,7 +13,16 @@ let savedPaths = {};
 try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}
 const PATHS = createPathConfig({ appRoot: APP_ROOT, userData: app.getPath('userData'), saved: savedPaths });
 const UI_ROOT = PATHS.uiRoot;
+// These exports are the contract between this process and its children (the standalone
+// daemon and the CLI). They MUST be set before the requires below, because several of
+// those modules compute their storage roots at module-load time.
+process.env.BIGKIJI_DATA_ROOT = PATHS.dataRoot;
 if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PATHS.knowledgeRoot;
+const dataRootModule = require('./data-root');
+const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
+// Do not materialise the default data root while the first-run wizard may still send
+// the owner somewhere else — an abandoned empty ~/BigKijiUniverse would be confusing.
+if (!SETUP_STATUS.needed || PATHS.dataRootSource !== 'default') dataRootModule.ensureLayout(PATHS);
 const { Orchestrator } = require('./orchestrator');
 const { PiBridge, MODEL: PI_MODEL } = require('../domain/pi-agent/pi-bridge');
 // v13: model-routerを直接インポート（Ollamaウォームアップ等）
@@ -36,8 +45,11 @@ const { PreviewServer } = require('./preview-server');
 const { DaemonClient } = require('../domain/server/daemon-client');
 const { TailscaleRemoteAccess } = require('./tailscale-remote-access');
 const { TaskReportBuilder } = require('./task-report-builder');
+const stt = require('../domain/server/speech-to-text');
 const facilitator = new fastRouter.FastFacilitatorRouter();
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || 'voice-cmux-local-qwen-v8';
+// Single source of truth for the displayed version: package.json. Overridable for CI builds.
+const APP_VERSION = require('../../package.json').version;
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || `v${APP_VERSION}`;
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了
@@ -493,7 +505,7 @@ async function handleUtterance(buf, via) {
   try { fs.unlinkSync(wav); } catch (_) {}
   if (r.error) return r;
   const text = (r.text || '').trim();
-  if (text.replace(/[\s.,!?。、…]/g, '').length < 2) return { text: '', lang: r.lang }; // ノイズ/空は送らない
+  if (!stt.isMeaningful(text)) return { text: '', lang: r.lang }; // ノイズ/空は送らない
   liveComment(C.stt(text, r.lang));
   piSendPrompt(text, { raw: true, via, voice: true, requestedAt }); // 音声は会話＝分類スキップで即応答
   return { text, lang: r.lang };
@@ -531,31 +543,12 @@ const WHISPER_BIN = PATHS.whisperBin;
 const WHISPER_MODEL = PATHS.whisperModel;
 // v12二段STT: -dl で言語検出（en/ja/th以外はenへ矯正＝-l auto のEN→JA誤検出の再発防止）→検出言語で本走。
 // 動的言語ミラー（JA入力→JA返答）に必要な入力言語判定もここで得る
-function whisperDetect(wav) {
-  return new Promise((resolve) => {
-    execFile(WHISPER_BIN, ['-m', WHISPER_MODEL, '-f', wav, '-dl'], { timeout: 30000 }, (_err, stdout, stderr) => {
-      const m = (String(stderr) + String(stdout)).match(/detected language:\s*([a-z]{2})/i);
-      const lang = m ? m[1].toLowerCase() : 'en';
-      resolve(['en', 'ja', 'th'].includes(lang) ? lang : 'en');
-    });
-  });
-}
-function whisperTranscribe(wav) {
-  return new Promise((resolve) => {
-    if (!fs.existsSync(WHISPER_MODEL)) {
-      resolve({ error: 'whisper is not set up yet (model download pending)' });
-      return;
-    }
-    whisperDetect(wav).then((lang) => {
-      execFile(WHISPER_BIN, ['-m', WHISPER_MODEL, '-f', wav, '-l', lang, '-np', '-nt'],
-        { timeout: 90000 }, (err2, stdout) => {
-          if (err2) { resolve({ error: 'whisper failed: ' + err2.message }); return; }
-          const text = String(stdout).replace(/\s+/g, ' ').trim();
-          if (text) bus.push({ source: 'system', type: 'log', text: `🎙 STT(${lang}): ${text.slice(0, 120)}` });
-          resolve({ text, lang });
-        });
-    });
-  });
+// The transcription itself lives in src/domain/server/speech-to-text.js so the
+// standalone daemon can run the same two-pass pipeline for the phone.
+async function whisperTranscribe(wav) {
+  const result = await stt.transcribeWav({ wav, whisperBin: WHISPER_BIN, whisperModel: WHISPER_MODEL });
+  if (result.text) bus.push({ source: 'system', type: 'log', text: `🎙 STT(${result.lang}): ${result.text.slice(0, 120)}` });
+  return result;
 }
 ipcMain.handle('transcribe', (_e, webmPath) => new Promise((resolve) => {
   const wav = webmPath.replace(/\.webm$/, '.wav');
@@ -597,7 +590,8 @@ const lastToolArgs = new Map();  // toolName → 直近引数（エラー構造�
 // 同一ツールが3回失敗したら「最新仕様を調査して修正案を作る」修復タスクを修復キューへ生成。
 // アプリコードへの自動直書きはしない（検収ゲート＝オーナー/Claude Code承認後に適用）。
 // Piへの調査委任は実行中ターンを乗っ取らないよう、ターン終了後に送る（上限2回/セッション）。
-const ERRLOG_DIR = path.join(os.homedir(), '.bigkiji', 'logs');
+const ERRLOG_DIR = PATHS.logsRoot;
+const ERRLOG_FILE = path.join(ERRLOG_DIR, 'tool-errors.jsonl');
 const HEAL_DIR = path.join(PATHS.knowledgeRoot, 'repair-queue');
 const toolFails = {};
 const healedTools = new Set();
@@ -606,7 +600,7 @@ let healSent = 0;
 function recordToolError(toolName, ms, argsStr) {
   try {
     fs.mkdirSync(ERRLOG_DIR, { recursive: true });
-    fs.appendFileSync(path.join(ERRLOG_DIR, 'tool-errors.jsonl'),
+    fs.appendFileSync(ERRLOG_FILE,
       JSON.stringify({ ts: Date.now(), tool: toolName, ms, model: pi.model, args: (argsStr || '').slice(0, 300) }) + '\n');
   } catch (_) {}
   toolFails[toolName] = (toolFails[toolName] || 0) + 1;
@@ -621,7 +615,7 @@ function recordToolError(toolName, ms, argsStr) {
       '',
       `- Failures: ${toolFails[toolName]} in this session / model: ${pi.model}`,
       `- Latest arguments: \`${(lastToolArgs.get(toolName) || '—').slice(0, 300)}\``,
-      `- Error log: \`~/.bigkiji/logs/tool-errors.jsonl\` (entries for tool=${toolName})`,
+      `- Error log: \`${ERRLOG_FILE}\` (entries for tool=${toolName})`,
       '',
       '## Investigation instructions (Auto-Heal)',
       '1. Check the tool\'s current specification using primary sources (official docs/web search).',
@@ -631,12 +625,12 @@ function recordToolError(toolName, ms, argsStr) {
       '',
       '## Delegation command',
       '```bash',
-      `pi -p --session-id bigkiji-heal "Research why the tool '${toolName}' keeps failing (see ~/.bigkiji/logs/tool-errors.jsonl), check current specs via web/docs, and append a proposed fix to ${qfile}. Do NOT modify app code."`,
+      `pi -p --session-id bigkiji-heal "Research why the tool '${toolName}' keeps failing (see ${ERRLOG_FILE}), check current specs via web/docs, and append a proposed fix to ${qfile}. Do NOT modify app code."`,
       '```',
       '',
     ].join('\n'));
     bus.push({ source: 'system', type: 'info', text: `⚕ Auto-Heal: ${toolName} failed 3× → repair task queued: ${path.basename(qfile)}` });
-    healPending.push(`[AUTO-HEAL] The tool "${toolName}" failed ${toolFails[toolName]} times (details: ~/.bigkiji/logs/tool-errors.jsonl). Investigate the current spec of this tool, classify the failure, and append a proposed fix to ${qfile} using your write tool. Do NOT modify app code.`);
+    healPending.push(`[AUTO-HEAL] The tool "${toolName}" failed ${toolFails[toolName]} times (details: ${ERRLOG_FILE}). Investigate the current spec of this tool, classify the failure, and append a proposed fix to ${qfile} using your write tool. Do NOT modify app code.`);
   } catch (_) {}
 }
 
@@ -994,6 +988,7 @@ const reportBuilder = new TaskReportBuilder({
     return image.isEmpty() ? null : image.toPNG();
   },
   recordingsRoots: [PATHS.recordingsRoot, path.join(APP_ROOT, 'recordings')],
+  reportsRoot: PATHS.reportsRoot,
 });
 ipcMain.handle('report:build', async (_e, detail) => {
   const report = await reportBuilder.build(detail || {});
@@ -1004,6 +999,124 @@ ipcMain.handle('report:build', async (_e, detail) => {
 ipcMain.handle('preview:status', () => previewServer?.snapshot() || ({ running: false }));
 ipcMain.handle('preview:start', () => previewServer?.start() || ({ running: false }));
 ipcMain.handle('preview:stop', () => { previewServer?.close(); const state = previewServer?.snapshot() || ({ running: false }); broadcast('preview:status', state); return state; });
+// ---- first-run setup wizard ------------------------------------------------
+// Own window, deliberately opaque: no transparent/vibrancy, so it may style itself
+// freely without the backdrop-filter-vs-vibrancy conflict the main window has.
+let setupWin = null;
+function createSetupWindow() {
+  if (setupWin && !setupWin.isDestroyed()) { setupWin.show(); return setupWin; }
+  setupWin = new BrowserWindow({
+    width: 780, height: 600, resizable: false, show: false, backgroundColor: '#101215',
+    titleBarStyle: 'hiddenInset', title: 'BigKiji Universe — Setup',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  setupWin.loadFile(path.join(UI_ROOT, 'setup.html'));
+  setupWin.once('ready-to-show', () => setupWin.show());
+  setupWin.on('closed', () => { setupWin = null; });
+  return setupWin;
+}
+
+function setupScan() {
+  const { planMigration } = require('./migration-plan');
+  const layout = require('./data-root').dataLayout(PATHS.dataRoot);
+  const state = planMigration({ layout, userData: PATHS.userData, includeModels: false });
+  const all = planMigration({ layout, userData: PATHS.userData, includeModels: true });
+  return { state, all };
+}
+
+ipcMain.handle('setup:state', () => {
+  const { defaultDataRoot, findVaultCandidates } = require('./data-root');
+  const { state, all } = setupScan();
+  return {
+    kind: SETUP_STATUS.kind, version: APP_VERSION,
+    defaultRoot: defaultDataRoot(), vault: PATHS.vaultRoot,
+    vaultCandidates: findVaultCandidates(),
+    stateBytes: state.totalBytes, modelsBytes: all.groups.models,
+    found: state.entries.map((entry) => ({ label: entry.id, bytes: entry.bytes, files: entry.files })),
+  };
+});
+
+ipcMain.handle('setup:plan', (_event, choice = {}) => {
+  const { dataLayout } = require('./data-root');
+  const { planMigration } = require('./migration-plan');
+  const { preflight } = require('./data-migrator');
+  const layout = dataLayout(path.resolve(choice.dataRoot || PATHS.dataRoot));
+  const plan = planMigration({ layout, userData: PATHS.userData, includeModels: !!choice.includeModels });
+  return { ...plan, preflight: preflight({ plan, layout, vaultRoot: PATHS.vaultRoot }) };
+});
+
+ipcMain.handle('setup:choose-folder', async (_event, kind) => {
+  const result = await require('electron').dialog.showOpenDialog(setupWin || undefined, {
+    title: kind === 'vault' ? 'Choose your Obsidian vault' : 'Choose where BigKiji keeps its data',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? '' : result.filePaths[0];
+});
+
+// Quiesce the daemon before anything moves underneath it. macOS has no mandatory
+// locks, so open handles do not block a rename — the real hazard is a write landing
+// in the old location after the move.
+async function stopDaemonForMigration() {
+  try { daemonClient?.disconnect?.(); } catch (_) {}
+  try {
+    await fetch(`http://127.0.0.1:8777/api/shutdown`, { method: 'POST',
+      headers: { authorization: `Bearer ${remoteAccess?.token?.() || ''}` } });
+  } catch (_) {}
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const alive = await fetch('http://127.0.0.1:8777/health').then((r) => r.ok).catch(() => false);
+    if (!alive) return true;
+    if (attempt === 11) {
+      try { process.kill(Number(fs.readFileSync(PATHS.daemonPidFile, 'utf8').trim()), 'SIGTERM'); } catch (_) {}
+    }
+  }
+  return false;
+}
+
+ipcMain.handle('setup:apply', async (_event, choice = {}) => {
+  const dataRootMod = require('./data-root');
+  const { planMigration, referenceOverrides } = require('./migration-plan');
+  const { preflight, executeMigration, rollbackMigration } = require('./data-migrator');
+  const dataRoot = path.resolve(choice.dataRoot || PATHS.dataRoot);
+  const reference = choice.mode === 'reference';
+  const layout = dataRootMod.dataLayout(dataRoot);
+  const send = (update) => { if (setupWin && !setupWin.isDestroyed()) setupWin.webContents.send('setup:progress', update); };
+  try {
+    if (reference) {
+      dataRootMod.writePointer(PATHS.userData, { dataRoot, mode: 'reference',
+        overrides: referenceOverrides({ layout, userData: PATHS.userData }), migratedAt: new Date().toISOString() });
+    } else {
+      const plan = planMigration({ layout, userData: PATHS.userData, includeModels: !!choice.includeModels });
+      const guard = preflight({ plan, layout, vaultRoot: PATHS.vaultRoot });
+      if (!guard.ok) return { ok: false, error: guard.errors.join(' ') };
+      await stopDaemonForMigration();
+      dataRootMod.ensureLayout(layout);
+      const run = await executeMigration({ plan, layout, userData: PATHS.userData,
+        startedAt: new Date().toISOString(), settingsBefore: settingsStore?.get()?.paths || {}, onProgress: send });
+      if (!run.ok) {
+        const undo = await rollbackMigration(run);
+        return { ok: false, error: 'Migration failed.', rolledBack: undo.reverted.length > 0 };
+      }
+      // Pointer and settings are written last: until this line a crash simply leaves
+      // the app reading the old locations, which is a safe place to fail.
+      dataRootMod.writePointer(PATHS.userData, { dataRoot, mode: 'own', migratedAt: new Date().toISOString() });
+    }
+    if (choice.vault) settingsStore?.update({ paths: { vaultRoot: choice.vault } });
+    dataRootMod.writeSetupState(PATHS.userData, { choice: reference ? 'reference' : 'move', dataRoot, appVersion: APP_VERSION });
+    return { ok: true, dataRoot, moved: !reference };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message).slice(0, 300) };
+  }
+});
+
+ipcMain.handle('setup:skip', () => {
+  if (setupWin && !setupWin.isDestroyed()) setupWin.close();
+  bus.push({ source: 'system', type: 'log', text: 'Setup postponed — BigKiji is using its default data folder. Re-open it from Settings.' });
+  return { ok: true };
+});
+
+ipcMain.handle('setup:finish', () => { app.relaunch(); app.exit(0); });
+
 ipcMain.handle('settings:get', () => settingsStore?.get());
 ipcMain.handle('settings:update', (_event, patch) => {
   const before = settingsStore.get(); const next = settingsStore.update(patch || {});
@@ -1152,10 +1265,10 @@ ipcMain.handle('get-info', () => {
 // ---------- ライフサイクル ----------
 app.whenReady().then(async () => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
-  remoteAccess = new TailscaleRemoteAccess({ port: 8777 });
+  remoteAccess = new TailscaleRemoteAccess({ port: 8777, configFile: PATHS.remoteConfigFile });
   if (!SMOKE) {
     try {
-      daemonClient = new DaemonClient({ appRoot: APP_ROOT, workspace: PATHS.vaultRoot });
+      daemonClient = new DaemonClient({ appRoot: APP_ROOT, workspace: PATHS.vaultRoot, dataRoot: PATHS.dataRoot });
       const daemon = await daemonClient.ensure({ timeoutMs: 8000 });
       await daemonClient.syncCredentials(Object.fromEntries(['claude', 'codex', 'gemini', 'glm']
         .map((provider) => [provider, settingsStore.getSecret(provider)]).filter(([, value]) => value)));
@@ -1173,11 +1286,23 @@ app.whenReady().then(async () => {
       });
       daemonClient.connect();
       bus.push({ source: 'system', type: 'info', text: `${daemon.started ? 'Started' : 'Attached to'} standalone BigKiji Core Engine · 127.0.0.1:8777` });
+      // The daemon is spawned detached and survives app restarts, so an attach can land
+      // on a pre-migration process still writing to the old directories. Silent split
+      // brain looks like "my sessions disappeared", so surface it loudly.
+      const probe = await daemonClient.health(1200);
+      if (probe && probe.dataRoot && path.resolve(probe.dataRoot) !== path.resolve(PATHS.dataRoot)) {
+        bus.push({ source: 'system', type: 'warn',
+          text: `Core Engine is using a different data folder (${probe.dataRoot}) than this app (${PATHS.dataRoot}). Quit BigKiji fully and reopen it.` });
+      }
     } catch (error) {
       daemonClient = null;
       bus.push({ source: 'system', type: 'warn', text: `Standalone daemon unavailable: ${error.message} · in-app core remains active` });
     }
   }
+  // The wizard must never block startup: BigKiji is a menu-bar resident and stays
+  // usable if the owner ignores or closes it.
+  if (SETUP_STATUS.needed && !SMOKE && !SNAP) setTimeout(createSetupWindow, 400);
+
   const previewRoot = path.join(PATHS.vaultRoot, 'Generated', 'BigKijiShooter');
   const previewTemplate = path.join(APP_ROOT, 'fixtures', 'e2e', 'bigkiji-shooter');
   if (!fs.existsSync(path.join(previewRoot, 'index.html')) && fs.existsSync(previewTemplate)) {
@@ -1212,14 +1337,15 @@ app.whenReady().then(async () => {
     } catch (error) { bus.push({ source: 'system', type: 'error', text: `E2E fixture failed: ${String(error.message).slice(0, 220)}` }); }
   }, 1800);
   taskRunner.setSecretProvider((provider) => settingsStore.getSecret(provider === 'claude-code' ? 'claude' : provider));
-  ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore });
+  ttsService = new NaturalTTSService({ appRoot: APP_ROOT, userData: app.getPath('userData'), settingsStore,
+    cacheDir: PATHS.ttsCacheRoot, venvPython: PATHS.ttsVenvPython });
   ttsService.on('status', (status) => broadcast('voice:engine-status', status));
   ttsService.on('log', (text) => text && bus.push({ source: 'system', type: 'info', text: `TTS: ${String(text).slice(0, 180)}` }));
   // Local neural TTS is intentionally lazy: first speech wakes it, idle timeout closes it.
   cmuxBridge = new CmuxBridge({ settingsStore, defaultBin: PATHS.cmuxBin });
   cmuxBridge.on('snapshot', (snapshot) => broadcast('cmux:snapshot', snapshot));
   cmuxBridge.start();
-  comfy = new ComfyUIMediaBridge({ root: PATHS.comfyRoot || undefined, outputDir: path.join(app.getPath('userData'), 'generated-media') });
+  comfy = new ComfyUIMediaBridge({ root: PATHS.comfyRoot || undefined, outputDir: PATHS.generatedMediaRoot });
   comfy.on('event', (event) => broadcast('comfy:event', event));
   if (process.platform === 'darwin' && !SMOKE && !SNAP && !SHOW_MAIN) app.dock.hide(); // 通常時のみメニューバー常駐
   createTray();

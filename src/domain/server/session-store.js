@@ -10,7 +10,8 @@ function safeId(value) {
 }
 
 class SessionStore {
-  constructor({ root = path.join(os.homedir(), '.bigkiji', 'sessions') } = {}) {
+  constructor({ root } = {}) {
+    if (!root) throw new Error('SessionStore requires an explicit root (see src/core/data-root.js)');
     this.root = path.resolve(root);
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
   }

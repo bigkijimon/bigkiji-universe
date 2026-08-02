@@ -1,6 +1,6 @@
 {
   "name": "bigkiji-universe",
-  "version": "1.0.0",
+  "version": "2.5.0",
   "description": "BigKiji Universe OS — menu-bar orchestration synapse app",
   "author": "BigKiji Universe Contributors",
   "main": "src/core/main.js",

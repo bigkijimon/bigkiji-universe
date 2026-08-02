@@ -8,8 +8,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 
+const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
 const ROOT = path.resolve(process.env.BIGKIJI_KNOWLEDGE_ROOT || process.env.KNOWLEDGE_ROOT
-  || path.join(os.homedir(), '.pi', 'agent', 'knowledge', 'bigkiji-universe'));
+  || (() => { const data = resolveDataRoot({ userData: defaultUserData() });
+    return dataLayout(data.dataRoot, data.overrides).knowledgeRoot; })());
 const STATE_PATH = path.join(ROOT, 'task_state.json');
 const GRAPH_PATH = path.join(ROOT, 'knowledge_graph.json');
 const ALLOWED_EXECUTORS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm', 'qwen', 'ollama']);

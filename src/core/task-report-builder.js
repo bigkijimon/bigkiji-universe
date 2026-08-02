@@ -9,7 +9,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const DEFAULT_REPORTS_ROOT = path.join(os.homedir(), '.bigkiji', 'reports');
+const { resolveDataRoot, dataLayout, defaultUserData } = require('./data-root');
+const DEFAULT_REPORTS_ROOT = (() => {
+  const data = resolveDataRoot({ userData: defaultUserData() });
+  return dataLayout(data.dataRoot, data.overrides).reportsRoot;
+})();
 
 // 表示順と強調: オーナーが名指しした Claude Code / Codex / GLM5 を先頭・primary に
 const REPORT_MODELS = [
@@ -51,9 +55,14 @@ class TaskReportBuilder {
     this.recordingsRoots = Array.isArray(deps.recordingsRoots) ? deps.recordingsRoots : [];
   }
 
+  // Only runs that actually started may headline a completion report. Runs parked at
+  // AWAITING_APPROVAL live in the daemon's in-memory Map for as long as the daemon runs,
+  // so without this filter a five-hour-old, never-executed run became the report title.
   latestRun(runs) {
     const at = (run) => new Date(run.updatedAt || run.finishedAt || run.createdAt || 0).getTime();
-    return [...(runs || [])].sort((a, b) => at(a) - at(b)).at(-1) || null;
+    const started = (run) => Boolean(run?.startedAt) && run?.status !== 'AWAITING_APPROVAL';
+    const sorted = [...(runs || [])].sort((a, b) => at(a) - at(b));
+    return sorted.filter(started).at(-1) || null;
   }
 
   recentIdeaDraft(ideas) {

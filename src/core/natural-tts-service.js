@@ -28,12 +28,13 @@ function execFileBuffer(file, args, timeout = 12000) {
 }
 
 class NaturalTTSService extends EventEmitter {
-  constructor({ appRoot, userData, settingsStore }) {
+  constructor({ appRoot, userData, settingsStore, cacheDir = '', venvPython = '' }) {
     super();
     this.appRoot = appRoot;
     this.userData = userData;
     this.settingsStore = settingsStore;
-    this.cacheDir = path.join(userData, 'tts-cache');
+    this.cacheDir = cacheDir || path.join(userData, 'tts-cache');
+    this.venvPython = venvPython;
     this.proc = null;
     this.starting = null;
     this.idleTimer = null;
@@ -55,9 +56,9 @@ class NaturalTTSService extends EventEmitter {
     // allocation and a misleading EADDRINUSE failure during app restarts.
     const existing = await this.health(650).catch(() => null);
     if (existing?.ready) return;
-    const venvPython = process.platform === 'win32'
-      ? path.join(os.homedir(), '.bigkiji', 'tts', 'venv', 'Scripts', 'python.exe')
-      : path.join(os.homedir(), '.bigkiji', 'tts', 'venv', 'bin', 'python');
+    // Resolved by path-config, which probes both the app data root and the
+    // pre-2.5 location so an unmoved 1.4 GB venv keeps working.
+    const venvPython = this.venvPython;
     const python = fs.existsSync(venvPython) ? venvPython : (process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python.exe' : 'python3'));
     const script = path.join(this.appRoot, 'tools', 'qwen3-tts-server.py');
     const endpoint = new URL(cfg.ttsEndpoint);

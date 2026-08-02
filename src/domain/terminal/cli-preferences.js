@@ -8,8 +8,16 @@ const { normalizeMode } = require('./cli-theme');
 const DEFAULTS = Object.freeze({ theme: 'warm-brown', modeAccent: 'follow', contrast: 'standard', mode: 'plan', catCommentary: 'low' });
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 class CliPreferences {
-  constructor({ root = path.join(os.homedir(), '.bigkiji'), file } = {}) {
-    this.root = root; this.file = file || path.join(root, 'config.json'); this.state = this.load();
+  // An explicit root or file always wins, so callers (and tests) stay isolated from
+  // the real data root. Only when neither is given do we resolve the app data root.
+  constructor({ root = '', file = '' } = {}) {
+    this.file = file || (root ? path.join(root, 'config.json') : CliPreferences.defaultFile());
+    this.root = root || path.dirname(this.file); this.state = this.load();
+  }
+  static defaultFile() {
+    const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
+    const data = resolveDataRoot({ userData: defaultUserData() });
+    return dataLayout(data.dataRoot, data.overrides).cliConfigFile;
   }
   load() { try { return this.normalize(JSON.parse(fs.readFileSync(this.file, 'utf8'))); } catch (_) { return clone(DEFAULTS); } }
   normalize(value = {}) {
