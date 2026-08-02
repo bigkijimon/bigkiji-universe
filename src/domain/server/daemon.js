@@ -10,6 +10,7 @@ const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
 const { TaskRunner } = require('../pi-agent/task-runner');
 const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordinator');
+const { warmModel } = require('../pi-agent/model-router');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -308,7 +309,34 @@ class DaemonEngine extends EventEmitter {
     this.conversationConfig.autoIdeas = config.autoIdeas !== false;
     this.conversationConfig.cloudEnhancementApproval = 'always';
     const snapshot = { ...this.conversation.snapshot(), ...this.conversationConfig };
-    this.publish('knowledge', { status: 'CONVERSATION_CONFIGURED', conversation: snapshot }); return snapshot;
+    this.publish('knowledge', { status: 'CONVERSATION_CONFIGURED', conversation: snapshot });
+    this.warmConversation();
+    return snapshot;
+  }
+
+  // Load the conversation model now rather than on the owner's first sentence.
+  //
+  // ConversationEngine aborts a turn at 8s and answers from the deterministic fallback,
+  // so a cold model does not merely feel slow — the first reply after launch comes from
+  // the wrong path entirely. This is the only place that knows which model will actually
+  // serve the turn, because settings override the engine's own default here.
+  //
+  // Fire and forget on purpose: nothing waits on the weights, and a failed warmup is
+  // reported rather than retried, because the next turn loads the model anyway.
+  warmConversation() {
+    const model = this.conversation.model;
+    if (!model || this.warmedModel === model || this.warming) return null;
+    this.warming = true;
+    const promise = warmModel(model, { keepAlive: -1 })
+      .then((result) => {
+        this.warming = false;
+        if (result.ok) this.warmedModel = model;
+        this.publish('knowledge', { status: result.ok ? 'CONVERSATION_WARM' : 'CONVERSATION_WARM_FAILED',
+          conversation: { model: result.model, warmupMs: result.ms, error: result.error } });
+        return result;
+      });
+    promise.catch(() => { this.warming = false; });
+    return promise;
   }
 
   onRun(run) {

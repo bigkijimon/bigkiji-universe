@@ -12,4 +12,36 @@ assert.equal(knowledge.canSpend('ollama', false), true);
 assert.equal(knowledge.canSpend('glm', true), true);
 assert.equal(knowledge.canSpend('glm', false), false);
 assert.equal(knowledge.canSpend('gemini', true), true);
-console.log('cost policy selftest: PASS');
+
+// ---- warming the local model before the owner needs it ----------------------
+// The predecessor of this function was written, exported, and never called once, so
+// every first turn after launch paid the cold load. ConversationEngine gives up at 8s
+// and answers from the deterministic fallback, which means a cold model does not
+// answer slowly — it answers from the wrong path and marks itself degraded.
+(async () => {
+  const calls = [];
+  const okFetch = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return { ok: true, json: async () => ({ response: '' }) }; };
+  const warm = await router.warmModel('qwen2.5:0.5b', { fetchImpl: okFetch });
+  assert.strictEqual(warm.ok, true);
+  assert.strictEqual(warm.model, 'qwen2.5:0.5b');
+  assert(warm.ms >= 0 && Number.isFinite(warm.ms), 'the caller gets a real duration, not a promise that it happened');
+  assert.match(calls[0].url, /\/api\/generate$/);
+  assert.strictEqual(calls[0].body.prompt, '', 'an empty prompt loads the weights without generating anything to discard');
+  assert.strictEqual(calls[0].body.keep_alive, -1, 'resident, matching what the conversation turn itself asks for');
+
+  // A model Ollama does not have must report, not throw: the next turn still works,
+  // it is just slow, and a warmup that crashed the daemon would be far worse.
+  const missing = await router.warmModel('not-installed:1b', {
+    fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({ error: 'model not found' }) }) });
+  assert.strictEqual(missing.ok, false);
+  assert.match(missing.error, /model not found/);
+
+  assert.strictEqual((await router.warmModel('', { fetchImpl: okFetch })).ok, false, 'no configured model is not a warmup');
+  assert.strictEqual(calls.length, 1, 'and does not reach the network — only the real warmup did');
+
+  const refused = await router.warmModel('qwen2.5:0.5b', { fetchImpl: async () => { throw new Error('ECONNREFUSED'); } });
+  assert.strictEqual(refused.ok, false);
+  assert.match(refused.error, /ECONNREFUSED/, 'Ollama being down is reported, not thrown');
+
+  console.log('cost policy selftest: PASS · warmup measured, non-throwing, and pinned to the resident keep-alive');
+})().catch((error) => { console.error(error); process.exitCode = 1; });

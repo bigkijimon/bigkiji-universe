@@ -129,13 +129,36 @@ async function ollamaHealth(timeoutMs = 4000) {
     return r.ok;
   } catch (_) { return false; }
 }
-// コールドスタート防止のwarmup（サーバはKEEP_ALIVE=-1常駐だが保険で30m指定）
-function ollamaWarmup(model = 'qwen3.5:35b-a3b') {
-  fetch('http://127.0.0.1:11434/api/generate', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, prompt: '', keep_alive: '30m' }),
-  }).catch(() => {});
+// Load a model into VRAM before the owner needs it, and say how long it took.
+//
+// This replaces a fire-and-forget warmup that was written, exported, and never called
+// once — so every first turn after launch paid the full cold load. That matters more
+// than it sounds: ConversationEngine aborts a turn at 8s and falls back to the
+// deterministic reply, so a cold model does not just answer slowly, it answers with
+// the degraded path and reports itself as degraded.
+//
+// An empty prompt is enough to make Ollama load the weights; the answer is discarded.
+// The duration is returned rather than logged so the caller can show a real number
+// instead of an animation that claims to know something it does not.
+async function warmModel(model, { keepAlive = -1, timeoutMs = 180000, fetchImpl = global.fetch,
+  endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434' } = {}) {
+  const target = String(model || '').trim();
+  if (!target) return { model: '', ok: false, ms: 0, error: 'no model configured' };
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs); timer.unref?.();
+  try {
+    const response = await fetchImpl(`${endpoint.replace(/\/$/, '')}/api/generate`, {
+      method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: target, prompt: '', keep_alive: keepAlive }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.error) throw new Error(body.error || `Ollama HTTP ${response.status}`);
+    return { model: target, ok: true, ms: Date.now() - started, error: '' };
+  } catch (error) {
+    return { model: target, ok: false, ms: Date.now() - started,
+      error: String(error?.name === 'AbortError' ? `warmup timeout after ${timeoutMs}ms` : (error?.message || error)).slice(0, 200) };
+  } finally { clearTimeout(timer); }
 }
 function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchdラベル）
   try {
@@ -147,5 +170,5 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 module.exports = {
   GLM_MODELS, CLAUDE_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN,
-  handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, ollamaWarmup, ollamaKickstart,
+  handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, warmModel, ollamaKickstart,
 };
