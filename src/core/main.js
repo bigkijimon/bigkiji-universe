@@ -20,6 +20,7 @@ process.env.BIGKIJI_DATA_ROOT = PATHS.dataRoot;
 if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PATHS.knowledgeRoot;
 const dataRootModule = require('./data-root');
 const { WorkspaceRegistry, candidates: candidateWorkspaces, DEFAULT_EXCLUDE: WORKSPACE_DEFAULT_EXCLUDE } = require('./workspace-registry');
+const { drainTouchQueue } = require('./watch-queue');
 const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
 // Do not materialise the default data root while the first-run wizard may still send
 // the owner somewhere else — an abandoned empty ~/BigKijiUniverse would be confusing.
@@ -299,14 +300,17 @@ function startVaultWatch() {
   if (vaultWatchFlush) return;
   vaultWatchFlush = setInterval(() => {
     if (!touchQueue.size) return;
-    const byRoot = new Map();
-    let budget = 6;
-    for (const [key, names] of touchQueue) {
-      if (budget <= 0) break;
-      const taken = [...names].slice(0, budget);
-      if (taken.length) { byRoot.set(key, taken); budget -= taken.length; }
+    const drained = drainTouchQueue(touchQueue);
+    if (drained.mode === 'idle') return;
+    // Too much changed to track file by file — a branch switch, a build, a bulk rename.
+    // Draining that six at a time would take minutes, so say so and rescan rather than
+    // let the incremental path look like it is keeping up.
+    if (drained.mode === 'rescan') {
+      bus.push({ source: 'system', type: 'fs', text: `✎ ${drained.backlog} files changed at once — rescanning instead of tracking each` });
+      scanVaultFiles().catch((error) => bus.push({ source: 'system', type: 'degrade', text: `Vault rescan failed: ${error.message}` }));
+      return;
     }
-    touchQueue.clear();
+    const byRoot = drained.byRoot;
     const roots = new Map(scanRoots().map((root) => [root.path, root]));
     const shown = [];
     for (const [key, paths] of byRoot) {
