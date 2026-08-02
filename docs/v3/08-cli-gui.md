@@ -35,7 +35,7 @@ on 2026-08-02 with Read/grep. Targets are `not measured` unless a measurement so
 ### 1.3 Bottom pane and view controls (main window)
 
 - Pane tabs: NEURAL / MISSION RELAY / SESSIONS / pinned BIGKIJI SESSION / cmux surface tabs /
-  add-terminal / PREVIEW / task-stream tabs (`main.html:737-744`).
+  add-terminal / PREVIEW / task-stream tabs (`main.html:737-745`).
 - Pane bodies: `#terminal`, `#liveRelay`, `#taskPanel`, `#previewPane`, `#taskStreams`
   (`main.html:775-782`).
 - 3D view distance chips: SYSTEM / FILES / CLOSE / AUTO (`main.html:700-704`).
@@ -51,7 +51,7 @@ is four independent axes:
 | CLI interaction mode | `plan` / `ask` / `auto-edit` (with `auto`, `manual`, `shell` normalized to `auto-edit`) | `cli-theme.js:14-25` (`MODE_COLORS`, `normalizeMode`) |
 | Execution mode | `plan` / `auto` / `manual` | `settings-store.js:48`, validated at `:190` |
 | Render priority | `auto` / `performance` / `graphics` | `settings-store.js:86`, validated at `:212-213` |
-| Bottom pane | NEURAL / TERMINAL / PREVIEW (+ relay/sessions/streams) | `main.html:737-744,775-782` |
+| Bottom pane | NEURAL / TERMINAL / PREVIEW (+ relay/sessions/streams) | `main.html:737-745,775-782` |
 
 Each CLI mode carries its own color identity (`MODE_COLORS`, `cli-theme.js:14-18`), so mode is
 already a *visible* state, not a hidden flag.
@@ -107,10 +107,10 @@ current store location.
   argv-only execution via `execFile` — never a shell (`:22-27`), and macOS-gating
   (`supported: process.platform === 'darwin'`, `:39`; polling refuses off-darwin, `:57`).
   UI: the "CMUX CONTROL PLANE" settings page (`settings-modal.js:272`) and surface tabs in
-  the main window (`main.html:741`); screen mirroring via
+  the main window (`main.html:742`); screen mirroring via
   `src/domain/terminal/components/cmux-terminal-mirror.js`.
 - **The overlap is real**: cmux's own remote command group includes `ssh`, `ssh-tmux`, and
-  `ssh-session-*` (`cmux-bridge.js:17`) — i.e. cmux can drive the same remote-persistence
+  `ssh-session-*` (`cmux-bridge.js:18`) — i.e. cmux can drive the same remote-persistence
   scenario the tmux wrapper exists for.
 
 ### 4.2 Decision matrix (consolidation is an open owner decision)
@@ -130,18 +130,18 @@ Short term, keep both with **disjoint charters**: cmux = local multiplexing cont
 (GUI-integrated, macOS); `bigkiji-tmux` = remote attach-survival for SSH clients. They do not
 conflict today because they operate on different sessions.
 
-Consolidation trigger: if cmux's `ssh-tmux` (`cmux-bridge.js:17`) is validated end-to-end for
+Consolidation trigger: if cmux's `ssh-tmux` (`cmux-bridge.js:18`) is validated end-to-end for
 the Termius workflow, the 6-line wrapper becomes redundant and can be retired; if cmux is
 ever dropped or a non-macOS host matters, tmux is the survivor. Decision inputs the owner
 needs before choosing: (a) a real test of `ssh-tmux` against the phone workflow, (b) cmux's
 long-term availability as an external dependency, (c) whether GUI surface tabs
-(`main.html:741`) are load-bearing for daily use. Track as V3 open item T-1.
+(`main.html:742`) are load-bearing for daily use. Track as V3 open item T-1.
 
 ## 5. CLI structure
 
 ```mermaid
 flowchart TB
-    subgraph CLI process
+    subgraph CP["CLI process"]
         E[bigkiji-cli.js entry<br/>KijiSpinner boot :33] --> TH[cli-theme.js<br/>PALETTE :7 / MODE_COLORS :14 / NO_COLOR :3]
         E --> PR[cli-preferences.js<br/>persisted mode]
         E --> R[renderer.js<br/>TUIRenderer :67 / StickyScreen :168]
@@ -149,13 +149,13 @@ flowchart TB
         R --> F[footer.js<br/>buildFooter :92 / footerHeightFor :143]
         F --> LF[loading-frames.js<br/>shared cat frames]
     end
-    subgraph Electron main
+    subgraph EM["Electron main"]
         PTY[main.js spawnShell<br/>node-pty :105 or pipe fallback :113-122]
     end
-    subgraph GUI renderer
+    subgraph GR["GUI renderer"]
         X[xterm.js + addon-fit<br/>main.html:825-826]
     end
-    PTY -- pty:data broadcast --> X
+    PTY -- pty data broadcast --> X
     E -. attach via tmux wrapper or cmux .- PTY
 ```
 
@@ -176,7 +176,7 @@ Structural rules V3 keeps (all grounded in measured behavior):
 
 ## 6. GUI terminal panes (V3 refinements)
 
-- The pinned BIGKIJI SESSION tab (`main.html:740`) remains non-closable — it is the operating
+- The pinned BIGKIJI SESSION tab (`main.html:741`) remains non-closable — it is the operating
   session, and closing it would orphan the pty broadcast.
 - Persona (§3) selects the *default* pane only; it never closes panes the user opened
   (endowment: what the user built stays theirs).

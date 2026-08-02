@@ -38,9 +38,9 @@ All of it lives in the renderer, in `src/domain/3d-canvas/components/synapse.js`
 | Mechanism | Behavior (measured) | Source |
 |---|---|---|
 | `perfStage` | quality tier 0..2 | `synapse.js:1134` |
-| FPS tuner | 3 consecutive 1 s samples < 28 fps → stage++, > 45 fps → stage--, ceiling 2 | `synapse.js:2044-2047` |
-| Priority pinning | `renderPriority: 'performance'` pins stage 2; anything else resets to 0 | `synapse.js:2057-2060` |
-| Pixel ratio | cap 1.5 (performance) / 3 (otherwise); applied live | `synapse.js:77,2061` |
+| FPS tuner | 3 consecutive 1 s samples < 28 fps → stage++, > 45 fps → stage--, ceiling 2 | `synapse.js:2044-2045` |
+| Priority pinning | `renderPriority: 'performance'` pins stage 2; anything else resets to 0 | `synapse.js:2057-2058` |
+| Pixel ratio | cap 1.5 (performance) / 3 (otherwise); applied live | `synapse.js:77,2059` |
 | Antialias | follows priority, but only on next launch (cached in localStorage) | `synapse.js:70-76` |
 | Audio field budget | `POINT_BUDGETS = {auto:14000, performance:3200, graphics:26000}` | `audio-wave-field.js:31` |
 
@@ -61,7 +61,7 @@ the app use "15% of the GPU." Therefore:
   num_gpu 8, jobs serialized") — never as a percent.
 
 This continues the codebase's existing stance (`settings-modal.js:174`,
-`tool-registry.js:268-269`): BigKiji does not claim control it does not have.
+`tool-registry.js:267-269`): BigKiji does not claim control it does not have.
 
 ## 4. Architecture
 
@@ -81,7 +81,7 @@ flowchart TB
 `GpuScheduler` is a small main-process module. It owns no policy UI; it translates the preset
 into knob values, pushes them, and records what it pushed (for the honest status line, §8).
 Preset changes apply live, following the existing pattern where `applyAppearanceSettings`
-re-tunes the renderer without a restart (`synapse.js:2051-2062`) — with the one measured
+re-tunes the renderer without a restart (`synapse.js:2050-2060`) — with the one measured
 exception that antialias only changes on next launch (`synapse.js:70-71`).
 
 ## 5. Knob 1 — render budget (extends what exists)
@@ -104,7 +104,7 @@ Notes:
 - Balanced is deliberately identical to today's `'auto'` defaults
   (`settings-store.js:86`, `audio-wave-field.js:31`) — the preset system must not change
   behavior for users who never open it (smart default = current behavior).
-- The tuner's thresholds (28/45 fps, `synapse.js:2046-2047`) are not preset-dependent; only
+- The tuner's thresholds (28/45 fps, `synapse.js:2044-2045`) are not preset-dependent; only
   its allowed stage range is.
 
 ## 6. Knob 2 — local LLM GPU layers (new plumbing)
@@ -147,7 +147,7 @@ V3 behavior:
 - When BigKiji itself launches a GPU-heavy external job, `GpuScheduler` wraps the command:
   `<gpu-signal.sh> run bigkiji-<job> "<cmd>"` — using the path resolved by the existing
   registry entry (settings key `tools.gpuSignal`, env `BIGKIJI_GPU_SIGNAL`,
-  `tool-registry.js:261-266`).
+  `tool-registry.js:260-266`).
 - If the script is absent, behavior is **unchanged**: no serialization, and the UI keeps
   saying exactly that (`settings-modal.js:174`). Absence is not an error.
 - Preset interaction: on Eco and Maximum, serialization is required when available (Eco to
@@ -155,13 +155,13 @@ V3 behavior:
   used when available, skipped silently when not.
 - The scheduler may call `status` for display, but must never call `run` as a probe —
   preserving the measured invariant that detection has no side effects
-  (`tool-registry.js:268-269`).
+  (`tool-registry.js:267-269`).
 
 ## 8. Telemetry and honest status
 
 - The status surface shows: preset name, the concrete knob values last applied, current
   `perfStage`, and the last FPS sample from the renderer's existing 1 s sampler
-  (`synapse.js:2040-2047`) forwarded over IPC. FPS is the only *measured* number we have;
+  (`synapse.js:2042-2047`) forwarded over IPC. FPS is the only *measured* number we have;
   it is labeled as renderer FPS, not "GPU %".
 - A real GPU-utilization number can only come from a native sensor. That belongs to the
   SwiftUI helper `.app` (owner's hybrid decision): the helper may read IOKit/Metal
@@ -195,7 +195,7 @@ GPU" advisory — the Electron side must remain correct when the helper is absen
 1. Balanced preset produces byte-identical Ollama request bodies and identical renderer
    settings to a build without the scheduler (regression-diff test).
 2. Eco on a busy machine: canvas holds its paced target without tuner oscillation
-   (verified by logging `perfStage` transitions, `synapse.js:2044-2047`).
+   (verified by logging `perfStage` transitions, `synapse.js:2044-2045`).
 3. With gpu-signal.sh present, two BigKiji-launched generation jobs never overlap
    (observed via the script's own queue/status output).
 4. No UI string ever renders a GPU percentage unless helper telemetry supplied it.

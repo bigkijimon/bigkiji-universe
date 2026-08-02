@@ -39,14 +39,37 @@ Ollama loads the weights and the call returns the measured duration; residency w
 confirmed with `ollama ps`, isolating model-load time from generation time. Cold =
 model not resident; warm = confirmed resident.
 
-| Model | Cold (not resident) | Warm (resident) | Saved |
-|---|---|---|---|
-| `qwen2.5:0.5b` | 723 ms | 139 ms | 584 ms |
-| `qwen3.5:latest` | 4160 ms | 260 ms | 3900 ms |
+| Model | Not resident | Resident |
+|---|---|---|
+| `qwen2.5:0.5b` | 723 ms | 139 ms |
+| `qwen3.5:latest` | 4160 ms | 260 ms |
 
-These are **single-run measurements on one machine**, sufficient to prove that model
-residency dominates local response setup time and that warm-up is worth doing —
-not sufficient to characterize a distribution.
+**This pair does not describe the conversation path.** Neither side sent `num_ctx`, so
+it measures the raw cost of loading weights and nothing more. Ollama keys a loaded
+instance on its runtime options, which produced a second measurement worth more than
+the first — on `qwen3.5:latest`, timing a load probe that always used `num_ctx: 4096`:
+
+| Warmup performed | Next `num_ctx: 4096` request |
+|---|---|
+| without `options` | 3450 ms — full reload; the warmup accomplished nothing |
+| with `options: { num_ctx: 4096 }` | 254 ms — genuinely resident |
+
+The first version of the warmup shipped without passing `num_ctx` and therefore warmed
+an instance the conversation never used, while still reporting success. It was
+corrected the same day.
+
+End to end on the model the app actually runs (`qwen2.5:0.5b`, `num_ctx: 4096`), cold
+versus warmed with matching options:
+
+| | TTFT | Total turn |
+|---|---|---|
+| Cold | 799 ms | 1016 ms |
+| Warm | 189 ms | 503 ms |
+
+All of the above are **single runs on one machine**. They are sufficient to show that
+residency dominates local setup time, that a warmup must request the options the turn
+will use, and that warming is worth doing. They are not sufficient to characterize a
+distribution, and none of them should be quoted as a benchmark.
 
 ## 3. What is estimated, not measured
 
@@ -138,8 +161,8 @@ Rules for this table going forward:
 2. **Percentile reporting**: a small aggregator over the journal producing p50/p95/max
    per metric per day. No new dependencies required.
 3. **Warm/cold labeling**: every local-model timing carries residency state (via
-   `ollama ps` or the `keep_alive` bookkeeping) — §2 shows the two regimes differ by
-   5-15×, so unlabeled aggregates would be meaningless.
+   `ollama ps` or the `keep_alive` bookkeeping) — in §2's two samples the regimes
+   differ by roughly 5× and 16×, so unlabeled aggregates would be meaningless.
 4. **Actual-token capture watch**: alert when a provider run parses zero usage tokens
    (`captureUsage` found nothing), so the T5 denominator gap is visible instead of
    silent.

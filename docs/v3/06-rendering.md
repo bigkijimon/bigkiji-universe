@@ -186,7 +186,7 @@ stateDiagram-v2
   transition follows the same pattern: **opacity crossfade, no camera flight, no core
   cinematic** when reduced motion is set.
 - Never start any element from `scale(0)`; the sequence already spawns rings at scale 0.08
-  and the core at 0.025 (`synapse.js:687,722`) — keep that convention (appear small, not
+  and the core at 0.025 (`synapse.js:688,723`) — keep that convention (appear small, not
   from nothing).
 - OrbitControls damping stays off (`synapse.js:100`) — input stops mean motion stops.
 
@@ -198,8 +198,8 @@ The Core Energy production is **the shipped 7-phase machine**; V3 changes only w
 |---|---|---|
 | Phases and order | as in §4.3, unchanged | `synapse.js:667-670` |
 | Durations | `SEQ` values, unchanged | `synapse.js:671` |
-| Pull/absorb coupling | `coreSeq.pull` drags file clouds inward, `coreSeq.absorb` dims leaves during infall | `synapse.js:676-678` |
-| Ring morph trigger | `progress >= 70` | `synapse.js:669` |
+| Pull/absorb coupling | `coreSeq.pull` drags file clouds inward, `coreSeq.absorb` dims leaves during infall | `synapse.js:676-677` |
+| Ring morph trigger | `progress >= 70` enters `ringmorph` | `synapse.js:817` |
 | Energy source (V3) | relationship strength = accumulated real events + measured tokens, already computed by `relStrength()` | `synapse.js:1135-1136` |
 
 V3 rule of honesty: core brightness/inflow rate must be derived from **real activity**
@@ -247,14 +247,14 @@ The swap line is a **scene-state contract**, not a code boundary:
 
 ```mermaid
 flowchart LR
-    subgraph Electron main
+    subgraph EM["Electron main"]
         V[Vault scanner and event feed]
         S[Scene state snapshot JSON<br/>nodes, edges, relStrength, phase]
     end
-    subgraph Renderer today
+    subgraph RT["Renderer today"]
         T[Three.js Synapse Canvas<br/>src/domain/3d-canvas]
     end
-    subgraph Possible future
+    subgraph PF["Possible future"]
         R[Native Swift host<br/>RealityKit or Metal]
     end
     V --> S
@@ -315,7 +315,7 @@ All are **targets**, `not measured` until profiled on the owner's hardware:
 1. 2D ⇄ 3D switch: control acknowledgment < 300 ms; full transition ≤ 1.0 s (2D→3D without
    core sequence) / ≤ 3.5 s (with core sequence, bounded by `SEQ` sums); 3D→2D ≤ 0.7 s.
 2. Steady-state frame rate: the existing tuner's own thresholds are the contract — no state
-   may hold `perfStage 0` while sustaining < 28 fps (`synapse.js:2046`).
+   may hold `perfStage 0` while sustaining < 28 fps (`synapse.js:2044`).
 3. Reduced motion: no camera flight, no cinematic, crossfade only; verified by toggling the
    OS setting, not by code review.
 4. GPGPU relaxation (§3.3) ships default-off until its frame cost is measured.

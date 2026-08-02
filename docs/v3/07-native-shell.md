@@ -91,8 +91,8 @@ Therefore:
 
 1. Electron exports a **machine-readable schema** derived from `DEFAULTS` (group, key,
    type, range/enum, label key). This export is new work but small, because `DEFAULTS`
-   is already the single normalization point (`settings-store.js:141-155` rebuilds
-   malformed groups from `DEFAULTS`).
+   is already the single normalization point (e.g. `settings-store.js:141-155` rebuilds
+   a malformed `paths` group from `DEFAULTS`).
 2. The SwiftUI helper **renders the schema generically** — it never hard-codes a
    setting. A new setting added to `DEFAULTS` appears in both UIs with no Swift change.
 3. Writes flow one way: helper → IPC `settings.set {group, key, value}` → Electron

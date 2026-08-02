@@ -225,7 +225,8 @@ exact call by name.
 
 ## 7. Daemon and IPC surface (`src/domain/server/daemon.js`, `src/core/main.js`)
 
-- The HTTP daemon dispatches on `url.pathname` at 38 sites (grep-verified). Auth:
+- The HTTP daemon references `url.pathname` at 38 sites (grep-verified), routing by
+  exact pathname match. Auth:
   Bearer / `?t=` / cookie `bk_t` must equal the master token (`daemon.js:454`), or a
   paired device cookie `bk_mobile` (`:455`); everything else falls through a common
   401 gate (`daemon.js:471`).

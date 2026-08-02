@@ -43,12 +43,25 @@ but never called, so every first turn after launch paid the full cold load
   model (`model-router.js:51`).
 
 So the code's own measurement says the model that actually serves conversation is not
-good enough, and the better default is dead configuration. **V3 resolution:** saved
-settings must be migrated (or the settings default changed) so the resident
-conversation model is the one the quality measurement endorses; the tier table
-(`model-router.js:50-54`) and the settings store must not be allowed to disagree
-silently. Until that migration runs, this spec treats "which model is resident" as an
-open item, not a settled fact.
+good enough, and the better default is dead configuration.
+
+**The obvious resolution — migrate the saved setting to `qwen3.5:latest` — was tested
+on 2026-08-02 and does not work.** That model is a reasoning model: it streams
+`thinking` content with an empty `response` field, and with `num_predict: 650`
+(`conversation-engine.js:128`) it spends the whole budget deliberating and never emits
+the answer. Every turn came back `degraded: true` with
+`Local conversation model returned invalid JSON`. Switching the setting today would
+not improve conversation quality; it would remove conversation.
+
+**V3 resolution, restated:** the resident conversation model must be chosen by
+measuring candidates against this path, not by trusting either default. Whatever is
+chosen, the tier table (`model-router.js:50-54`) and the settings store must stop being
+able to disagree silently — one source of truth, not two. Concretely the choice needs a
+model that (a) answers without a reasoning preamble, or (b) is given a `num_predict`
+budget that accounts for thinking tokens and a parser that ignores them. Until that
+work is done, `qwen2.5:0.5b` remains resident *because it is the only configuration
+verified to answer at all*, and its quality limitation stands as a known defect rather
+than a settled choice.
 
 ## 2. Definitions
 
@@ -62,25 +75,61 @@ open item, not a settled fact.
 
 ## 3. Warm Start — measured results
 
-Measured 2026-08-02 via `warmModel()`; method: load time isolated from generation,
-residency confirmed with `ollama ps` before the warm measurement.
+All figures below were measured on 2026-08-02 on the development Mac. They are single
+runs, not averaged: treat them as evidence that an effect exists and roughly how large
+it is, not as a benchmark.
 
-| Model | Cold (not resident) | Warm (resident) | Saving |
-|---|---|---|---|
-| `qwen2.5:0.5b` | 723 ms | 139 ms | 584 ms |
-| `qwen3.5:latest` | 4160 ms | 260 ms | 3900 ms |
+### 3.1 A warmup must request the options the turn will use
+
+Ollama keys a loaded instance on its runtime options. Warming a model without the
+`num_ctx` the conversation will ask for loads one instance, and the first real request
+unloads it and loads another. The warmup reports success either way, so this failure is
+invisible from the outside.
+
+Measured on `qwen3.5:latest`, timing a second load probe that always used
+`num_ctx: 4096`:
+
+| Warmup performed | Next `num_ctx: 4096` request |
+|---|---|
+| without `options` | 3450 ms — full reload, warmup wasted |
+| with `options: { num_ctx: 4096 }` | 254 ms — genuinely resident |
+
+`warmConversation()` therefore passes `this.conversation.maxContextTokens` and keys its
+dedupe on `model::num_ctx`, not on the model alone (`daemon.js`).
+
+### 3.2 End-to-end effect on the configured model
+
+`qwen2.5:0.5b` with `num_ctx: 4096` — the model the app actually runs, since settings
+override the engine default at startup (see §6). Cold means evicted with `keep_alive: 0`;
+warm means `warmModel()` with matching options immediately beforehand.
+
+| | TTFT | Total turn |
+|---|---|---|
+| Cold | 799 ms | 1016 ms |
+| Warm | 189 ms | 503 ms |
+
+### 3.3 Load time in isolation
+
+Measured separately, with residency confirmed by `ollama ps` between runs and **no
+`num_ctx` on either side** — an internally consistent pair that does not describe the
+conversation path, and is recorded only to show the raw cost of loading weights:
+
+| Model | Not resident | Resident |
+|---|---|---|
+| `qwen2.5:0.5b` | 723 ms | 139 ms |
+| `qwen3.5:latest` | 4160 ms | 260 ms |
 
 Interpretation, tied to code:
 
-- `ConversationEngine.turn()` aborts at `timeoutMs = 8000`
-  (`conversation-engine.js:80,:122`) and falls back to the deterministic reply with
-  `degraded:true` (`:132-134`). A 4160 ms cold load consumes half that budget before
-  generation begins — so a cold heavy model risks not "slow" but **wrong-path**
-  answers. This is why warmup is a correctness feature, not a comfort feature
-  (also recorded at `daemon.js:317-325` and `model-router.js:135-138`).
-- Warmup is fire-and-forget and deduplicated per model (`daemon.js:328`,
-  `warmedModel`/`warming` guards), so repeated `configureConversation` calls do not
-  stack requests.
+- `ConversationEngine.turn()` treats `timeoutMs = 8000` as a **stall** deadline — the
+  longest silence tolerated between chunks — with `maxTurnMs` as a hard ceiling. Before
+  streaming it was the budget for the whole turn, so a model that was generating
+  correctly but slowly lost everything it had produced and the owner received the
+  deterministic fallback with `degraded:true` for a turn that had not failed.
+- Warmup is fire-and-forget and deduplicated per `model::num_ctx`
+  (`warmedModel`/`warming` guards), so repeated `configureConversation` calls do not
+  stack requests. A failed warmup is published, not retried: the next turn loads the
+  model anyway.
 
 ## 4. Hidden Warmup Prompt — contract
 
@@ -107,19 +156,22 @@ T3  full JSON body parsed                    (conversation-engine.js:129-130)
 T4  reply rendered (onDelta → UI)            (conversation-engine.js:138)
 ```
 
-**Current fact: all four HTTP Ollama call sites use `stream:false` with
+**Before 2026-08-02, all four HTTP Ollama call sites used `stream:false` with
 `format:'json'`:**
 
-- `conversation-engine.js:127` (conversation turns)
-- `fast-api-router.js:37` (facilitator)
-- `task-cache.js:67-68` (swarm lenses)
-- `local-qwen-guardrails.js:40` (reset probe)
+- `conversation-engine.js` (conversation turns) — **now streaming, see §5.1**
+- `fast-api-router.js:37` (facilitator) — still `stream:false`
+- `task-cache.js:67-68` (swarm lenses) — still `stream:false`
+- `local-qwen-guardrails.js:40` (reset probe) — still `stream:false`
 
-The process waits for the complete JSON object; **the event "first token" never
-occurs in this app.** Consistently, grep for `ttft` / `firstToken` over `src/`
-returns 0 hits (verified 2026-08-02). Any "TTFT" figure quoted for the current build
-would be fiction — the only honest latency today is TTFA: `latencyMs = T3-ish − T0`
-recorded per turn at `conversation-engine.js:139`.
+Each of those three consumes a complete JSON object and has no owner-visible latency,
+so streaming would buy instrumentation nobody reads. They stay as they are, and this is
+a decision rather than an oversight.
+
+Until the conversation path was changed, the process waited for the complete JSON
+object and **the event "first token" never occurred in this app** — grep for `ttft` /
+`firstToken` over `src/` returned 0 hits. Any TTFT figure quoted for a build before
+that date would be fiction.
 
 ### 5.1 V3 position on streaming
 
@@ -135,11 +187,23 @@ not renderable as-is. Options considered:
 3. Split the response into a streamed `reply` and a second structured call — rejected:
    doubles model calls on a machine where the GPU is a contended resource.
 
-**V3 adopts option 2 for the conversation path only**, strictly as instrumentation:
-TTFT becomes measurable (T2 − T0), rendering behavior is unchanged, and the 8000 ms
-abort can distinguish "model loading/thinking" (no bytes yet) from "model rambling"
-(bytes flowing). Expected TTFT values: `not measured` — measurement is the point of
-the change.
+**V3 adopted option 2 for the conversation path only, and it is implemented**
+(2026-08-02). Rendering behavior is unchanged — `onDelta` still fires once with the
+finished reply, so no consumer of the daemon's `pi` delta channel had to change. What
+changed is what the app can see and what a deadline is allowed to mean:
+
+- `ttftMs` is recorded per turn and is **`null`, never `0`, when nothing was streamed**
+  (a fallback answer, or a body delivered in one piece). Zero would assert an instant
+  first token that never happened.
+- `timeoutMs` is now the **stall** deadline — the longest silence tolerated between
+  chunks — with `maxTurnMs` as a hard ceiling. Previously it bounded the whole turn, so
+  a model generating correctly but slowly lost every token it had produced.
+- **Any chunk counts as a sign of life, including reasoning tokens.** A model streaming
+  `thinking` with an empty `response` is working, not silent; counting only answer
+  tokens would abort exactly the models that take the longest to start answering.
+
+Measured on `qwen2.5:0.5b` at `num_ctx: 4096` (see §3.2): TTFT 799 ms cold, 189 ms
+warm. Single runs on one machine, not a benchmark.
 
 ## 6. Progressive Boot — synchronize, do not invent
 
