@@ -190,7 +190,13 @@ Docker Desktop actually do:
 (`workspace:state|register|remove|update|choose`, broadcasting `workspace:changed`), surfaced in
 `src/core/preload.js` (`workspaceState`, `workspaceRegister`, `workspaceChoose`, `onWorkspaceChanged`) and
 rendered by `src/components/UI/settings-modal.js`. `workspaceState()` proposes candidates from
-`~/Documents` and `~`, minus anything already registered. See §8 item 1 for what is still not connected.
+`~/Documents` and `~`, minus anything already registered.
+
+Registration is what grants access. `scanRoots()` in `src/core/main.js` returns the registered
+roots — falling back to the single vault root when none are registered, so behaviour is unchanged
+until the owner registers something — and the file map, the fs watchers (one per root), `file:detail`
+and `reveal` all resolve through it. Excluded subfolders and sensitive paths are refused even inside
+a registered root.
 
 ---
 
@@ -473,51 +479,40 @@ one-shot harnesses in the same file.
 
 ## 8. Open questions / suspected dead code
 
-1. **`WorkspaceRegistry` gates nothing yet.** Registration is fully wired — `main.js` IPC,
-   `preload.js` bindings, and a card in `src/components/UI/settings-modal.js` — but `allows()`, documented
-   as "the single gate", is called by nothing in `src/` (only `tools/workspace-registry-selftest.js`).
-   Every actual read path still uses the single `PATHS.vaultRoot` (`scanVaultFiles`, `startVaultWatch`,
-   `file:detail`, `reveal`, `SandboxPolicyResolver`, `ContextPruner`) and the daemon still uses
-   `BIGKIJI_WORKSPACE || process.cwd()`. Adding a workspace therefore currently changes nothing about what
-   BigKiji reads, while the settings copy tells the owner "adding one is what grants access".
+This section was written as a review of the tree and then acted on. What remains is what
+is still true.
 
-2. **`findPendingManifest()` (`src/core/data-migrator.js:267`) is exported but never called.** Its comment
-   says "a pending manifest at launch means the previous run died mid-flight", yet no launch path checks
-   for one, so an interrupted migration is never detected or offered for rollback.
+### Still open
 
-3. **Likely bug — `src/domain/server/daemon.js:159`.** The inventory timer's catch handler calls
-   `engine.publish(...)` from inside the `DaemonEngine` constructor. `engine` is a parameter of
-   `startDaemon()`, not visible in class scope, so a failing `refreshInventory()` raises `ReferenceError`
-   inside a timer instead of publishing the error. Should be `this.publish(...)`.
+1. **The research broker has no fetch path.** `ResearchBroker` sanitises a query and
+   records it in the disclosure manifest under `externalTools`, so the owner approves the
+   exact string that would leave the machine — but nothing in this tree performs the
+   approved search, and nothing outside `tools/security-selftest.js` populates
+   `task.metadata.research`. The lane is declaration-only by design for now: the gate
+   exists before the traffic does, rather than the other way round.
 
-4. **Likely bug — `src/domain/server/daemon-client.js:128`.** The WebSocket `close` handler does
-   `this.connect().catch(…)`, but `connect()` returns `undefined`, so this throws `TypeError` inside a
-   `setTimeout` (unhandled in the Electron main process). It is also a no-op by construction: `connect()`
-   returns early while `this.controller` is still set, which it is on an unsolicited close. Net effect:
-   **the daemon event stream appears never to auto-reconnect.**
+2. **Token savings are estimated, not measured.** `ContextPruner` reports
+   `measurement: 'estimated'` from a character-class heuristic. `captureUsage()` upgrades
+   `prunedContextTokens` to `'actual'` from provider-reported input tokens, but only for
+   runs that actually execute. No benchmark exists in the repo, so no reduction ratio
+   should be quoted anywhere.
 
-5. **The research broker has no fetch path.** `ResearchBroker` only sanitises and records queries into the
-   manifest; nothing in this tree performs the approved search, and nothing outside
-   `tools/security-selftest.js` populates `task.metadata.research`. The brokered-external-tool lane is
-   currently declaration-only.
+3. **`src/domain/i18n/`** (`index.js` plus `translations/{en,ja}.json`) is referenced by
+   nothing in `src/`. It appears to be a leftover of a directory move. It is excluded from
+   nothing, so it ships.
 
-6. **`maxAgents` can silently drop the strict-mode checker.** `_planExecution()` slices in blueprint order
-   (facilitator, leader, ui, debug, context). With the default `maxAgents: 3` and a prompt selecting
-   facilitator + leader + ui + debug, `debug` — added unconditionally by `qualityGate: 'strict'` — is the
-   one cut. Whether that priority is intentional is not stated.
+4. **`tools/bigkiji-cli.js`** is a 7-line shim into `src/domain/terminal/bigkiji-cli.js`.
+   Not dead, but the duplicate name is easy to misread.
 
-7. **Provider availability is never consulted when choosing.** `ModelCapabilityRegistry.choose()` scores on
-   priors/performance only, so a provider with no configured secret is still selectable; the failure
-   surfaces later as a spawn failure and a repair cycle. `fastRouter.detect()` does return availability but
-   hardcodes every paid provider to `false` and is used only for HUD display.
+### Closed since this review was written
 
-8. **`TaskRunner.approve()` accepts a `failed` task** (`status !== 'awaiting_approval' && !== 'failed'`)
-   while still requiring the *original* `disclosureHash`. `prepareContext()` is not re-run on that path, so
-   `start()` will reject it whenever files or policy have moved on. Whether re-approving a failed task
-   without `retry()` is meant to work is unclear.
-
-9. **Housekeeping.** `tools/bigkiji-cli.js` is a 7-line shim into `src/domain/terminal/bigkiji-cli.js` —
-   not dead, but the duplicate name is easy to misread. `app/src/domain/i18n/` is an empty directory tree
-   next to the real `src/`, apparently a leftover of a move. `src/components/UI/assets/` still holds
-   `accretion.png.bak-20260802-1024` and `.bak-v10`; `package.json` `build.files` is `**/*` minus `.env`,
-   `recordings/` and `graphify-out/`, so those backups ship in the installer.
+| # | Was | Now |
+|---|---|---|
+| 1 | `WorkspaceRegistry.allows()` was called by nothing; every read path used the single `PATHS.vaultRoot` while the Settings copy claimed registration granted access | The file map, the fs watchers, `file:detail` and `reveal` all resolve through the registry (`main.js` `scanRoots` / `resolveWorkspaceFile`) |
+| 2 | `findPendingManifest()` exported, never called — an interrupted migration was invisible | `setup:state` reports it and `setup:rollback` undoes it; the wizard shows both |
+| 3 | `daemon.js` inventory-failure handler called `engine.publish` from class scope → `ReferenceError` | `this.publish` |
+| 4 | Daemon client never reconnected, and threw a `TypeError` in a timer while not doing it | Reconnects, with `closed` as explicit state so a retry in flight cannot undo `disconnect()` |
+| 5 | `maxAgents` cut roles in declaration order, dropping the strict-mode checker first | `ROLE_PRIORITY` keeps the checker; declaration order is still used for emission |
+| 6 | Provider availability was never consulted; a provider with no credential won its role and died at spawn | `CoreExecutionCoordinator` takes an `available` predicate; the daemon supplies it from its secret map |
+| 7 | `TaskRunner.approve()` accepted a `failed` task whose manifest was already stale | Refused with a message naming the fix (`retry` first) |
+| 8 | Backup textures and `fixtures/` shipped in the installer via `**/*` | Excluded in `build.files` |
