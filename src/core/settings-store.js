@@ -50,6 +50,9 @@ const DEFAULTS = Object.freeze({
     activationMode: 'on-demand',
     allSpecialists: false,
     sessionLeader: 'auto',
+    // How many independent lenses discuss the approach before work starts.
+    // 0 or 1 disables it — one lens is not a discussion.
+    deliberationLenses: 2,
   },
   conversation: {
     model: 'qwen2.5:0.5b',
@@ -186,6 +189,7 @@ class SettingsStore {
     next.routing.localDefault = 'qwen';
     next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
     next.routing.maxAgents = clamp(next.routing.maxAgents, 1, 5, 3);
+    next.routing.deliberationLenses = clamp(next.routing.deliberationLenses, 0, 3, 2);
     next.routing.activationMode = 'on-demand';
     next.routing.allSpecialists = false;
     next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)

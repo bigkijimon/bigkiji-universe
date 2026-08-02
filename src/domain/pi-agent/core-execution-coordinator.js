@@ -6,6 +6,7 @@ const { ModelCapabilityRegistry } = require('./model-capability-registry');
 const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
 const { SkillRegistry } = require('./skill-registry');
 const { resolveModel } = require('./model-router');
+const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
   { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'gemini', title: 'Requirements and acceptance trace', write: false },
@@ -43,7 +44,7 @@ function publicRun(run) {
 
 class CoreExecutionCoordinator extends EventEmitter {
   constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry(),
-    skills = new SkillRegistry() } = {}) {
+    skills = new SkillRegistry(), memory = new deliberate.DeliberationMemory({ root: knowledge.ROOT }) } = {}) {
     super();
     if (!taskRunner) throw new Error('CoreExecutionCoordinator requires TaskRunner');
     this.taskRunner = taskRunner;
@@ -57,6 +58,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     this.settingsProvider = settingsProvider;
     this.preview = preview;
     this.registry = registry;
+    this.memory = memory;
     this.runs = new Map();
     this.taskToRun = new Map();
     taskRunner.on('task', (task) => this._ingestTask(task));
@@ -82,16 +84,65 @@ class CoreExecutionCoordinator extends EventEmitter {
       quality: { gate: settings.quality?.gate || 'strict', makerCheckerSeparated: true, checks: [] },
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    const maxAgents = Math.max(1, Math.min(5, Number(routing.maxAgents || 3)));
-    const selectedRoles = selectRoles(text, { ...routing, qualityGate: settings.quality?.gate, facilitationComplete: !!promptSpec });
-    const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, maxAgents).map((item) => {
+    run.maxAgents = Math.max(1, Math.min(5, Number(routing.maxAgents || 3)));
+    run.roleContext = { ...routing, qualityGate: settings.quality?.gate, facilitationComplete: !!promptSpec };
+    run.explicitPlanHash = planHash || null;
+    this.runs.set(run.id, run);
+
+    // Think before spending. A recalled plan skips the discussion entirely, which is
+    // the owner's deduplication rule applied before any money moves rather than after.
+    const lenses = Math.max(0, Math.min(deliberate.LENSES.length, Number(routing.deliberationLenses ?? 2)));
+    const recalled = lenses >= 2 ? this.memory.lookup(text) : null;
+    if (recalled) run.deliberation = recalled;
+    if (!recalled && deliberate.needed(text, { lenses })) this._planDeliberation(run, lenses);
+    else this._planExecution(run);
+
+    this._emit(run, 'planned');
+    knowledge.recordEvent(run.id, { type: 'run-planned', status: run.status, provider: run.leader,
+      evidence: `${run.stage}: ${run.assignments.length} assignments${recalled ? ` · plan recalled (${recalled.similarity} similar)` : ''}` });
+    return publicRun(run);
+  }
+
+  // Independent proposals, read-only, one provider each. They are approved like any
+  // other work: a discussion still costs tokens, so it does not happen behind the
+  // owner's back.
+  _planDeliberation(run, lenses) {
+    run.stage = 'deliberation';
+    const used = new Set();
+    const chosen = deliberate.LENSES.slice(0, lenses).map((lens) => {
+      const candidates = [lens.provider, ...(FALLBACKS[lens.provider] || [])].filter((item) => !used.has(item));
+      const provider = this.registry.choose(lens.role, candidates.length ? candidates : [lens.provider]) || lens.provider;
+      used.add(provider);
+      return { ...lens, provider, model: resolveModel(provider, `${run.prompt} ${lens.title}`, lens.role) };
+    });
+    run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, stage: 'deliberation',
+      lenses: chosen.map(({ id, provider, model }) => ({ id, provider, model })) }));
+    run.assignments = chosen.map((lens, index) => {
+      const task = this.taskRunner.plan({
+        id: `${run.id}-lens-${lens.id}`, provider: lens.provider, model: lens.model, cwd: run.cwd, planHash: run.planHash,
+        prompt: this._lensPrompt(run, lens),
+        metadata: { runId: run.id, role: lens.role, agent: `${lens.id}-lens`, title: lens.title, write: false, order: index, lens: lens.id },
+      });
+      this.taskToRun.set(task.id, run.id);
+      return { taskId: task.id, role: lens.role, agent: `${lens.id}-lens`, provider: lens.provider, model: lens.model,
+        title: lens.title, write: false, lens: lens.id, status: task.status, fallbackIndex: 0,
+        disclosureHash: task.disclosure?.disclosureHash || '' };
+    });
+    this._seal(run);
+  }
+
+  _planExecution(run) {
+    run.stage = 'execution';
+    const selectedRoles = selectRoles(run.prompt, run.roleContext);
+    const blueprint = ROLE_BLUEPRINT.filter((item) => selectedRoles.has(item.role)).slice(0, run.maxAgents).map((item) => {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
       const provider = this.registry.choose(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]) || item.provider;
       return { ...item, provider, model: resolveModel(provider, `${run.prompt} ${item.title}`, item.role) };
     });
-    run.planHash = planHash || knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
-      assignments: blueprint.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
+    run.planHash = (run.explicitPlanHash && run.revision === 1) ? run.explicitPlanHash
+      : knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, deliberation: run.deliberation?.steps || [],
+        assignments: blueprint.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
     run.assignments = blueprint.map((item, index) => {
       const task = this.taskRunner.plan({
         id: `${run.id}-${item.role}`,
@@ -106,14 +157,15 @@ class CoreExecutionCoordinator extends EventEmitter {
       return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, model: item.model, title: item.title,
         write: item.write, status: task.status, fallbackIndex: 0, disclosureHash: task.disclosure?.disclosureHash || '' };
     });
+    this._seal(run);
+  }
+
+  _seal(run) {
     run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
     run.disclosureHash = aggregateDisclosureHash(run.disclosures);
     // Owner policy is intentionally stronger than executionMode: every mutation-capable run waits here.
     run.status = run.assignments.some((item) => item.status === 'blocked') ? 'SECURITY_BLOCKED' : 'AWAITING_APPROVAL';
-    this.runs.set(run.id, run);
-    this._emit(run, 'planned');
-    knowledge.recordEvent(run.id, { type: 'run-planned', status: run.status, provider: run.leader, evidence: `${run.assignments.length} specialist assignments` });
-    return publicRun(run);
+    run.updatedAt = new Date().toISOString();
   }
 
   approve(id, expected = {}) {
@@ -146,12 +198,24 @@ class CoreExecutionCoordinator extends EventEmitter {
     this._emit(run, 'abort'); return publicRun(run);
   }
 
+  _lensPrompt(run, lens) {
+    let skillBrief = '';
+    try { skillBrief = this.skills.brief(`${run.prompt} ${lens.title}`); } catch (_) {}
+    return `BIGKIJI DELIBERATION ${run.id}\nOwner goal: ${run.prompt}\n` +
+      `You are the ${lens.id.toUpperCase()} lens. ${lens.instruction}\n` +
+      'This is read-only. Do not edit files, run builds, or start anything. Other lenses are answering the same question ' +
+      'independently and you cannot see them — do not hedge toward what you think they will say.\n' +
+      'Answer as a numbered list of 3-6 imperative steps, one line each, and nothing else.' +
+      (skillBrief ? `\n\n${skillBrief}\n` : '');
+  }
+
   _assignmentPrompt(run, item) {
     // Text only. This injects guidance, never filesystem access, so the sandbox
     // boundary is exactly what it was before the skill registry existed.
     let skillBrief = '';
     try { skillBrief = this.skills.brief(`${run.prompt} ${item.title}`); } catch (_) {}
-    const suffix = skillBrief ? `\n\n${skillBrief}\n` : '';
+    const plan = deliberate.brief(run.deliberation);
+    const suffix = `${plan ? `\n\n${plan}\n` : ''}${skillBrief ? `\n\n${skillBrief}\n` : ''}`;
     const shared = `BIGKIJI RUN ${run.id}\nOwner goal: ${run.prompt}\n` +
       `You are ${item.agent}, specialist role=${item.role}. ${item.title}.\n` +
       `PiAgent selected this assignment for this run. Work only inside the configured sandbox. Never expose secrets, publish, delete unrelated data, or change billing. Exit immediately after the assignment; do not remain resident.\n`;
@@ -186,6 +250,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     run.updatedAt = new Date().toISOString();
     const terminal = run.assignments.every((item) => ['completed', 'failed', 'blocked'].includes(item.status));
     if (!terminal) { this._emit(run, 'assignment'); return; }
+    if (run.stage === 'deliberation') { this._concludeDeliberation(run); return; }
     const failed = run.assignments.filter((item) => item.status !== 'completed');
     if (failed.length && run.repairCycle < run.maxRepairCycles) {
       run.status = 'REPAIRING'; run.repairCycle += 1; this._emit(run, 'repair');
@@ -210,6 +275,29 @@ class CoreExecutionCoordinator extends EventEmitter {
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
     this._emit(run, 'finish');
+  }
+
+  // Merge the proposals and move to the real work. A discussion that produced nothing
+  // usable degrades to executing without it — the owner asked for a better plan, not
+  // for a gate that can strand the task.
+  _concludeDeliberation(run) {
+    const proposals = run.assignments.map((assignment) => {
+      const task = this.taskRunner.get(assignment.taskId);
+      return task?.status === 'completed' && task.output ? { lens: assignment.lens, provider: assignment.provider, text: task.output } : null;
+    }).filter(Boolean);
+    const plan = deliberate.consolidate(proposals);
+    if (plan.steps.length) {
+      run.deliberation = { ...plan, source: 'live' };
+      this.memory.store(run.prompt, plan);
+    } else {
+      run.deliberation = null;
+      run.notes = [...(run.notes || []), `Deliberation returned no usable steps from ${run.assignments.length} lenses; proceeding without it.`];
+    }
+    run.revision += 1;
+    knowledge.recordEvent(run.id, { type: 'deliberated', status: run.status, provider: run.leader,
+      evidence: plan.steps.length ? `${plan.steps.length} merged steps from ${plan.lenses} lenses` : 'no usable proposals' });
+    this._planExecution(run);
+    this._emit(run, 'deliberated');
   }
 
   _fallback(run, assignment) {
