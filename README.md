@@ -77,10 +77,11 @@ SMOKE=1 npx electron .
 npm test
 ```
 
-`npm test` runs 28 steps in sequence: `check:imports` followed by all **27** `test:*`
-scripts (`test:architecture`, `test:security`, `test:context`, `test:pi-core`, `test:daemon`,
-`test:workspaces`, `test:tools`, `test:ui-3d`, `test:cli-render`, … — see the `scripts` block
-of `package.json`). Every declared `test:*` script is reachable from `npm test`; none are
+`npm test` runs 30 steps in sequence: `check:imports` followed by all **29** `test:*`
+scripts (`test:architecture`, `test:security`, `test:routing`, `test:deliberation`,
+`test:assets`, `test:context`, `test:pi-core`, `test:daemon`, `test:workspaces`,
+`test:tools`, `test:ui-3d`, `test:cli-render`, … — see the `scripts` block of
+`package.json`). Every declared `test:*` script is reachable from `npm test`; none are
 orphaned. Individual suites can be run directly, e.g. `npm run test:security`.
 
 CI (`.github/workflows/ci.yml`) runs `npm ci && npm test` on macOS, Windows and Ubuntu, and
@@ -335,6 +336,19 @@ REPL commands: `/help`, `/status`, `/mode ask|auto-edit|plan`, `/setting`, `/res
 The daemon binds `127.0.0.1:8777`. Bind address, port and the auth token live in
 `<data root>/state/remote.json`, created with mode `0600` on first start. Sessions are
 JSONL under `<data root>/sessions/`.
+
+The same daemon serves the phone UI (`src/components/UI/remote/mobile.html`) and the
+generated-media routes:
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /api/assets` | Index of `<data root>/generated-media`, newest first, media files only |
+| `GET /assets/<name>` | Serves one file. Authenticated; content type comes from a fixed extension map (an unmapped extension is `415`, never a guess); the resolved path must be inside the media root, so `..` in either raw or percent-encoded form is `403` |
+| Range | `206` with `Content-Range`, including open-ended (`bytes=4000-`) and suffix (`bytes=-64`) forms, `416` when unsatisfiable, and `HEAD` for size probes. Without this Safari will not play a video at all |
+
+The service worker deliberately does not cache `/assets/` or any ranged request:
+answering a range out of the Cache API returns `200` with the whole body and breaks
+playback. `tools/assets-route-selftest.js` pins all of the above.
 
 ---
 
