@@ -85,6 +85,8 @@
   .stage { flex: 1; display: flex; min-height: 0; height: 60%; }
   #canvasWrap { flex: 1; position: relative; min-width: 0; overflow: hidden; }
 
+  /* 220px の予約枠 = ヘッダ + 下部固定の指示バー(.cmdbar) + キャンバス最小域。
+     terminal-resizer.js の bounds()（innerHeight - 220）と一致させること */
   .main-content { flex: none; height: var(--terminal-height); min-height: 180px; max-height: calc(100vh - 220px);
     display: flex; flex-direction: column; }
   .term-container { flex: 1; min-height: 0; height: 100%; display: flex; flex-direction: column; }
@@ -333,8 +335,9 @@
   .fcard.done .fs { background: var(--em); }
   .fcard.err .fs { background: #fb7185; }
 
-  /* 指示バー（開いた瞬間フォーカス＝どこに打てばいいか迷わない） */
-  .cmdbar { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 14px 8px;
+  /* 指示バー（ウィンドウ最下部に常時固定＝どこに打てばいいか迷わない）。
+     flex:none なのでターミナル(.main-content)をどれだけ広げても隠れない */
+  .cmdbar { flex: none; display: flex; align-items: center; gap: 8px; margin: 8px 14px 10px;
     background: rgba(8,14,22,.7); border: 1px solid rgba(52,211,153,.22); border-radius: 11px;
     padding: 8px 12px; box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 24px -8px rgba(52,211,153,.35); }
   .cmdbar .ci { color: var(--em); font-size: 13px; text-shadow: 0 0 9px rgba(52,211,153,.8); }
@@ -703,12 +706,6 @@
       </aside>
     </div>
     <div id="flow"></div>
-    <div class="cmdbar">
-      <span class="ci">❖</span>
-      <input id="ccmd" type="text" spellcheck="false" placeholder="Plan locally with Pi…" />
-      <button id="piBtn" class="fchip on" style="--c:#FFE81F" title="Toggle destination: AI or shell">π AI</button>
-      <button id="liveBtn" class="fchip" style="--c:#00f3ff" title="Live voice">🎙 LIVE</button>
-    </div>
     <div id="fileDetailPopup" role="dialog" aria-live="polite"></div>
     <div class="main-content">
       <div class="term-container">
@@ -761,6 +758,12 @@
         <div id="previewFrameWrap" data-viewport="desktop"><iframe id="previewFrame" title="BigKiji game live preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
       </section>
       <div id="taskStreams" class="paneOff" aria-live="polite"></div>
+    </div>
+    <div class="cmdbar">
+      <span class="ci">❖</span>
+      <input id="ccmd" type="text" spellcheck="false" placeholder="Plan locally with Pi…" />
+      <button id="piBtn" class="fchip on" style="--c:#FFE81F" title="Toggle destination: AI or shell">π AI</button>
+      <button id="liveBtn" class="fchip" style="--c:#00f3ff" title="Live voice">🎙 LIVE</button>
     </div>
   </div>
   <div id="cmuxPalette" aria-hidden="true"><div class="cmux-palette-deck" role="dialog" aria-modal="true" aria-label="cmux command palette">

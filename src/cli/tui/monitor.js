@@ -7,15 +7,17 @@ const { normalizeMode } = require('../../domain/terminal/cli-theme');
 class TUIMonitor {
   constructor({ client, input = process.stdin, output = process.stdout } = {}) {
     this.client = client; this.input = input; this.output = output; this.preferences = new CliPreferences(); this.renderer = new TUIRenderer({ output });
-    this.state = {}; this.relay = []; this.timer = null; this.onEvent = this.onEvent.bind(this); this.onKey = this.onKey.bind(this);
+    this.state = {}; this.relay = []; this.timer = null; this.onEvent = this.onEvent.bind(this); this.onKey = this.onKey.bind(this); this.onResize = this.onResize.bind(this);
   }
   async start() {
     this.state = await this.client.state(); this.state.preferences = this.preferences.get(); this.client.on('event', this.onEvent); this.client.connect();
     this.output.write('\x1b[?1049h\x1b[?25l');
+    this.output.on('resize', this.onResize);
     if (this.input.isTTY) { this.input.setRawMode(true); this.input.resume(); this.input.on('data', this.onKey); }
     this.timer = setInterval(() => this.refresh(), 1000); this.timer.unref?.(); this.renderer.draw(this.state, this.relay);
     return new Promise((resolve) => { this.resolve = resolve; });
   }
+  onResize() { this.renderer.draw(this.state, this.relay); }
   async refresh() { try { this.state = { ...(await this.client.state()), preferences: this.preferences.get() }; this.renderer.draw(this.state, this.relay); } catch (error) { this.push('DAEMON', error.message); } }
   onEvent({ event, data }) {
     if (event === 'state') this.state = { ...data, preferences: this.preferences.get() };
@@ -46,8 +48,9 @@ class TUIMonitor {
   }
   stop() {
     clearInterval(this.timer); this.client.off('event', this.onEvent); this.client.disconnect();
+    this.output.off('resize', this.onResize);
     if (this.input.isTTY) { this.input.off('data', this.onKey); this.input.setRawMode(false); }
-    this.output.write('\x1b[?25h\x1b[?1049l'); this.resolve?.();
+    this.output.write('\x1b[r\x1b[?25h\x1b[?1049l'); this.resolve?.();
   }
 }
 

@@ -5,9 +5,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const util = require('util');
 const { spawn } = require('child_process');
 const { DaemonClient } = require('../server/daemon-client');
 const { TUIMonitor } = require('../../cli/tui/monitor');
+const { StickyScreen } = require('../../cli/tui/renderer');
 const { CliPreferences } = require('./cli-preferences');
 const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
 
@@ -73,27 +75,41 @@ async function selectSession(client) {
   });
 }
 
-function printState(state) {
-  const fleet = state.models?.models || []; console.log(header(state));
-  console.log(`\n${A.bold}Phase${A.reset} ${state.phase || 'IDLE'}  ${A.bold}Sessions${A.reset} ${(state.sessions || []).length}  ${A.bold}Runs${A.reset} ${(state.runs || []).length}  ${A.bold}Files${A.reset} ${state.inventory?.files?.length || 0}${state.inventory?.truncated ? '+' : ''}`);
-  for (const model of fleet) console.log(` ${model.connected ? A.accent : A.dim}● ${model.displayName.padEnd(18)} ${(model.status || 'IDLE').padEnd(11)} ${model.metrics?.tokensUsed || 0} tok · ${model.metrics?.latencyMs || 0}ms${A.reset}`);
+function stateText(state) {
+  const fleet = state.models?.models || [];
+  const lines = [header(state), '',
+    `${A.bold}Phase${A.reset} ${state.phase || 'IDLE'}  ${A.bold}Sessions${A.reset} ${(state.sessions || []).length}  ${A.bold}Runs${A.reset} ${(state.runs || []).length}  ${A.bold}Files${A.reset} ${state.inventory?.files?.length || 0}${state.inventory?.truncated ? '+' : ''}`];
+  for (const model of fleet) lines.push(` ${model.connected ? A.accent : A.dim}● ${model.displayName.padEnd(18)} ${(model.status || 'IDLE').padEnd(11)} ${model.metrics?.tokensUsed || 0} tok · ${model.metrics?.latencyMs || 0}ms${A.reset}`);
+  return lines.join('\n');
 }
+function printState(state) { console.log(stateText(state)); }
 
 async function repl(client) {
-  let mode = setMode(prefs.get().mode, false); let sessionId = ''; const state = await client.state(); console.log(header(state));
-  console.log(`${A.dim}Commands: /status /fleet /setting [key value] /mode ask|auto-edit|plan /ideas /idea plan|enhance|send|adopt|archive /run /resume /reload /hud /abort /clear /help /exit${A.reset}`);
+  let mode = setMode(prefs.get().mode, false); let sessionId = ''; const state = await client.state();
+  const commandsLine = `${A.dim}Commands: /status /fleet /setting [key value] /mode ask|auto-edit|plan /ideas /idea plan|enhance|send|adopt|archive /run /resume /reload /hud /abort /clear /help /exit${A.reset}`;
+  // Sticky Bottom: 入力(π>)は常に最下行・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}π>${A.reset} ` });
+  const sticky = new StickyScreen({ output: process.stdout });
+  const promptRow = () => process.stdout.write(`\x1b[${sticky.rows};1H\x1b[2K`);
+  const refreshPrompt = () => { if (sticky.active) promptRow(); rl.prompt(true); };
+  const stickyOn = sticky.start({ header: [...header(state).split('\n'), commandsLine], onLayout: () => { promptRow(); rl.prompt(true); } });
+  const say = (value) => {
+    const text = typeof value === 'string' ? value : util.inspect(value, { colors: process.env.NO_COLOR === undefined, depth: 4 });
+    if (sticky.active) sticky.print(text); else console.log(text);
+  };
+  if (!stickyOn) { console.log(header(state)); console.log(commandsLine); }
   client.on('event', ({ event, data }) => {
     if (!['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea'].includes(event)) return;
     const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
-    process.stdout.write(`\n${A.dim}[${event}]${A.reset} ${text}\nπ> `);
+    say(`${A.dim}[${event}]${A.reset} ${text}`); refreshPrompt();
   }); client.connect();
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}π>${A.reset} ` });
   rl.on('line', async (line) => {
     const text = line.trim();
+    if (sticky.active && text) say(`${A.prompt}π>${A.reset} ${text}`);
     try {
       if (!text) {}
       else if (['/exit', '/quit'].includes(text)) { rl.close(); return; }
-      else if (text === '/status' || text === '/fleet') printState(await client.state());
+      else if (text === '/status' || text === '/fleet') say(stateText(await client.state()));
       else if (text === '/setting' || text === '/settings' || text.startsWith('/setting ') || text.startsWith('/settings ')) {
         const [, key, requested] = text.split(/\s+/); const value = prefs.get();
         if (key) {
@@ -104,37 +120,37 @@ async function repl(client) {
           else throw new Error('Usage: /setting mode ask|auto-edit|plan | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
           A = themeFor(mode);
         }
-        const current = prefs.get(); console.log(`${A.strong}SETTINGS${A.reset}\n  theme: warm-brown\n  mode accent: ${current.modeAccent}\n  contrast: ${current.contrast}\n  cat commentary: ${current.catCommentary}\n  mode: ${mode}`);
+        const current = prefs.get(); say(`${A.strong}SETTINGS${A.reset}\n  theme: warm-brown\n  mode accent: ${current.modeAccent}\n  contrast: ${current.contrast}\n  cat commentary: ${current.catCommentary}\n  mode: ${mode}`);
       }
-      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); console.log(`${A.accent}Mode: ${mode}${A.reset}`); }
-      else if (text === '/resume') { const session = await selectSession(client); if (session) { sessionId = session.id; console.log(`Resumed ${session.id}: ${session.promptSummary}`); } }
-      else if (text === '/reload') console.log(await client.reload());
+      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); say(`${A.accent}Mode: ${mode}${A.reset}`); }
+      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; say(`Resumed ${session.id}: ${session.promptSummary}`); } }
+      else if (text === '/reload') say(await client.reload());
       else if (text === '/ideas') {
-        const { ideas } = await client.ideas(); ideas.forEach((idea) => console.log(`${A.strong}${idea.id}${A.reset}  ${idea.status.padEnd(9)} ${idea.title}  ${String(idea.draftHash).slice(0,10)}`));
+        const { ideas } = await client.ideas(); ideas.forEach((idea) => say(`${A.strong}${idea.id}${A.reset}  ${idea.status.padEnd(9)} ${idea.title}  ${String(idea.draftHash).slice(0,10)}`));
       }
       else if (text.startsWith('/idea ')) {
         const [, action, id, hash, disclosure] = text.split(/\s+/); if (!action || !id) throw new Error('Usage: /idea plan|enhance|send|adopt|archive <id> [hash] [disclosure]');
         const idea = action === 'send' ? null : await client.idea(id); if (action !== 'send' && !idea) throw new Error('Idea not found');
-        if (action === 'plan') console.log(await client.planIdea(id, idea.draftHash));
+        if (action === 'plan') say(await client.planIdea(id, idea.draftHash));
         else if (action === 'enhance') { const planned = await client.enhanceIdea(id, idea.draftHash); const d = planned.task.disclosure;
-          console.log(`${A.strong}Gemini disclosure${A.reset} ${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
-        else if (action === 'send') console.log(await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
-        else if (action === 'adopt') console.log(await client.promoteIdea(id, idea.draftHash));
-        else if (action === 'archive') console.log(await client.archiveIdea(id, idea.draftHash));
+          say(`${A.strong}Gemini disclosure${A.reset} ${d.estimatedTokens} tok · ${d.files.length} files · payload ${d.payloadHash}\nApprove with: /idea send ${planned.task.id} ${idea.draftHash} ${d.disclosureHash}`); }
+        else if (action === 'send') say(await client.approveIdeaEnhancement({ taskId:id, draftHash:hash, disclosureHash:disclosure }));
+        else if (action === 'adopt') say(await client.promoteIdea(id, idea.draftHash));
+        else if (action === 'archive') say(await client.archiveIdea(id, idea.draftHash));
         else throw new Error('Unknown idea action');
       }
-      else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; console.log(`${A.accent}Plan ready:${A.reset} ${result.run.id} · ${result.run.status}`); }
-      else if (text === '/hud') console.log(launchHud());
-      else if (text === '/abort') console.log(await client.post('/api/abort'));
-      else if (text === '/clear') process.stdout.write('\x1b[H\x1b[2J');
-      else if (text === '/help') console.log('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.');
-      else { console.log(`${A.accent}[Kiji] (=^･ω･^=) Received in ${mode} mode${A.reset}`); const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; console.log(`${A.ink}${result.reply}${A.reset}`);
-        if (result.draft) console.log(`${A.strong}Draft:${A.reset} ${result.draft.id} · ${result.draft.title}`);
-        if (result.run) console.log(`${A.accent}Plan:${A.reset} ${result.run.id} · ${result.run.status}`); }
-    } catch (error) { console.log(`${A.error}✗ ${error.message}${A.reset}`); }
-    rl.prompt();
+      else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; say(`${A.accent}Plan ready:${A.reset} ${result.run.id} · ${result.run.status}`); }
+      else if (text === '/hud') say(launchHud());
+      else if (text === '/abort') say(await client.post('/api/abort'));
+      else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
+      else if (text === '/help') say('Talk naturally. Ideas stay local as drafts. Use /run for an explicit execution plan; every external model still waits for Owner approval.');
+      else { say(`${A.accent}[Kiji] (=^･ω･^=) Received in ${mode} mode${A.reset}`); const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId; say(`${A.ink}${result.reply}${A.reset}`);
+        if (result.draft) say(`${A.strong}Draft:${A.reset} ${result.draft.id} · ${result.draft.title}`);
+        if (result.run) say(`${A.accent}Plan:${A.reset} ${result.run.id} · ${result.run.status}`); }
+    } catch (error) { say(`${A.error}✗ ${error.message}${A.reset}`); }
+    refreshPrompt();
   });
-  rl.on('close', () => { client.disconnect(); process.exit(0); }); rl.prompt();
+  rl.on('close', () => { sticky.stop(); client.disconnect(); process.exit(0); }); refreshPrompt();
 }
 
 async function main(argv = process.argv.slice(2)) {
