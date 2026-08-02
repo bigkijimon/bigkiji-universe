@@ -434,7 +434,9 @@ export function mountOrb(container, { segments = 160, onClick, style = 'blackhol
     if (awakened && wakeAt) {
       const progress = Math.min(1, (performance.now() - wakeAt) / (reducedMq.matches ? 420 : 1250));
       const reveal = THREE.MathUtils.smoothstep(progress, 0.02, 0.78);
-      orb.group.scale.multiplyScalar(Math.max(0.025, reveal));
+      // 爆発の勢い: 顕現の頂点で7%オーバーシュートしてから締まる
+      const overshoot = reducedMq.matches ? 1 : 1 + Math.sin(Math.min(progress * 1.15, 1) * Math.PI) * 0.07;
+      orb.group.scale.multiplyScalar(Math.max(0.025, reveal * overshoot));
       if (progress >= 1) wakeAt = 0;
     }
     renderer.render(scene, camera);
@@ -447,6 +449,14 @@ export function mountOrb(container, { segments = 160, onClick, style = 'blackhol
       awakened = true; wakeAt = performance.now(); activity = 1.5; orb.group.visible = true;
       renderer.domElement.style.opacity = '1'; container.classList.add('core-awakening');
       setTimeout(() => container.classList.remove('core-awakening'), reducedMq.matches ? 450 : 1400);
+      return true;
+    },
+    // タスク完了: 消灯して休眠へ（次のwake()で再誕生できる）
+    sleep() {
+      if (!awakened) return false;
+      awakened = false; wakeAt = 0; activity = 0;
+      renderer.domElement.style.opacity = '0';
+      setTimeout(() => { orb.group.visible = false; }, 450);
       return true;
     },
     dispose() { running = false; renderer.dispose(); },

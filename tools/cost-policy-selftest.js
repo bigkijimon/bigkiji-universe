@@ -4,8 +4,8 @@ const router = require('../src/domain/pi-agent/model-router');
 const knowledge = require('../src/domain/pi-agent/pi-knowledge-orchestrator');
 
 const chain = router.buildChain({ zai: true, ollama: true, google: true, moonshot: true, openrouter: true }, { allowPaid: true });
-assert.deepStrictEqual(chain.map((x) => x.id), ['zai/glm-4.7-flash', 'ollama/qwen3.5:35b-a3b']);
-assert.deepStrictEqual(router.buildChain({ zai: true, ollama: true }).map((x) => x.id), ['ollama/qwen3.5:35b-a3b']);
+assert.deepStrictEqual(chain.map((x) => x.id), ['ollama/qwen2.5:0.5b', 'zai/glm-4.7-flash', 'ollama/qwen3.5:35b-a3b']);
+assert.deepStrictEqual(router.buildChain({ zai: true, ollama: true }).map((x) => x.id), ['ollama/qwen2.5:0.5b', 'ollama/qwen3.5:35b-a3b']);
 for (const p of ['kimi', 'openrouter', 'elevenlabs']) assert.throws(() => knowledge.assertExecutor(p), /blocked/);
 for (const p of ['claude', 'claude-code', 'codex', 'gemini', 'glm', 'ollama', 'qwen']) assert.equal(knowledge.assertExecutor(p), true);
 assert.equal(knowledge.canSpend('ollama', false), true);

@@ -2,6 +2,8 @@ import * as THREE from 'three';
 
 // Lightweight, event-driven visual layer. It never invents a completion state:
 // callers must provide a real event and a real destination position.
+// Outward radiation is allowed ONLY through detonationBurst(), which the core
+// sequence state machine calls at the single scripted "detonation" moment.
 export class CoreInflowSynapse {
   constructor(scene, { maxParticles = 512 } = {}) {
     this.scene = scene; this.maxParticles = maxParticles; this.particles = []; this.genesis = [];
@@ -51,6 +53,33 @@ export class CoreInflowSynapse {
       this.spawn(source, destination, color, 'absorption');
     }
   }
+  // 爆発放出→重力捕獲: コア表面から全方位へ弾け、減速しながら降着円盤半径の
+  // 軌道点へ「着地」する。ベジェのease(1-(1-k)^2.35)が減速到達なので、
+  // 1本の軌道で「爆発」と「捕獲」の両方が読める。
+  detonationBurst(coreCenter, { count = 84, colors = ['#3fe3a8'], settleRadius = 1.85, tiltX = Math.PI / 2 - 0.42, tiltY = 0.12 } = {}) {
+    if (!coreCenter) return;
+    const euler = new THREE.Euler(tiltX, tiltY, 0);
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    for (let index = 0; index < count && this.particles.length < this.maxParticles; index++) {
+      const dir = new THREE.Vector3().randomDirection();
+      const from = coreCenter.clone().addScaledVector(dir, 0.18 + Math.random() * 0.14);
+      // 着地先: 円盤傾斜に沿ったリング上の点（黄金角で均等分布＋揺らぎ）
+      const azimuth = index * goldenAngle + Math.random() * 0.35;
+      const radius = settleRadius * (0.82 + Math.random() * 0.42);
+      const to = new THREE.Vector3(Math.cos(azimuth) * radius, (Math.random() - 0.5) * 0.16, Math.sin(azimuth) * radius)
+        .applyEuler(euler).add(coreCenter);
+      const p = { from, to, c1: null, c2: null,
+        color: new THREE.Color(colors[index % colors.length]),
+        born: performance.now() + Math.random() * 120,
+        duration: 1050 + Math.random() * 650,
+        phase: Math.random() * Math.PI * 2, kind: 'burst' };
+      // 制御点を放射方向の遠くへ置く＝序盤は勢いよく外へ、終盤で軌道へ回り込む
+      const fling = 2.6 + Math.random() * 1.8;
+      p.c1 = from.clone().addScaledVector(dir, fling);
+      p.c2 = to.clone().lerp(p.c1, 0.42);
+      this.particles.push(p);
+    }
+  }
   genesisAt(position, target, color = '#34d399') {
     if (!position || !target) return;
     const mid = position.clone().lerp(target, 0.45); mid.y += 0.25;
@@ -80,7 +109,7 @@ export class CoreInflowSynapse {
   update(now = performance.now(), reduced = false) {
     const pos = this.geo.attributes.position.array; const col = this.geo.attributes.color.array;
     for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i]; const k = Math.min(1, (now - p.born) / p.duration);
+      const p = this.particles[i]; const k = Math.min(1, Math.max(0, (now - p.born) / p.duration));
       if (k >= 1) { this.particles.splice(i, 1); continue; }
       const e = 1 - Math.pow(1 - k, 2.35); const j = i * 3;
       const omt = 1 - e; const a = omt * omt * omt; const b = 3 * omt * omt * e;

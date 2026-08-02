@@ -18,6 +18,7 @@ import { ActiveAIModelsFleet } from '../../hud/components/active-ai-models-fleet
 import { HybridOrbitController } from './hybrid-orbit-controller.js';
 import { RelationshipField } from './relationship-field.js';
 import { CoreAccretionField } from '../shaders/core-accretion-field.js';
+import { CoreRingMorph } from './core-ring-morph.js';
 
 const wrap = document.getElementById('canvasWrap');
 const reducedMq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -653,38 +654,188 @@ scene.add(coreHalo);
 const coreFx = new CoreInflowSynapse(scene, { maxParticles: 512 });
 const coreAccretion = new CoreAccretionField(scene, { count: 2600, radius: 2.75 });
 let coreReveal = 0;
-const coreAwakening = { state: 'dormant', startedAt: 0, rings: [] };
+// ---------- コア演出7フェーズ（動画1〜4準拠・2026-08-02オーナー指示） ----------
+// dormant → foreshock(予兆波) → infall(加速吸引) → detonation(爆発) →
+// capture(放出粒子の重力捕獲・円盤整列) → steady(動画3) →
+// ringmorph(progress≥70%・多重リング変形) → finale(完了・爆散消滅) → dormant
+const SEQ = { foreshock: 900, infall: 2600, detonation: 430, capture: 1400, finale: 800 };
+const coreSeq = {
+  state: 'dormant', enteredAt: 0, rings: [], flash: null,
+  progress: 0, steadyAt: 0, finaleQueued: false, lastInfallSpawn: 0,
+  pull: 0,      // ファイル雲を中心へ引く係数(0..1)
+  absorb: 1,    // 葉粒の残存率（吸引で暗転→捕獲で復帰）
+};
+const coreAwakening = coreSeq; // 旧名互換（外部参照は無いが検索性のため）
+const ringMorph = new CoreRingMorph(scene, { perfLite: false });
+let ringMorphTarget = 0;
 core.group.visible = false; coreLabel.visible = false; coreHalo.visible = false; coreAccretion.group.visible = false;
+
+function seqEnter(state, now = performance.now()) {
+  coreSeq.state = state; coreSeq.enteredAt = now;
+  if (state === 'steady') coreSeq.steadyAt = now;
+}
+function spawnSeqRings(colors, baseScale = 0.08) {
+  for (let index = 0; index < colors.length; index++) {
+    const ring = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex,
+      color: colors[index], transparent: true,
+      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    ring.scale.setScalar(baseScale); ring.userData.delay = index * 150;
+    scene.add(ring); coreSeq.rings.push(ring);
+  }
+}
+function clearSeqRings() {
+  for (const ring of coreSeq.rings) { scene.remove(ring); ring.material.dispose(); }
+  coreSeq.rings.length = 0;
+}
+function seqFlash(strength = 1) {
+  if (coreSeq.flash) { scene.remove(coreSeq.flash.sp); coreSeq.flash.sp.material.dispose(); }
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex, color: '#ffffff',
+    transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
+  sp.scale.setScalar(0.4);
+  scene.add(sp);
+  coreSeq.flash = { sp, t0: performance.now(), dur: 620, strength };
+}
+function cloudPalette() {
+  const list = [];
+  for (const k in fileClouds) list.push((COMPANY_META[fileClouds[k].files?.[0]?.c] || [0, '#3fe3a8'])[1]);
+  return list.length ? list : ['#3fe3a8'];
+}
 function triggerCoreAwakening() {
-  if (coreAwakening.state !== 'dormant') return;
-  coreAwakening.state = 'genesis'; coreAwakening.startedAt = performance.now(); coreActivity = 1.5;
+  if (coreSeq.state !== 'dormant') return;
+  const reduced = reducedMq.matches;
+  coreActivity = 1.5;
+  coreSeq.progress = 0; coreSeq.finaleQueued = false;
   core.group.visible = true; coreLabel.visible = true; coreHalo.visible = true; coreAccretion.group.visible = true;
   core.group.scale.setScalar(0.025); coreAccretion.group.scale.setScalar(0.025);
-  for (let index = 0; index < 3; index++) {
-    const ring = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex,
-      color: index === 0 ? '#ffffff' : index === 1 ? '#34d399' : '#f5ca69', transparent: true,
-      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-    ring.scale.setScalar(0.08); ring.userData.delay = index * 125; scene.add(ring); coreAwakening.rings.push(ring);
+  if (reduced) { // reduced: 演出を畳み、静かに0.5秒で顕現
+    seqEnter('capture');
+    return;
   }
-  spawnRipple(new THREE.Vector3(), new THREE.Color('#ffffff'));
+  seqEnter('foreshock');
+  // 予兆: 警告色の同心円衝撃波が先行して走る（動画2）
+  spawnSeqRings(['#ffffff', '#f5ca69', '#fb923c']);
+  spawnRipple(new THREE.Vector3(), new THREE.Color('#f5ca69'));
 }
 function updateCoreAwakening(now, reduced) {
-  if (coreAwakening.state === 'dormant') return;
-  const duration = reduced ? 500 : 1800; const progress = Math.min(1, (now - coreAwakening.startedAt) / duration);
-  const reveal = THREE.MathUtils.smoothstep(progress, reduced ? 0 : 0.16, reduced ? 0.82 : 0.76);
-  coreReveal = reveal;
-  const scale = Math.max(0.025, 1 - Math.pow(1 - reveal, 3));
-  core.group.scale.setScalar(scale); coreAccretion.group.scale.setScalar(0.22 + scale * 0.78);
-  for (const ring of coreAwakening.rings) {
-    const rp = Math.max(0, Math.min(1, (now - coreAwakening.startedAt - ring.userData.delay) / (duration * 0.62)));
-    ring.scale.setScalar(0.1 + rp * (reduced ? 2.5 : 7.5));
-    ring.material.opacity = Math.sin(rp * Math.PI) * (1 - progress * 0.35) * 0.86;
+  const seq = coreSeq;
+  // 演出フラッシュ（白閃光）は状態に依らず減衰
+  if (seq.flash) {
+    const k = (now - seq.flash.t0) / seq.flash.dur;
+    if (k >= 1) { scene.remove(seq.flash.sp); seq.flash.sp.material.dispose(); seq.flash = null; }
+    else {
+      seq.flash.sp.scale.setScalar(0.4 + easeOutCubic(k) * 9 * seq.flash.strength);
+      seq.flash.sp.material.opacity = 0.95 * (1 - k) * (1 - k);
+    }
   }
-  if (progress >= 1) {
-    coreAwakening.state = 'awake'; coreReveal = 1;
-    for (const ring of coreAwakening.rings) { scene.remove(ring); ring.material.dispose(); }
-    coreAwakening.rings.length = 0;
+  if (seq.state === 'dormant') return;
+  const el = now - seq.enteredAt;
+
+  if (seq.state === 'foreshock') {
+    const k = Math.min(1, el / SEQ.foreshock);
+    for (const ring of seq.rings) {
+      const rp = THREE.MathUtils.clamp((el - ring.userData.delay) / (SEQ.foreshock * 0.8), 0, 1);
+      ring.scale.setScalar(0.1 + easeOutCubic(rp) * 6.5);
+      ring.material.opacity = Math.sin(rp * Math.PI) * 0.8;
+    }
+    seq.pull = k * 0.12; // 予兆の段階でわずかに引かれ始める
+    if (k >= 1) { clearSeqRings(); seqEnter('infall', now); }
+    return;
   }
+
+  if (seq.state === 'infall') {
+    const k = Math.min(1, el / SEQ.infall);
+    const accel = k * k; // だんだん速く
+    seq.pull = 0.12 + accel * 0.5;
+    seq.absorb = 1 - accel * 0.8;
+    coreActivity = Math.min(coreActivity + accel * 0.05, 1.5);
+    // 吸引ストリーム: 各雲から曲線でコア全体へ。間隔は220ms→55msへ短縮＝加速
+    const interval = 220 - accel * 165;
+    if (now - seq.lastInfallSpawn > interval) {
+      seq.lastInfallSpawn = now;
+      const density = Math.round(4 + accel * 10);
+      for (const key in fileClouds) {
+        const cl = fileClouds[key];
+        const color = (COMPANY_META[cl.files?.[0]?.c] || [0, '#3fe3a8'])[1];
+        coreFx.absorbCluster(cl.grp.position.clone(), core.group.position.clone(), color, density);
+      }
+    }
+    // 中心に高密度の光球が育つ（コア本体はまだ小さい）
+    coreReveal = 0.08 + accel * 0.2;
+    coreHalo.scale.setScalar(1.2 + accel * 2.2);
+    if (k >= 1) {
+      seqEnter('detonation', now);
+      seqFlash(1);
+      // 爆発: 吸い込んだ粒子を全方位へ放出→円盤軌道へ捕獲（動画2→3）
+      coreFx.detonationBurst(core.group.position.clone(), {
+        count: perfStage >= 1 ? 56 : 96, colors: cloudPalette(), settleRadius: 1.85 * 0.88 });
+      spawnSeqRings(['#ffffff', '#3fe3a8'], 0.2);
+    }
+    return;
+  }
+
+  if (seq.state === 'detonation') {
+    const k = Math.min(1, el / SEQ.detonation);
+    for (const ring of seq.rings) {
+      const rp = THREE.MathUtils.clamp((el - ring.userData.delay * 0.4) / SEQ.detonation, 0, 1);
+      ring.scale.setScalar(0.2 + easeOutCubic(rp) * 9.5);
+      ring.material.opacity = Math.sin(rp * Math.PI) * 0.9;
+    }
+    seq.pull = (1 - k) * 0.62;
+    if (k >= 1) { clearSeqRings(); seqEnter('capture', now); }
+    return;
+  }
+
+  if (seq.state === 'capture') {
+    const duration = reduced ? 500 : SEQ.capture;
+    const k = Math.min(1, el / duration);
+    const reveal = THREE.MathUtils.smoothstep(k, reduced ? 0 : 0.05, reduced ? 0.82 : 0.7);
+    // わずかなオーバーシュート（1.05→1.0）で「一気に顕現して締まる」
+    coreReveal = reveal * (1 + Math.sin(Math.min(k, 1) * Math.PI) * 0.05);
+    seq.pull = 0;
+    seq.absorb = 0.2 + k * 0.8; // 粒子は円盤へ整列しつつ雲も復帰
+    coreAccretion.group.scale.setScalar(0.22 + reveal * 0.78);
+    if (k >= 1) { coreReveal = 1; seq.absorb = 1; seqEnter('steady', now); }
+    return;
+  }
+
+  if (seq.state === 'steady') {
+    // 動画3の定常状態。progress≥70%でリング変形へ
+    if (seq.progress >= 70) seqEnter('ringmorph', now);
+    else if (seq.finaleQueued && now - seq.steadyAt > 2500) beginCoreFinale(now);
+    return;
+  }
+
+  if (seq.state === 'ringmorph') {
+    ringMorphTarget = Math.min(1, (now - seq.enteredAt) / (reduced ? 600 : 6000)); // ゆっくり変形
+    if (seq.finaleQueued && ringMorphTarget > 0.35) beginCoreFinale(now);
+    return;
+  }
+
+  if (seq.state === 'finale') {
+    const k = Math.min(1, el / SEQ.finale);
+    coreReveal = 1 - easeOutCubic(k);
+    coreActivity *= 0.9;
+    if (k >= 1) { // 完全消滅→次の会話で再誕生できる
+      coreReveal = 0; ringMorphTarget = 0; ringMorph.reset();
+      core.group.visible = false; coreLabel.visible = false;
+      coreHalo.visible = false; coreAccretion.group.visible = false;
+      seq.progress = 0; seq.finaleQueued = false; seq.absorb = 1; seq.pull = 0;
+      seqEnter('dormant', now);
+    }
+  }
+}
+function beginCoreFinale(now = performance.now()) {
+  if (coreSeq.state === 'finale' || coreSeq.state === 'dormant') return;
+  seqFlash(1.4);
+  ringMorph.explode(now);
+  coreFx.detonationBurst(core.group.position.clone(), {
+    count: perfStage >= 1 ? 40 : 72, colors: cloudPalette(), settleRadius: 4.6 });
+  seqEnter('finale', now);
+}
+// タスク完了通知（turn完了＝100%）: 定常/リング状態から爆散消滅へ
+function notifyCoreTaskComplete() {
+  if (coreSeq.state === 'dormant') return;
+  coreSeq.finaleQueued = true;
 }
 window.addEventListener('bk:wake-core', triggerCoreAwakening);
 roadmap3d = new Roadmap3D(scene);
@@ -1402,8 +1553,12 @@ window.bigkiji.onPiEvent((e) => {
 });
 window.bigkiji.onPhaseUpdate?.((phase) => {
   if (phase?.phase === 'PREFLIGHT' || phase?.phase === 'AWAITING_OWNER_DIRECTIVE') triggerCoreAwakening();
+  // タスク完了率を演出へ配線: 70%以上で多重リング変形（daemonのprogress実値）
+  if (typeof phase?.progress === 'number') coreSeq.progress = Math.max(coreSeq.progress, phase.progress);
+  if (phase?.phase === 'COMPLETED' || coreSeq.progress >= 100) notifyCoreTaskComplete();
 });
 window.bigkiji.onPiStats((s) => {
+  coreSeq.progress = 100; notifyCoreTaskComplete(); // ターン完了＝100%: 爆散消滅へ
   roadmap3d.setState('VERIFY', 'completed'); roadmap3d.pulse(3);
   flowFinish(s.turn ? `in ${s.turn.input} · out ${s.turn.output} tok` : 'done');
   { // TOKEN VELOCITY（実測）: ターン実消費 ÷ 実所要時間
@@ -2007,7 +2162,7 @@ const clock = new THREE.Clock();
     // ホバーレンズ: 触れた雲は拡大し、糸と粒が明るくなる（解像度を上げる）
     cl.boost = THREE.MathUtils.damp(cl.boost, hoverCloudKey === k ? 1 : 0, 7, delta);
     cl.grp.scale.setScalar(1 + cl.boost * 0.24);
-    cl.ptsMat.opacity = gO * 0.92 * (1 + cl.boost * 0.4);
+    cl.ptsMat.opacity = gO * 0.92 * (1 + cl.boost * 0.4) * coreSeq.absorb;
     cl.membrane?.update(t, Math.max(galaxyO, 0.06), cl.boost);
     // v11全結合: ハブ/幹線は全LODで微発光を維持（葉粒だけLODゲート＝負荷対策）
     cl.hubMat.opacity = Math.max(galaxyO * 0.8, 0.22) * (1 + cl.boost * 0.4);
@@ -2020,6 +2175,8 @@ const clock = new THREE.Clock();
     } else {
       cl.grp.position.set(0, -1.3 + (reduced ? 0 : Math.sin(t * 0.3) * 0.05), 0);
     }
+    // 会話開始シーケンス: 予兆〜吸引の間だけ雲全体が中心へ引かれる（爆発で解放）
+    if (coreSeq.pull > 0.001) cl.grp.position.lerp(core.group.position, coreSeq.pull);
     if (cl.rootLink && nd) { // 常設シナプス束: 雲の根⇄BH（転送中は増光・形状はGPU計算）
       const ru = cl.rootLink.uniforms;
       ru.uStart.value.copy(cl.grp.position);
@@ -2066,9 +2223,16 @@ const clock = new THREE.Clock();
 
   coreActivity *= 0.975;
   core.update({ activity: coreActivity + galaxyO * 0.15, reduced, t, delta, camera });
-  core.group.scale.multiplyScalar(Math.max(0.025, coreReveal));
-  coreAccretion.update(t, coreActivity + galaxyO * 0.18, reduced || perfStage >= 2, delta);
-  coreHalo.material.opacity = (0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04)) * coreReveal;
+  // ringmorph: コアと円盤は退き、多重リングが主役になる（動画4・ゆっくり）
+  const morphK = THREE.MathUtils.damp(ringMorph.morph, ringMorphTarget, 2.5, delta);
+  ringMorph.setMorph(morphK);
+  ringMorph.update(t, delta, reduced || perfStage >= 2, now);
+  // uOpaはorb-core側が非reduced時のみ毎フレーム再設定するため、乗算はその場合に限る
+  if (core.disk && !reduced) core.disk.material.uniforms.uOpa.value *= (1 - morphK * 0.9); // レンズアークも同uniform共有
+  core.group.scale.multiplyScalar(Math.max(0.025, coreReveal) * (1 - morphK * 0.42));
+  coreAccretion.update(t, (coreActivity + galaxyO * 0.18) * (1 - morphK * 0.85), reduced || perfStage >= 2, delta);
+  coreAccretion.group.visible = coreSeq.state !== 'dormant' && morphK < 0.92;
+  coreHalo.material.opacity = (0.22 + Math.min(coreActivity, 1) * 0.3 + (reduced ? 0 : Math.sin(t * 1.57) * 0.04)) * coreReveal * (1 - morphK * 0.7);
   coreHalo.scale.setScalar((4.8 + Math.min(coreActivity, 1) * 0.8) * Math.max(0.08, coreReveal));
 
   for (const id of ids) {

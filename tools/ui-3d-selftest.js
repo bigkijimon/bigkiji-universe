@@ -42,6 +42,8 @@ assert.match(synapse, /zoomAroundPoint\(camera, controls\.target, anchor, scale/
 assert.match(synapse, /cameraFocus\.cancel\(\); \/\/ stop a previous file focus/);
 assert.doesNotMatch(synapse, /cl\.edgeMat/);
 assert.doesNotMatch(inflow, /this\.spawn\(core,/);
+// 外向き放出は detonationBurst() の1経路のみ（会話開始シーケンスの爆発演出・2026-08-02）
+assert.match(inflow, /detonationBurst/);
 assert.match(inflow, /absorbCluster/);
 assert.match(inflow, /surfaceNoise/);
 assert.match(inflow, /a\*p\.from\.x \+ b\*p\.c1\.x/);
