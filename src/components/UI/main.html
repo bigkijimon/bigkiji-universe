@@ -227,6 +227,17 @@
   #workState.on i { animation: statePulse 1.1s var(--ease-out) infinite; }
   #workState.idle { color: var(--label); }
   #workState.idle i { background: var(--faint); }
+  /* Pixel-art loading sprite: 6 cells of 32x32 in a 192x32 sheet, 400ms loop at 15fps
+     (timings measured from the reference clip — see docs/reference-analysis.md).
+     steps(6) walks whole cells, and image-rendering: pixelated keeps the grid hard. */
+  #workCat { width: 24px; height: 24px; flex: none; display: none;
+    background: url('./assets/pixel/loading-cat.png') 0 0 / 600% 100% no-repeat;
+    image-rendering: pixelated; }
+  #workState.on #workCat { display: block; animation: catFlap .4s steps(6) infinite; }
+  /* Steps in px, not %: percentage background-position resolves against
+     (container - image), which would land on the wrong cells. 24px box x 6 = 144px. */
+  @keyframes catFlap { to { background-position: -144px 0; } }
+  @media (prefers-reduced-motion: reduce) { #workState.on #workCat { animation: none; } }
   /* 唯一の常設アニメ: 「今 動いている」ことの表示。opacity のみ。 */
   @keyframes statePulse { 0%, 100% { opacity: .34; } 50% { opacity: 1; } }
   /* COMMS: 誰⇄誰が何をしているか */
@@ -671,7 +682,7 @@
     <div class="workspace">
     <div class="stage">
       <div id="canvasWrap">
-        <div id="workState" class="idle"><i></i><span>IDLE</span></div>
+        <div id="workState" class="idle"><span id="workCat" aria-hidden="true"></span><i></i><span>IDLE</span></div>
         <div id="views" style="position:absolute;top:8px;left:10px;z-index:28;display:flex;gap:4px">
           <button class="fchip on" data-d="11.5">SYSTEM</button>
           <button class="fchip" data-d="6.5">FILES</button>
