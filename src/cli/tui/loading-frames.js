@@ -148,15 +148,28 @@ function monoShadeRow(row = [], palette = []) {
   return row.map((index) => shades[index] || ' ').join('');
 }
 
-// The face sits around pixel rows 6..7 in every frame; that pair reads as a
-// recognisable cat in a single terminal row.
+// Which two pixel rows to draw when there is only one terminal row for the cat.
 //
-// The shaded single row can only use one of them, and it has to be row 7: that
-// is where the eyes are (`0000234224320000` — the 2s). Row 6 is the brow, which
-// is a uniform band, so shading it produced the same featureless bar the
-// silhouette did in four of the six frames.
-const FACE_ROWS = [6, 7];
-const EYE_ROW = 7;
+// The face was the obvious choice and it was wrong, visibly so on the owner's
+// screen: pixel rows 6 and 7 are fourteen opaque cells out of sixteen, so every
+// half-block came out foreground-over-background in the same brown and the
+// "cat" rendered as a filled rectangle. A row that is nearly all ink cannot
+// carry a silhouette, whatever is drawn in it.
+//
+// The ears can. Pixel rows 2-3 are four inked cells in sixteen — `▄█    █▄` —
+// which is a shape rather than a bar, and they are the part of the sprite that
+// moves: three distinct poses across the six frames, so the loading animation
+// actually reads as animation.
+//
+//   row 0 (px 0-1)  |                |  0 ink   — empty
+//   row 1 (px 2-3)  |    ▄█    █▄    |  4 ink   — ears, 3 poses     <- this one
+//   row 2 (px 4-5)  |    ████████    |  8 ink   — brow and eyes
+//   row 3 (px 6-7)  | ██▄████████▄██ | 14 ink   — the bar we shipped
+//
+const EAR_ROWS = [2, 3];
+// The header mark gets two rows, which is the smallest thing that still looks
+// like a head: ears on top, eyes underneath.
+const HEAD_ROWS = [2, 3, 4, 5];
 
 function buildPixelFrameSets() {
   const palette = readPalette();
@@ -168,7 +181,7 @@ function buildPixelFrameSets() {
     for (let y = 0; y + 1 < grid.length; y += 2) rows.push(halfBlockRow(grid[y], grid[y + 1], palette));
     return rows.join('\n');
   });
-  const single = grids.map((grid) => halfBlockRow(grid[FACE_ROWS[0]] || [], grid[FACE_ROWS[1]] || [], palette));
+  const single = grids.map((grid) => halfBlockRow(grid[EAR_ROWS[0]] || [], grid[EAR_ROWS[1]] || [], palette));
   return {
     'pixel-cat-16': Object.freeze({ id: 'pixel-cat-16', label: 'Pixel kijitora — 16x16 sprite as half-blocks (8 rows)',
       rows: Math.max(1, Math.floor((grids[0].length || 16) / 2)), width, frameMs: 67, colored: true, frames: Object.freeze(panel) }),
@@ -191,7 +204,10 @@ function buildMonoFrameSets() {
     for (let y = 0; y + 1 < grid.length; y += 2) rows.push(monoHalfBlockRow(grid[y], grid[y + 1]));
     return rows.join('\n');
   });
-  const single = grids.map((grid) => monoShadeRow(grid[EYE_ROW] || [], palette));
+  // Silhouette, not shading: the ear row is mostly transparent, so which pixels
+  // exist is exactly the information that matters. Shading it would flatten the
+  // gap between the ears into another band of grey.
+  const single = grids.map((grid) => monoHalfBlockRow(grid[EAR_ROWS[0]] || [], grid[EAR_ROWS[1]] || []));
   return {
     'pixel-cat-mono': Object.freeze({ id: 'pixel-cat-mono', label: 'Pixel kijitora — colourless silhouette (8 rows)',
       rows: Math.max(1, Math.floor((grids[0].length || 16) / 2)), width, frameMs: 67, frames: Object.freeze(panel) }),
@@ -237,6 +253,7 @@ const LOADING_TEXT = 'loading...';
 // whole screen every second and on every event; without this, each redraw read
 // seven sprite files off disk to draw eight characters.
 const MARKS = new Map();
+/** The head as an array of terminal rows. Empty when the sprite files are missing. */
 function catMark({ colored = !NO_COLOR } = {}) {
   const key = colored ? 'colour' : 'mono';
   if (MARKS.has(key)) return MARKS.get(key);
@@ -245,22 +262,33 @@ function catMark({ colored = !NO_COLOR } = {}) {
   return mark;
 }
 
+// A cat's head, two terminal rows tall: ears on top, eyes underneath.
+//
+// One row was not enough and could not be made enough — see EAR_ROWS. Two rows
+// carry pixel rows 2-5, which is the smallest slice of this sprite that a person
+// reads as a face rather than as a coloured rectangle.
 function buildCatMark(colored) {
   const grids = readGrids();
   const grid = grids[2] || grids[0];
-  if (!grid) return '';
-  const upper = grid[FACE_ROWS[0]] || []; const lower = grid[FACE_ROWS[1]] || [];
-  const width = Math.max(upper.length, lower.length);
+  if (!grid) return [];
+  const rows = HEAD_ROWS.map((index) => grid[index] || []);
+  const width = Math.max(...rows.map((row) => row.length), 0);
   let first = -1; let last = -1;
   for (let x = 0; x < width; x += 1) {
-    if (!upper[x] && !lower[x]) continue;
+    if (!rows.some((row) => row[x])) continue;
     if (first < 0) first = x;
     last = x;
   }
-  if (first < 0) return '';
+  if (first < 0) return [];
   const palette = readPalette();
-  if (colored && palette.length) return halfBlockRow(upper.slice(first, last + 1), lower.slice(first, last + 1), palette);
-  return monoShadeRow(lower.slice(first, last + 1), palette); // lower === EYE_ROW
+  const crop = (row) => row.slice(first, last + 1);
+  const out = [];
+  for (let pair = 0; pair + 1 < rows.length; pair += 2) {
+    out.push(colored && palette.length
+      ? halfBlockRow(crop(rows[pair]), crop(rows[pair + 1]), palette)
+      : monoHalfBlockRow(crop(rows[pair]), crop(rows[pair + 1])));
+  }
+  return out;
 }
 
 function loadingFrames(id = DEFAULT_FRAME_SET_ID) { return FRAME_SETS[id] || FRAME_SETS[WINGED_CAT_ASCII.id]; }

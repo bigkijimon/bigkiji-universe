@@ -20,7 +20,7 @@
 const assert = require('assert');
 const { stripAnsi } = require('../src/domain/terminal/cli-theme');
 const T = require('../src/cli/tui/transcript');
-const { TUIRenderer, modelPanel } = require('../src/cli/tui/renderer');
+const { TUIRenderer, StickyScreen, modelPanel } = require('../src/cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../src/cli/tui/footer');
 const { loadingFrames, frameRows, FRAME_SETS, SHADES } = require('../src/cli/tui/loading-frames');
 
@@ -302,16 +302,19 @@ ok('the header carries exactly one box, and it is the model panel', () => {
     const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });
     const { header } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
     const boxed = plainLines(header).filter((line) => BOX.test(line));
-    assert.equal(boxed.length, 3, `a box is three rows and there is one of them at ${cols}x${rows}: ${boxed.length}`);
+    // Four rows: a border, two content rows and a border. The cat needs two,
+    // because one terminal row is two pixel rows and no cat fits in two.
+    assert.equal(boxed.length, 4, `one box, four rows, at ${cols}x${rows}: ${boxed.length}`);
     assert.ok(boxed[0].startsWith('╭─') && boxed[0].endsWith('╮'), `top: ${boxed[0]}`);
-    assert.ok(boxed[1].startsWith('│') && boxed[1].endsWith('│'), `middle: ${boxed[1]}`);
-    assert.ok(boxed[2].startsWith('╰') && boxed[2].endsWith('╯'), `bottom: ${boxed[2]}`);
+    for (const line of boxed.slice(1, -1)) assert.ok(line.startsWith('│') && line.endsWith('│'), `content: ${line}`);
+    assert.ok(boxed[3].startsWith('╰') && boxed[3].endsWith('╯'), `bottom: ${boxed[3]}`);
     const widths = boxed.map(T.stringWidth);
     assert.ok(widths.every((value) => value === widths[0]), `the three rows must align: ${widths.join(',')}`);
     assert.ok(widths[0] <= cols, `the panel must fit ${cols}: ${widths[0]}`);
-    assert.ok(boxed[1].includes('qwen2.5:0.5b'), `the panel states the real model: ${boxed[1]}`);
-    assert.ok(boxed[1].includes('4k ctx'), `and the real context window: ${boxed[1]}`);
-    assert.ok(boxed[1].includes('1/2 online'), `and counts what is actually connected: ${boxed[1]}`);
+    const facts = boxed.slice(1, -1).join(' ');
+    assert.ok(facts.includes('qwen2.5:0.5b'), `the panel states the real model: ${facts}`);
+    assert.ok(facts.includes('4k ctx'), `and the real context window: ${facts}`);
+    assert.ok(facts.includes('1/2 online'), `and counts what is actually connected: ${facts}`);
   }
 });
 ok('nothing overflows between 24 and 200 columns, including the phase chips', () => {
@@ -355,24 +358,64 @@ ok('a long version string cannot push the panel past the terminal', () => {
     assert.ok(widths[0] <= cols, `panel is ${widths[0]} wide in a ${cols} column terminal`);
   }
 });
-ok('every frame of the colourless cat has a face, not just two of them', () => {
-  // The shaded row was taken from pixel row 6, the brow, which is a uniform band
-  // — so four of the six frames rendered as a featureless bar. The eyes are in
-  // row 7.
+ok('the one-row cat is a shape, not a filled bar', () => {
+  // This is the defect the owner saw on screen and it is the reason the row
+  // moved. A terminal row is two pixel rows, and the two that carry the face are
+  // fourteen opaque cells out of sixteen — every half-block came out
+  // foreground-over-background in the same brown, so the "cat" was a rectangle.
+  // The ears are four cells in sixteen, with a gap between them.
   const result = require('child_process').spawnSync(process.execPath, ['-e', `
     const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
     process.stdout.write(JSON.stringify({ frames: L.loadingFrames().frames, mark: L.catMark() }));
   `], { env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const { frames, mark } = JSON.parse(result.stdout);
-  // "Has a face" means the eyes are there, and an eye is a darker pair inside a
-  // lighter face. Counting distinct characters was too weak to see the bug: the
-  // brow row has three shades too, it just has them in a smooth gradient.
-  const [darkest, dark, mid, light] = SHADES;
-  const OPEN_EYES = new RegExp(`[${light}${mid}][${dark}${darkest}]{1,2}[${light}${mid}]`);
-  const open = frames.filter((frame) => OPEN_EYES.test(frame)).length;
-  assert.ok(open >= 3, `only ${open} of ${frames.length} colourless frames show eyes: ${JSON.stringify(frames)}`);
-  assert.ok(OPEN_EYES.test(mark), `the header mark has no face: ${JSON.stringify(mark)}`);
+
+  for (const [index, frame] of frames.entries()) {
+    const ink = frame.replace(/\s/g, '').length;
+    assert.ok(ink > 0, `frame ${index} is empty`);
+    assert.ok(ink <= frame.length * 0.5,
+      `frame ${index} is ${ink}/${frame.length} inked — that renders as a bar, not a cat: |${frame}|`);
+  }
+  // One pose has the wings spread and is legitimately solid; most should show
+  // the gap between the ears.
+  const gapped = frames.filter((frame) => /\s/.test(frame.trim())).length;
+  assert.ok(gapped >= frames.length / 2, `only ${gapped} of ${frames.length} frames have a gap: ${JSON.stringify(frames)}`);
+  assert.ok(new Set(frames).size >= 2, 'a loading animation has to actually change');
+  // The header mark is two rows and may be dense — it is a head, not a
+  // silhouette — but it must not be one uniform block either.
+  assert.equal(mark.length, 2, 'the header mark is two rows, because one is not a cat');
+  assert.ok(/\s/.test(mark[0].trim()), `the ears need a gap: |${mark[0]}|`);
+});
+ok('the transcript fills from the top of the scroll region, not the bottom', () => {
+  // What the owner saw: a fifty row terminal with the header at the top, the
+  // footer at the bottom, and twenty-seven blank rows in between with the first
+  // answer pinned under them. Nothing was broken and it looked entirely broken.
+  // print() jumped to the last row of the region and emitted newlines, so the
+  // region scrolled up from empty instead of being written into.
+  const writes = [];
+  const output = { isTTY: true, columns: 80, rows: 50, write: (value) => writes.push(value), on() {}, off() {} };
+  const sticky = new StickyScreen({ output, footerHeight: 6 });
+  sticky.start({ header: ['h1', 'h2', 'h3'], footer: [] });
+  writes.length = 0;
+  sticky.print('first answer');
+  const rowOf = (value) => { const m = /\x1b\[(\d+);1H/.exec(value); return m ? Number(m[1]) : -1; };
+  assert.equal(rowOf(writes.join('')), sticky.top,
+    `the first line belongs at the top of the region (row ${sticky.top}), not at row ${rowOf(writes.join(''))}`);
+  assert.ok(!writes.join('').includes('\n\r'), 'and it should be placed, not scrolled into view');
+
+  // Consecutive output stacks downward rather than overwriting.
+  writes.length = 0;
+  sticky.print('second answer');
+  assert.equal(rowOf(writes.join('')), sticky.top + 1);
+
+  // Once the region is full it goes back to scrolling, which is the only way to
+  // keep showing new output.
+  const capacity = sticky.bottom - sticky.top + 1;
+  sticky.print(Array.from({ length: capacity }, (_, i) => `line ${i}`).join('\n'));
+  writes.length = 0;
+  sticky.print('after it is full');
+  assert.ok(writes.join('').includes('\n\r'), 'a full region has to scroll');
 });
 ok('the monitor key hints are lowercase like everything else', () => {
   const renderer = new TUIRenderer({ output: { columns: 100, rows: 30, write() {} } });
@@ -382,10 +425,11 @@ ok('the monitor key hints are lowercase like everything else', () => {
 });
 ok('the model panel invents nothing when the daemon said nothing', () => {
   const boxed = plainLines(modelPanel({}, { width: 80 }));
-  assert.equal(boxed.length, 3);
-  assert.ok(boxed[1].includes('—'), `an unknown model is an em dash, not a default: ${boxed[1]}`);
-  assert.ok(!/ctx/.test(boxed[1]), `no context window was reported, so none is shown: ${boxed[1]}`);
-  assert.ok(!/online/.test(boxed[1]), `no fleet was reported, so no count is shown: ${boxed[1]}`);
+  assert.equal(boxed.length, 4);
+  const facts = boxed.slice(1, -1).join(' ');
+  assert.ok(facts.includes('—'), `an unknown model is an em dash, not a default: ${facts}`);
+  assert.ok(!/ctx/.test(facts), `no context window was reported, so none is shown: ${facts}`);
+  assert.ok(!/online/.test(facts), `no fleet was reported, so no count is shown: ${facts}`);
 });
 ok('no kaomoji survives anywhere in the CLI chrome', () => {
   const renderer = new TUIRenderer({ output: { columns: 100, rows: 30, write() {} } });

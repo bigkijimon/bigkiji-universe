@@ -79,22 +79,35 @@ function modelPanel(state = {}, options = {}) {
   // text — it strips ANSI even when it has nothing to trim — so the mark is
   // measured and concatenated, never passed through it. Only the facts, which
   // are plain, get ellipsised.
+  //
+  // Two rows, because one was not a cat. A single terminal row is two pixel
+  // rows, and the two that carry the face are almost entirely opaque, so the
+  // mark rendered as a brown rectangle on the owner's screen. Rows 2-5 of the
+  // sprite are ears over eyes, and that reads.
   const mark = catMark();
-  const markWidth = mark ? stringWidth(mark) + 2 : 0;
+  const markWidth = mark.length ? stringWidth(mark[0]) + 2 : 0;
   const room = Math.max(8, width - 2);
   // The label rides the top border, so it has to fit the terminal too. It is
   // built from APP_VERSION by the caller, and a prerelease string was enough to
   // push a 40 column panel out to 48.
   const heading = truncateToWidth(label, Math.max(3, room - 2));
-  const facts = truncateToWidth(bits.join(' · '), Math.max(1, room - 2 - markWidth));
-  const bodyWidth = markWidth + stringWidth(facts);
-  const body = mark ? `${mark}  ${theme.ink}${facts}${theme.reset}` : `${theme.ink}${facts}${theme.reset}`;
+  // The model is the fact worth reading first, so it gets the row beside the
+  // ears; everything else follows underneath.
+  const factRoom = Math.max(1, room - 2 - markWidth);
+  const facts = [truncateToWidth(bits[0], factRoom), truncateToWidth(bits.slice(1).join(' · '), factRoom)];
+  const rows = Math.max(mark.length, 1);
+  const bodyWidth = Math.max(...facts.map((line) => markWidth + stringWidth(line)));
   const inner = Math.min(room, Math.max(stringWidth(heading) + 1, bodyWidth + 2));
 
-  const top = `${theme.border}╭─${theme.reset}${theme.muted}${heading}${theme.reset}${theme.border}${'─'.repeat(Math.max(0, inner - stringWidth(heading) - 1))}╮${theme.reset}`;
-  const middle = `${theme.border}│${theme.reset} ${body}${' '.repeat(Math.max(0, inner - bodyWidth - 2))} ${theme.border}│${theme.reset}`;
-  const bottom = `${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`;
-  return [top, middle, bottom];
+  const out = [`${theme.border}╭─${theme.reset}${theme.muted}${heading}${theme.reset}${theme.border}${'─'.repeat(Math.max(0, inner - stringWidth(heading) - 1))}╮${theme.reset}`];
+  for (let index = 0; index < rows; index += 1) {
+    const art = mark[index] ? `${mark[index]}  ` : ' '.repeat(markWidth);
+    const text = facts[index] || '';
+    const used = markWidth + stringWidth(text);
+    out.push(`${theme.border}│${theme.reset} ${art}${theme.ink}${text}${theme.reset}${' '.repeat(Math.max(0, inner - used - 2))} ${theme.border}│${theme.reset}`);
+  }
+  out.push(`${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`);
+  return out;
 }
 
 /** Join a left and a right segment inside `width` columns, measuring display width. */
@@ -232,6 +245,7 @@ class TUIRenderer {
 class StickyScreen {
   constructor({ output = process.stdout, footerHeight = 1 } = {}) {
     this.output = output; this.header = []; this.footer = []; this.active = false; this.onLayout = null; this._resize = null;
+    this.used = 0; this.laidOutRows = 0;
     this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
     this.columns = this.cols; this.lines = this.rows;
   }
@@ -286,13 +300,44 @@ class StickyScreen {
     let out = `${ESC}[r${ESC}[H`;
     this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
     out += this.footerPaint();
-    out += `${ESC}[${this.top};${this.bottom}r${ESC}[${this.bottom};1H`;
+    out += `${ESC}[${this.top};${this.bottom}r${ESC}[${this.top};1H`;
     this.output.write(out);
+    // The scroll region starts empty again, and print() fills it downward.
+    this.used = 0;
+    this.laidOutRows = this.rows;
     this.onLayout?.();
   }
+
+  /**
+   * Write into the scrolling region.
+   *
+   * It fills from the top and only scrolls once it is full. Jumping straight to
+   * the last row and emitting newlines — which is what this did — meant that on
+   * a fifty row terminal the first answer appeared at the bottom with a
+   * screenful of blank above it. Nothing was broken and it looked entirely
+   * broken, which for a terminal is the same thing.
+   *
+   * `bottom` is derived from the terminal's live row count while the DECSTBM
+   * region is only re-set by layout(). If those two disagree — a resize event
+   * that has not been handled yet — the cursor lands below the region, the
+   * newline does not scroll, and the write lands on top of the footer instead.
+   * So a size change re-lays out before anything else happens.
+   */
   print(text) {
     if (!this.active) { this.output.write(`${String(text)}\n`); return; }
+    if (this.rows !== this.laidOutRows) { this.output.write(`${ESC}[2J`); this.layout(); }
     const lines = String(text).split('\n');
+    const capacity = Math.max(1, this.bottom - this.top + 1);
+    const used = Number(this.used) || 0;
+    if (used + lines.length <= capacity) {
+      // Still room: place the block at the next free row, no scrolling at all.
+      let out = '';
+      lines.forEach((line, index) => { out += `${ESC}[${this.top + used + index};1H${ESC}[2K${line}`; });
+      this.output.write(out);
+      this.used = used + lines.length;
+      return;
+    }
+    this.used = capacity;
     this.output.write(`${ESC}[${this.bottom};1H${lines.map((line) => `\n\r${line}`).join('')}`);
   }
   clear() { if (this.active) { this.output.write(`${ESC}[2J`); this.layout(); } }
