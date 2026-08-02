@@ -1,6 +1,6 @@
 # Reference Video Analysis
 
-Frame-by-frame and audio analysis of the 9 reference clips in `/Users/yuma/Downloads/`.
+Frame-by-frame and audio analysis of the 9 reference clips in `~/Downloads/`.
 
 **Method.** Every clip was decoded end-to-end with `ffmpeg`/`ffprobe` (frames sampled at 1–30 fps
 depending on the clip) and the extracted PNGs were visually inspected, not guessed from filenames.
@@ -23,7 +23,7 @@ what is actually in the files:
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/pixel1.mp4` |
+| Source | `~/Downloads/pixel1.mp4` |
 | Duration | 11.469 s (video stream 11.333 s) |
 | Resolution / fps | 720 × 1280, 30 fps, 340 frames, H.264 |
 | Audio | AAC 44.1 kHz stereo present but irrelevant (screen-capture silence) |
@@ -163,7 +163,7 @@ reference's felt rhythm.
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/BigkijiUniverse.mp4` |
+| Source | `~/Downloads/BigkijiUniverse.mp4` |
 | Duration | 9.263 s (video stream 9.067 s) |
 | Resolution / fps | 720 × 1280, 30 fps, 272 frames |
 
@@ -279,7 +279,7 @@ as large soft squares when the camera is inside the disc.
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/SE1.mp4` |
+| Source | `~/Downloads/SE1.mp4` |
 | Duration | 30.811 s (video 30.708 s) |
 | Resolution / fps | 720 × 1280, 24 fps, 737 frames |
 | Audio | Present, clean, monophonic synth |
@@ -360,7 +360,7 @@ The hue walks **monotonically around the wheel** with pitch — amber (32°) →
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/SE2.mp4` |
+| Source | `~/Downloads/SE2.mp4` |
 | Duration | 19.014 s (video 18.933 s) |
 | Resolution / fps | 720 × 1280, 30 fps, 568 frames |
 | Audio | Piano, present from ≈2.5 s, fades out by ≈17 s |
@@ -430,7 +430,7 @@ rubato with no percussion. What is solid is the *chord rate*: one chord roughly 
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/SE3.mp4` |
+| Source | `~/Downloads/SE3.mp4` |
 | Duration | 34.827 s (video 34.700 s) |
 | Resolution / fps | **1108 × 720** (landscape — this is why it looked different), 30 fps, 1041 frames |
 | Audio | Live MIDI-keyboard performance, present 1.5 – 34 s |
@@ -548,7 +548,7 @@ playing). Treat this as "roughly moderate tempo", not a value to sync anything t
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/動画1.mp4` |
+| Source | `~/Downloads/動画1.mp4` |
 | Duration | 25.108 s (video 25.033 s) |
 | Resolution / fps | 720 × 1280, 30 fps, 751 frames |
 
@@ -577,7 +577,7 @@ refraction.
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/動画2.mp4` |
+| Source | `~/Downloads/動画2.mp4` |
 | Duration | 21.638 s (video 21.520 s) |
 | Resolution / fps | 720 × 1280, **25 fps**, 538 frames |
 
@@ -606,7 +606,7 @@ BIGKIJI's cosmic transitions.
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/動画3.mp4` |
+| Source | `~/Downloads/動画3.mp4` |
 | Duration | 8.101 s (video 7.967 s) |
 | Resolution / fps | 720 × 1280, 30 fps, 239 frames |
 
@@ -641,7 +641,7 @@ rotation; (3) the photon ring must be a thin, near-blown-out line distinct from 
 
 | | |
 |---|---|
-| Source | `/Users/yuma/Downloads/動画4.mp4` |
+| Source | `~/Downloads/動画4.mp4` |
 | Duration | 16.855 s (video 16.733 s) |
 | Resolution / fps | **720 × 900** (the odd one — 4:5, not 9:16), 30 fps, 502 frames |
 
