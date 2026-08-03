@@ -14,6 +14,11 @@ const LOCAL_PROVIDERS = new Set(['qwen', 'ollama']);
 // of this list is who could have overwritten whom.
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit', 'Delete']);
 const MAX_TRACKED_EDITS = 200;
+// Pi's own tool allowlist. `pi --help` documents `--tools read,grep,find,ls` as
+// read-only mode. bash is absent from both: a shell is a write primitive whatever the
+// role, and nothing local needs one yet.
+const LOCAL_TOOLS_READ = 'read,grep,find,ls';
+const LOCAL_TOOLS_WRITE = 'read,grep,find,ls,edit,write';
 const { ContextPruner } = require('./context-pruner');
 const { createStepReader, providerEmitsSteps } = require('./stream-steps');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
@@ -371,8 +376,28 @@ class TaskRunner extends EventEmitter {
     // gets a working command.
     if (provider === 'glm') return { command: process.env.PI_BIN || 'pi',
       args: ['--print', '--model', `zai/${model || GLM_MODELS.flagship}`, '--no-context-files', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', prompt] };
-    if (provider === 'qwen' || provider === 'ollama') return { command: process.env.OLLAMA_BIN || 'ollama',
-      args: ['run', model || process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b', prompt] };
+    // Local work runs through Pi, not through `ollama run`.
+    //
+    // `ollama run <model> <prompt>` is text in, text out: no file reads, no shell, no
+    // way to check anything. The local role is "context pruning and continuity check",
+    // which is reading — so it was being asked to check things it could not open, from
+    // the prompt text alone. Measured 2026-08-04: the same model through Pi listed a
+    // directory, read a file and reported its contents correctly.
+    //
+    // Read tools only unless the run was approved to write, using Pi's own allowlist —
+    // its help documents exactly this as read-only mode. The approval gate tells the
+    // owner whether a task will write; a task that can write when the manifest said it
+    // would not makes that manifest a lie, which is the worst defect available here.
+    //
+    // The boundary for these processes is pi-sandbox (~/.pi/agent/sandbox.json), not
+    // BigKiji's PreToolUse hook, which only intercepts Claude Code.
+    if (provider === 'qwen' || provider === 'ollama') {
+      const tools = policy.allowWrite.length ? LOCAL_TOOLS_WRITE : LOCAL_TOOLS_READ;
+      return { command: process.env.PI_BIN || 'pi',
+        args: ['--print', '--model', `ollama/${model || process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b'}`,
+          '--no-context-files', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates',
+          '--tools', tools, prompt] };
+    }
     throw new Error(`No task adapter for provider: ${provider}`);
   }
 

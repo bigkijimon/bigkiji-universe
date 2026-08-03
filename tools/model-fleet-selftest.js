@@ -72,11 +72,23 @@ ok('the command that runs carries the chosen model', () => {
     return index >= 0 ? args[index + 1] : args[1];
   };
   assert.equal(modelOf('glm', 'glm-4.7-flash'), 'zai/glm-4.7-flash', 'GLM ignored this and always ran its flagship');
-  assert.equal(modelOf('qwen', 'qwen3.5:latest'), 'qwen3.5:latest', 'and the local tier was pinned to the 21GB model');
+  // Prefixed, like glm's zai/ above: local work now runs through Pi rather than
+  // `ollama run`, so the model name carries Pi's provider namespace.
+  assert.equal(modelOf('qwen', 'qwen3.5:latest'), 'ollama/qwen3.5:latest', 'and the local tier was pinned to the 21GB model');
   assert.equal(modelOf('codex', CODEX_MODELS.general), CODEX_MODELS.general);
   // A caller that resolved nothing still gets a working command.
   assert.equal(modelOf('glm', ''), `zai/${GLM_MODELS.flagship}`);
-  assert.equal(modelOf('qwen', ''), LOCAL_MODELS.heavy);
+  assert.equal(modelOf('qwen', ''), `ollama/${LOCAL_MODELS.heavy}`);
+  // Read tools unless the run was approved to write. A task that can write when the
+  // disclosure manifest said it would not makes that manifest a lie.
+  const readOnly = runner.adapter('qwen', 'p', root, { allowRead: [], allowWrite: [] }, {}, '').args;
+  assert.equal(readOnly[readOnly.indexOf('--tools') + 1], 'read,grep,find,ls');
+  const writable = runner.adapter('qwen', 'p', root, { allowRead: [], allowWrite: [root] }, {}, '').args;
+  assert.match(writable[writable.indexOf('--tools') + 1], /edit,write$/);
+  for (const args of [readOnly, writable]) {
+    assert.ok(!args.includes('bash'), 'a shell is a write primitive whatever the role');
+    assert.ok(args.includes('--no-extensions'), 'CVE-2026-54325: project-local extensions load without approval');
+  }
 });
 
 ok('several models run at once, and only one of them on the GPU', () => {
