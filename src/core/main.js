@@ -7,7 +7,15 @@ const fs = require('fs');
 const { expand } = require('dotenv-expand');
 const dotenv = require('dotenv');
 const APP_ROOT = path.resolve(__dirname, '..', '..');
-expand(dotenv.config({ path: path.join(APP_ROOT, '.env') }));
+// The packaged app's root is Contents/Resources/app, where a secrets file correctly
+// is not. Read the data root first — see env-file.js.
+{
+  const { resolveDataRoot, defaultUserData } = require('./data-root');
+  const { loadEnvFiles } = require('./env-file');
+  let dataRoot = '';
+  try { dataRoot = resolveDataRoot({ userData: defaultUserData() }).dataRoot; } catch (_) {}
+  loadEnvFiles({ dataRoot, appRoot: APP_ROOT, dotenv, expand });
+}
 const { createPathConfig } = require('./path-config');
 let savedPaths = {};
 try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}

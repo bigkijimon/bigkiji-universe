@@ -5,7 +5,15 @@
 // inherits that process's environment — and the CLI, unlike Electron, never
 // loaded .env. Loading it here makes the answer the same either way. dotenv does
 // not overwrite a variable that is already set, so an explicit export still wins.
-try { require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '..', '.env') }); } catch (_) { /* optional */ }
+try {
+  const nodePath = require('path');
+  const appRoot = nodePath.resolve(__dirname, '..', '..', '..');
+  const { resolveDataRoot, defaultUserData } = require('../../core/data-root');
+  const { loadEnvFiles } = require('../../core/env-file');
+  let root = '';
+  try { root = resolveDataRoot({ userData: defaultUserData() }).dataRoot; } catch (_) {}
+  loadEnvFiles({ dataRoot: root, appRoot });
+} catch (_) { /* optional */ }
 
 const http = require('http');
 const fs = require('fs');
