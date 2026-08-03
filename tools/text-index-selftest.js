@@ -15,7 +15,7 @@
 const assert = require('assert');
 
 const { keywords, jaccard: originalJaccard } = require('../src/domain/pi-agent/task-cache');
-const { extractTerms: originalSkillTerms, SkillRegistry } = require('../src/domain/pi-agent/skill-registry');
+const { extractTerms: originalSkillTerms, SkillRegistry, CATEGORIES } = require('../src/domain/pi-agent/skill-registry');
 const { termsFor } = require('../src/domain/pi-agent/context-pruner');
 const index = require('../src/domain/pi-agent/text-index');
 
@@ -247,7 +247,7 @@ const ranker = new SkillRegistry({ roots: [] });
 for (const request of REQUESTS) {
   for (const limit of [1, 2, 4]) {
     ranker.skills = scoreDocs();
-    assert.deepStrictEqual(index.rankDocs(request, scoreDocs(), { limit }), ranker.match(request, { limit }),
+    assert.deepStrictEqual(index.rankDocs(request, scoreDocs(), { limit, categories: CATEGORIES }), ranker.match(request, { limit }),
       `rankDocs diverged from SkillRegistry.match on ${show(request)} (limit ${limit})`);
   }
 }

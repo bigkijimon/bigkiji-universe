@@ -76,16 +76,21 @@ const MODES = Object.freeze({
   // than one, because the two buckets are scored on completely different scales.
   skillWords: Object.freeze({
     coerce: 'string',
-    pattern: /[A-Za-z][A-Za-z0-9.+_-]{2,}/g,
+    pattern: /[A-Za-z][A-Za-z0-9.+_-]{2,}|[ァ-ヺー-ヿ]{2,}/g,
     expand: 'whole',
     lowercaseTerm: true,
     stop: SKILL_STOP,
   }),
-  // skill-registry.extractTerms(), CJK half. Case is left alone: bigrams are CJK, where
+  // skill-registry.extractTerms(), kanji half. Case is left alone: bigrams are CJK, where
   // lowercasing is a no-op, and the matcher tests them against the raw request.
+  //
+  // Kanji only, and katakana moved up to skillWords, because hiragana bigrams are
+  // grammar: 「が足」「足り」「りな」「ない」 are inflection, they are rare across a skill
+  // corpus, and rarity-weighting therefore scored them as distinctive. Measured, that
+  // put an English-quiz skill at the top of "GPUのメモリが足りない".
   skillGrams: Object.freeze({
     coerce: 'string',
-    pattern: /[぀-ヿ㐀-䶿一-鿿]+/g,
+    pattern: /[㐀-䶿一-鿿]{2,}/g,
     expand: 'bigram',
   }),
 });
@@ -97,13 +102,13 @@ const MODES = Object.freeze({
 // capped low on both sides.
 const MATCH_WEIGHTS = Object.freeze({
   word: 10, shortWord: 4, wordLength: 4,
-  gram: 2, gramCap: 20,
+  gram: 7, triggerGram: 16, gramTop: 3, gramCap: 22, gramWeightDefault: 0.5,
   bodyWord: 2, bodyGram: 0.5, bodyCap: 6,
   id: 16, family: 12, familyMin: 3,
-  threshold: 10, limit: 2,
+  threshold: 10, floorRatio: 0.6, limit: 2,
 });
 
-const PRUNE_FIELDS = Object.freeze(['words', 'grams', 'bodyWords', 'bodyGrams']);
+const PRUNE_FIELDS = Object.freeze(['words', 'grams', 'bodyWords', 'bodyGrams', 'triggerWords', 'triggerGrams']);
 
 function isStop(stop, term) {
   if (!stop) return false;
@@ -156,8 +161,16 @@ function extractTerms(text, mode = MODES.cache) {
 // are guaranteed to be present even when the description is long enough to bury them.
 function skillTerms(description = '', name = '') {
   const trigger = /Trigger\s*:\s*(.+)$/im.exec(description);
-  const source = `${name} ${trigger ? trigger[1] : ''} ${description}`;
-  return { words: extractTerms(source, MODES.skillWords), grams: extractTerms(source, MODES.skillGrams) };
+  const stated = `${name} ${trigger ? trigger[1] : ''}`;
+  const source = `${stated} ${description}`;
+  return {
+    words: extractTerms(source, MODES.skillWords),
+    grams: extractTerms(source, MODES.skillGrams),
+    // Indexed a second time on their own so the matcher can tell a term the author
+    // declared as a trigger from one that merely appears in the prose around it.
+    triggerWords: extractTerms(stated, MODES.skillWords),
+    triggerGrams: extractTerms(stated, MODES.skillGrams),
+  };
 }
 
 // Intersection over union on two term lists. The `|| 1` guards the empty-empty case,
@@ -197,6 +210,23 @@ function pruneCommonTerms(docs, { fields = PRUNE_FIELDS, ratio = 0.4, minDocs = 
   return list;
 }
 
+// A Latin term has to land on a word boundary. Plain substring matching put three
+// unrelated skills on 「READMEを直してテストも通す」, all of them on the four letters of
+// "read" inside README. Japanese has no such boundaries — and no such accidents, since
+// its terms here are whole kanji compounds and katakana words — so it stays a substring
+// test. Boundaries are checked by hand rather than by \b, which does not fire between a
+// Latin letter and a kana character.
+const ALNUM = /[a-z0-9]/;
+function wordHit(haystack, word) {
+  if (!ALNUM.test(word)) return haystack.includes(word);
+  for (let at = haystack.indexOf(word); at >= 0; at = haystack.indexOf(word, at + 1)) {
+    const before = at === 0 ? '' : haystack[at - 1];
+    const after = haystack[at + word.length] || '';
+    if (!ALNUM.test(before) && !ALNUM.test(after)) return true;
+  }
+  return false;
+}
+
 // Scores indexed documents against a request and returns the best few.
 //
 // Words are tested against the lowercased request and grams against the raw one, which is
@@ -206,21 +236,34 @@ function pruneCommonTerms(docs, { fields = PRUNE_FIELDS, ratio = 0.4, minDocs = 
 // typed. Note that an empty id substring-matches everything and therefore scores the id
 // bonus — preserved from the original, where a document without an id is not a case that
 // can occur, and changing it would move real scores.
-function rankDocs(text, docs = [], { limit = MATCH_WEIGHTS.limit, weights = null } = {}) {
+function rankDocs(text, docs = [], { limit = MATCH_WEIGHTS.limit, weights = null,
+  gramWeight = null, categories = null } = {}) {
   const w = weights ? { ...MATCH_WEIGHTS, ...weights } : MATCH_WEIGHTS;
   const raw = String(text || '');
   const haystack = raw.toLowerCase();
   if (!haystack.trim()) return [];
-  const scored = (Array.isArray(docs) ? docs : []).map((doc) => {
+  const list = Array.isArray(docs) ? docs : [];
+  const scored = list.map((doc) => {
     let score = 0;
     for (const word of doc.words || []) {
-      if (haystack.includes(word)) score += word.length >= w.wordLength ? w.word : w.shortWord;
+      if (wordHit(haystack, word)) score += word.length >= w.wordLength ? w.word : w.shortWord;
     }
-    let gramHits = 0;
-    for (const gram of doc.grams || []) if (raw.includes(gram)) gramHits += 1;
-    score += Math.min(w.gramCap, gramHits * w.gram);
+    // A bigram is worth (how strongly the author meant it as a trigger) × (how rare it
+    // is), and only the strongest few count. A long Japanese description overlaps a short
+    // request on a dozen pieces of filler, and summing all of them let the wordiest
+    // document out-score the one the request actually named.
+    const triggers = new Set(doc.triggerGrams || []);
+    const hits = [];
+    for (const gram of doc.grams || []) {
+      if (!raw.includes(gram)) continue;
+      const rarity = gramWeight ? (gramWeight.get(gram) ?? w.gramWeightDefault) : w.gramWeightDefault;
+      hits.push((triggers.has(gram) ? w.triggerGram : w.gram) * rarity);
+    }
+    const gramHits = hits.length;
+    hits.sort((a, b) => b - a);
+    score += Math.min(w.gramCap, hits.slice(0, w.gramTop).reduce((sum, value) => sum + value, 0));
     let bodyScore = 0;
-    for (const word of doc.bodyWords || []) if (haystack.includes(word)) bodyScore += w.bodyWord;
+    for (const word of doc.bodyWords || []) if (wordHit(haystack, word)) bodyScore += w.bodyWord;
     for (const gram of doc.bodyGrams || []) if (raw.includes(gram)) bodyScore += w.bodyGram;
     score += Math.min(w.bodyCap, bodyScore);
     const id = String(doc.id || '').toLowerCase();
@@ -230,9 +273,43 @@ function rankDocs(text, docs = [], { limit = MATCH_WEIGHTS.limit, weights = null
     return { doc, score: Math.round(score), gramHits };
   }).filter((row) => row.score >= w.threshold);
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit).map((row) => ({ ...row.doc, score: row.score }));
+  // Second place has to be in the same league as first. "Next.jsのページが遅い" scored the
+  // Next.js skill at 26 and an auth skill at 14, purely because Auth0's description
+  // mentions Next.js in passing — and with two slots, that spent one of them on ~900
+  // tokens of unrelated instructions.
+  const floor = (scored[0]?.score || 0) * w.floorRatio;
+  return onePerCategory(scored.filter((row) => row.score >= floor), list, haystack, categories)
+    .slice(0, limit)
+    .map((row) => ({ ...row.doc, score: row.score, ...(row.standsFor ? { standsFor: row.standsFor } : {}) }));
+}
+
+// One document per category, because an assignment only has room for two of them.
+//
+// Asking about n8n returned n8n-workflow-patterns, n8n-subworkflows and n8n-self-hosting
+// — three members of one family — and both slots went to the same subject. The
+// best-scoring member speaks for its category, and where the family has an entry point
+// that is what is returned; unless the request named a specific member out loud, in which
+// case the owner asked for that one and gets it.
+function onePerCategory(scored, docs, haystack = '', categories = null) {
+  if (!categories || !categories.length) return scored;
+  const categoryOf = (id) => categories.find((category) => category.members.test(String(id).toLowerCase())) || null;
+  const byId = new Map(docs.map((doc) => [String(doc.id || '').toLowerCase(), doc]));
+  const taken = new Set();
+  const out = [];
+  for (const row of scored) {
+    const category = categoryOf(row.doc.id);
+    const key = category ? category.id : row.doc.id;
+    if (taken.has(key)) continue;
+    taken.add(key);
+    const canonical = category && byId.get(category.canonical);
+    const named = haystack.includes(String(row.doc.id || '').toLowerCase());
+    out.push(canonical && !named && canonical.id !== row.doc.id
+      ? { ...row, doc: canonical, standsFor: row.doc.id }
+      : row);
+  }
+  return out;
 }
 
 module.exports = { MODES, MATCH_WEIGHTS, PRUNE_FIELDS,
   CACHE_STOP, SKILL_STOP, PRUNE_STOP,
-  extractTerms, skillTerms, jaccard, pruneCommonTerms, rankDocs };
+  extractTerms, skillTerms, jaccard, pruneCommonTerms, rankDocs, wordHit };

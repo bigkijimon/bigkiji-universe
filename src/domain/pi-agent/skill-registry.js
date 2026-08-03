@@ -48,6 +48,34 @@ function toolRepoSkillRoots(home = HOME) {
   return roots;
 }
 
+// One skill per category, because an assignment only has room for two.
+//
+// The owner's instruction: 「カテゴリーごとに1本にして欲しい。ボタンのデザイン修正はUIデザインの
+// スキルなので他にある大きなものと1本にまとめて」. Measured, the problem is real — asking about
+// n8n returned n8n-workflow-patterns, n8n-subworkflows and n8n-self-hosting, three members of
+// one family, and both available slots went to the same subject. The families below share an
+// entry point, so the entry point stands for the family and the second slot stays free for
+// something that is actually different.
+//
+// This groups at selection time; it does not merge or modify any skill file. The owner's
+// originals under ~/.claude/skills remain the source of truth and are untouched.
+const CATEGORIES = [
+  // The owner's own standing rule already says every UI/screen/design task goes through
+  // product-design, so the design-judgment skills answer as one.
+  { id: 'ui-design', canonical: 'product-design', members: /^(?:product-design|frontend-design|web-design-guidelines|uiux-daily)$/ },
+  { id: 'n8n', canonical: 'using-n8n-mcp-skills', members: /^(?:n8n-|using-n8n)/ },
+  { id: 'figma', canonical: 'figma-use', members: /^figma-/ },
+  { id: 'firecrawl', canonical: 'firecrawl-scrape', members: /^firecrawl/ },
+  { id: 'sonarqube', canonical: 'sonar-analyze', members: /^sonar-/ },
+  { id: 'blog', canonical: 'blog-pipeline', members: /^(?:blog-pipeline|tech-blog-publish|hs-blog)$/ },
+  { id: 'web-frontend', canonical: 'nextjs', members: /^(?:nextjs$|next-|turbopack$|(?:vercel-)?react-best-practices$|vercel-react-view-transitions$)/ },
+];
+
+function categoryOf(id = '') {
+  const key = String(id).toLowerCase();
+  return CATEGORIES.find((category) => category.members.test(key)) || null;
+}
+
 // Paths that must never be indexed as authoritative.
 //   _archive / cleanup- : superseded snapshots. Indexing a stale copy of a skill is
 //                         worse than having none, because it reads as current.
@@ -102,25 +130,45 @@ function describeWithoutFrontmatter(text) {
 // token per sentence and nothing ever matches. Without a morphological analyser the
 // standard answer is character bigrams: index every adjacent pair of CJK characters and
 // test them as substrings. Latin words are indexed whole.
-const CJK = /[぀-ヿ㐀-䶿一-鿿]/;
+// Japanese carries meaning in kanji compounds and katakana loanwords; hiragana is
+// mostly grammar. Indexing every adjacent pair regardless produced bigrams like を足,
+// が足, 作り and ない, which are inflection and particles — and because they are rare
+// across a skill corpus, rarity-weighting then scored them as if they were distinctive.
+// Measured: "GPUのメモリが足りない" ranked an English-quiz skill first, on 「が足」「足り」「りな」.
+//   kanji    compounds concatenate (音楽制作 → 音楽 / 楽制 / 制作), so bigrams are right
+//   katakana runs are already whole words (デザイン, ワークフロー), so they are indexed
+//            whole and scored beside Latin words
+//   hiragana is dropped
+const WORD_RUN = /[A-Za-z][A-Za-z0-9.+_-]{2,}|[ァ-ヺー-ヿ]{2,}/g;
+const KANJI_RUN = /[㐀-䶿一-鿿]{2,}/g;
 // Frontmatter scaffolding and filler that would otherwise match everything.
 const STOPWORDS = new Set(['trigger', 'the', 'and', 'for', 'with', 'use', 'used', 'when', 'this',
   'that', 'from', 'not', 'skill', 'task', 'tasks', 'etc']);
 
-function extractTerms(description = '', name = '') {
-  const trigger = /Trigger\s*:\s*(.+)$/im.exec(description);
-  const source = `${name} ${trigger ? trigger[1] : ''} ${description}`;
+function termsOf(source) {
   const words = new Set();
   const grams = new Set();
-  for (const word of source.match(/[A-Za-z][A-Za-z0-9.+_-]{2,}/g) || []) {
-    const lower = word.toLowerCase();
-    if (!STOPWORDS.has(lower)) words.add(lower);
+  for (const token of source.match(WORD_RUN) || []) {
+    const term = token.toLowerCase();
+    if (!STOPWORDS.has(term)) words.add(term);
   }
-  for (const run of source.match(new RegExp(`${CJK.source}+`, 'g')) || []) {
-    if (run.length === 1) continue;
+  for (const run of source.match(KANJI_RUN) || []) {
     for (let i = 0; i + 2 <= run.length; i += 1) grams.add(run.slice(i, i + 2));
   }
   return { words: [...words], grams: [...grams] };
+}
+
+// The `Trigger:` list is the one place a skill author states, in the owner's own
+// language, the words that should summon this skill. Everything else in the frontmatter
+// merely describes it. Keeping the two apart is what makes a short Japanese request
+// reach a skill at all: 「ボタンのデザインを直したい」 shares three bigrams with
+// product-design and nothing else, which under flat per-hit scoring fell below the floor
+// and matched nothing.
+function extractTerms(description = '', name = '') {
+  const trigger = /Trigger\s*:\s*(.+)$/im.exec(description);
+  const triggers = termsOf(`${name} ${trigger ? trigger[1] : ''}`);
+  const all = termsOf(`${name} ${trigger ? trigger[1] : ''} ${description}`);
+  return { ...all, triggerWords: triggers.words, triggerGrams: triggers.grams };
 }
 
 // The "traps" sections are where the owner records what actually went wrong. They are
@@ -147,6 +195,23 @@ function buildDigest(body) {
 function versionOf(file) {
   const match = /[\\/](\d+)\.(\d+)\.(\d+)[\\/]/.exec(file);
   return match ? Number(match[1]) * 1e6 + Number(match[2]) * 1e3 + Number(match[3]) : -1;
+}
+
+// A Latin term has to land on a word boundary. Plain substring matching put three
+// unrelated skills on 「READMEを直してテストも通す」, all of them on the four letters of
+// "read" inside README. Japanese has no such boundaries — and no such accidents, since
+// its terms here are whole kanji compounds and katakana words — so it stays a substring
+// test. Boundaries are checked by hand rather than by \b, which does not fire between a
+// Latin letter and a kana character.
+const ALNUM = /[a-z0-9]/;
+function wordHit(haystack, word) {
+  if (!ALNUM.test(word)) return haystack.includes(word);
+  for (let at = haystack.indexOf(word); at >= 0; at = haystack.indexOf(word, at + 1)) {
+    const before = at === 0 ? '' : haystack[at - 1];
+    const after = haystack[at + word.length] || '';
+    if (!ALNUM.test(before) && !ALNUM.test(after)) return true;
+  }
+  return false;
 }
 
 function preferSkill(candidate, current) {
@@ -222,12 +287,30 @@ class SkillRegistry {
         : dir.includes(`${path.sep}plugins${path.sep}`) ? 'plugin'
           : root === path.join(HOME, '.claude', 'skills') ? 'owner' : 'project';
       skill.rootIndex = this.roots.indexOf(root);
+      skill.category = (categoryOf(skill.id) || {}).id || '';
       const previous = byId.get(skill.id);
       if (!previous || preferSkill(skill, previous)) byId.set(skill.id, skill);
     }
     this.skills = [...byId.values()];
     this.pruneCommonTerms();
+    this.weighGrams();
     return this.skills;
+  }
+
+  // How much one shared bigram is worth depends entirely on how rare it is. 「音楽」
+  // occurs in two skills out of 119 and is nearly proof on its own; 「作成」 occurs in
+  // dozens and proves nothing. Counting both as one hit is why a request naming exactly
+  // one specific thing scored below a request that happened to share filler.
+  weighGrams() {
+    this.gramWeight = new Map();
+    const total = this.skills.length;
+    if (total < 2) return;
+    const df = new Map();
+    for (const skill of this.skills) {
+      for (const gram of new Set([...skill.grams, ...(skill.bodyGrams || [])])) df.set(gram, (df.get(gram) || 0) + 1);
+    }
+    const scale = Math.log(total);
+    for (const [gram, count] of df) this.gramWeight.set(gram, Math.log(total / count) / scale);
   }
 
   // Indexing whole bodies makes generic vocabulary ("生成", "実行", "file") appear in
@@ -236,12 +319,14 @@ class SkillRegistry {
   pruneCommonTerms() {
     if (this.skills.length < 4) return;
     const limit = Math.ceil(this.skills.length * 0.4);
-    for (const field of ['words', 'grams', 'bodyWords', 'bodyGrams']) {
+    for (const field of ['words', 'grams', 'bodyWords', 'bodyGrams', 'triggerWords', 'triggerGrams']) {
       const freq = new Map();
       for (const skill of this.skills) {
         for (const term of new Set(skill[field])) freq.set(term, (freq.get(term) || 0) + 1);
       }
-      for (const skill of this.skills) skill[field] = skill[field].filter((term) => freq.get(term) <= limit);
+      for (const skill of this.skills) {
+        if (Array.isArray(skill[field])) skill[field] = skill[field].filter((term) => freq.get(term) <= limit);
+      }
     }
   }
 
@@ -256,13 +341,24 @@ class SkillRegistry {
       let score = 0;
       // A distinctive product name ("ace-step", "comfyui") is worth far more than a
       // short common word, and far more than any single bigram.
-      for (const word of skill.words) if (haystack.includes(word)) score += word.length >= 4 ? 10 : 4;
-      let gramHits = 0;
-      for (const gram of skill.grams) if (raw.includes(gram)) gramHits += 1;
-      score += Math.min(20, gramHits * 2);
+      for (const word of skill.words) if (wordHit(haystack, word)) score += word.length >= 4 ? 10 : 4;
+      // A bigram is worth (how strongly the author meant it as a trigger) × (how rare it
+      // is). One rare trigger bigram can clear the floor on its own, which is what a
+      // short Japanese request gives you; a handful of common ones still cannot.
+      // Only the strongest few count. A long Japanese description overlaps a short
+      // request on a dozen pieces of filler, and summing them let the wordiest skill in
+      // the corpus out-score the one the request actually named.
+      const triggerGrams = new Set(skill.triggerGrams || []);
+      const hits = [];
+      for (const gram of skill.grams) {
+        if (!raw.includes(gram)) continue;
+        hits.push((triggerGrams.has(gram) ? 16 : 7) * (this.gramWeight?.get(gram) ?? 0.5));
+      }
+      const gramHits = hits.length;
+      score += Math.min(22, hits.sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0));
       // Body evidence is corroboration, not purpose: capped low on both sides.
       let bodyScore = 0;
-      for (const word of skill.bodyWords || []) if (haystack.includes(word)) bodyScore += 2;
+      for (const word of skill.bodyWords || []) if (wordHit(haystack, word)) bodyScore += 2;
       for (const gram of skill.bodyGrams || []) if (raw.includes(gram)) bodyScore += 0.5;
       score += Math.min(6, bodyScore);
       if (haystack.includes(skill.id.toLowerCase())) score += 16;
@@ -273,7 +369,34 @@ class SkillRegistry {
       return { skill, score: Math.round(score), gramHits };
     }).filter((row) => row.score >= 10);
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, limit).map((row) => ({ ...row.skill, score: row.score }));
+    // Second place has to be in the same league as first. "Next.jsのページが遅い" scored
+    // nextjs at 26 and the auth skill at 14, purely because Auth0's description mentions
+    // Next.js in passing — and with two slots per assignment, that spent one of them on
+    // ~900 tokens of unrelated instructions.
+    const floor = (scored[0]?.score || 0) * 0.6;
+    return this.onePerCategory(scored.filter((row) => row.score >= floor), haystack).slice(0, limit)
+      .map((row) => ({ ...row.skill, score: row.score, ...(row.standsFor ? { standsFor: row.standsFor } : {}) }));
+  }
+
+  // The best-scoring member speaks for its category, and where the family has an entry
+  // point that is what is returned — unless the request named a specific member out
+  // loud, in which case the owner asked for that one and gets it.
+  onePerCategory(scored, haystack = '') {
+    const byId = new Map(this.skills.map((skill) => [skill.id.toLowerCase(), skill]));
+    const taken = new Set();
+    const out = [];
+    for (const row of scored) {
+      const category = categoryOf(row.skill.id);
+      const key = category ? category.id : row.skill.id;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      const canonical = category && byId.get(category.canonical);
+      const named = haystack.includes(row.skill.id.toLowerCase());
+      out.push(canonical && !named && canonical.id !== row.skill.id
+        ? { ...row, skill: canonical, standsFor: row.skill.id }
+        : row);
+    }
+    return out;
   }
 
   // A compact block for the plan prompt. Text only — this never grants filesystem
@@ -315,5 +438,5 @@ class SkillRegistry {
   }
 }
 
-module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, EXCLUDE, parseFrontmatter,
+module.exports = { SkillRegistry, DEFAULT_ROOTS, APP_SKILLS, EXCLUDE, CATEGORIES, categoryOf, parseFrontmatter,
   describeWithoutFrontmatter, extractTerms, buildDigest, versionOf };
