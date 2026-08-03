@@ -297,6 +297,38 @@ ok('the monitor relay and footer still contain no box drawing at all', () => {
       `monitor overflowed ${cols} columns at ${cols}x${rows} (widest ${widest([...header, ...middle, ...footer])})`);
   }
 });
+ok('the local tools are on screen at all', () => {
+  // tool-registry has had detection and health checks for nine tools since V2.5 —
+  // ComfyUI, ACE-Step, LTX-2, Ollama, n8n, Obsidian, graphify, the GPU signal — and
+  // every one of them was wired to nothing. There was no way to see from BigKiji
+  // whether the thing you were about to route work to was up.
+  const state = {
+    phase: 'IDLE', sessions: [], runs: [], inventory: { files: [] },
+    models: { models: [{ id: 'glm', displayName: 'GLM', status: 'IDLE', available: true, connected: false, metrics: {} }] },
+    tools: { connected: 2, tools: [
+      { id: 'comfyui', status: 'connected', detail: 'ComfyUI 0.25.0 at 127.0.0.1:8000' },
+      { id: 'ollama', status: 'connected', detail: '11 local models' },
+      { id: 'acestep', status: 'found', detail: 'No answer from 127.0.0.1:8001' },
+    ] },
+  };
+  const plain = T.renderStatus(state, { width: 88 }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+  const text = plain.join('\n');
+  assert.match(text, /tools\(2\/3 connected\)/);
+  assert.match(text, /comfyui\s+connected/);
+  // `found` is installed but unverified, which is a different fact from missing and
+  // has to read differently.
+  assert.match(text, /acestep\s+found/);
+  assert.ok(!/acestep\s+connected/.test(text));
+  for (const line of plain) assert.ok(T.stringWidth(line) <= 88, `overflows: ${JSON.stringify(line)}`);
+  // A daemon too old to report tools must not produce an empty heading.
+  const without = T.renderStatus({ ...state, tools: undefined }, { width: 88 }).join('\n');
+  assert.ok(!/tools\(/.test(without), 'no tools known is no tools section');
+  // And the panel counts them without growing a row.
+  const panel = modelPanel(state, { width: 60, theme: require('../src/domain/terminal/cli-theme').themeFor('plan'), label: ' bigkiji ' });
+  assert.equal(panel.length, 4, 'the header box stays four rows');
+  assert.match(panel.join(' ').replace(/\x1b\[[0-9;]*m/g, ''), /2\/3 tools/);
+});
+
 ok('the header carries exactly one box, and it is the model panel', () => {
   for (const [cols, rows] of [[100, 30], [60, 24], [200, 50]]) {
     const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });

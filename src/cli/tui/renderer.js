@@ -86,6 +86,11 @@ function modelPanel(state = {}, options = {}) {
   // provider authenticated and ready — which the owner reasonably took to mean five
   // of them were broken. What the header is answering is "how many could work".
   if (fleet.length) bits.push(`${fleet.filter((model) => model.available ?? model.connected).length}/${fleet.length} ready`);
+  // The local tools the owner routes work to — ComfyUI, Ollama, n8n, Obsidian,
+  // graphify. Detection and health checks for all nine existed and were wired to
+  // nothing, so there was no way to see from here whether they were up.
+  const tools = state?.tools;
+  if (tools?.tools?.length) bits.push(`${tools.connected}/${tools.tools.length} tools`);
 
   // The cat is pixels, and pixels are colour. `truncateToWidth` returns plain
   // text — it strips ANSI even when it has nothing to trim — so the mark is

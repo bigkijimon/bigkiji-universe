@@ -580,7 +580,24 @@ function renderStatus(state = {}, options = {}) {
       : `${padToWidth(label, 9)} ${theme.dim}${padToWidth(`${metric(metrics.tokensUsed)} tok`, 11)}${padToWidth(`${metric(metrics.latencyMs, 'ms')}`, 8)}${theme.reset}`;
     out.push(`  ${tone}${mark.turn}${theme.reset} ${theme.ink}${name}${theme.reset} ${tone}${detail}${theme.reset}`);
   }
-  out.push(...renderNote(`${count(connected)} connected of ${count(fleet)}`, { width, theme, mark }));
+  out.push(...renderNote(`${count(connected)} busy of ${count(fleet)} · ${fleet.filter((model) => model.available ?? model.connected).length} ready`, { width, theme, mark }));
+
+  // The local tools. Detection and health checks for all nine have existed since
+  // V2.5 and were wired to nothing, so there was no way to see from BigKiji whether
+  // the thing you were about to route work to was up. Anything not connected says
+  // why in its own words — `found` is installed but unverified, and that is a
+  // different fact from missing.
+  const tools = state?.tools?.tools || [];
+  if (tools.length) {
+    out.push(...renderToolCall('tools', `${state.tools.connected}/${tools.length} connected`, { width, theme, mark }));
+    const toolName = Math.max(10, Math.min(16, width - 46));
+    for (const tool of tools) {
+      const up = tool.status === 'connected';
+      const tone = up ? theme.accent : theme.muted;
+      const detail = width < 76 ? phrase(tool.status) : `${padToWidth(phrase(tool.status), 11)}${theme.dim}${truncateToWidth(tool.detail || '', Math.max(0, width - toolName - 20))}${theme.reset}`;
+      out.push(`  ${tone}${up ? mark.done : mark.pending}${theme.reset} ${theme.ink}${padToWidth(lower(tool.id), toolName)}${theme.reset} ${tone}${detail}${theme.reset}`);
+    }
+  }
   return out;
 }
 

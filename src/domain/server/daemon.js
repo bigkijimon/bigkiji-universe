@@ -27,6 +27,7 @@ const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordin
 const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
+const { detectAndProbeAll } = require('../pi-agent/tool-registry');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -59,7 +60,7 @@ const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
-  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint',
+  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint', tools: 'tools:status',
   review: 'run:review', reflection: 'run:reflection',
 });
 
@@ -221,12 +222,17 @@ class DaemonEngine extends EventEmitter {
     this.models.on('update', (snapshot) => this.publish('models', snapshot));
     this.piFleet.on('update', (snapshot) => this.publish('fleet', snapshot));
     setImmediate(() => this.refreshInventory().catch(() => {}));
+    setImmediate(() => this.refreshTools().catch(() => {}));
     this.inventoryTimer = setInterval(() => this.refreshInventory().catch((err) => {
       // `engine` is a parameter of startDaemon(), not a name in class scope: the only
       // path that reported an inventory failure threw a ReferenceError instead.
       this.publish('error', { source: 'daemon', error: `Inventory refresh failed: ${String(err.message).slice(0, 100)}` });
     }), 300000);
     this.inventoryTimer.unref();
+    // The same slow cadence: these are HTTP probes against local services, and the
+    // answer changes when the owner starts ComfyUI, not fifteen times a second.
+    this.toolTimer = setInterval(() => this.refreshTools().catch(() => {}), 300000);
+    this.toolTimer.unref();
   }
 
   publish(event, data) { this.emit('event', { event, channel: EVENT_CHANNEL[event] || event, data, ts: Date.now() }); }
@@ -550,6 +556,29 @@ class DaemonEngine extends EventEmitter {
     return result;
   }
 
+  /**
+   * Which local tools are actually answering.
+   *
+   * tool-registry has had detection and health checks for nine of them since V2.5 —
+   * ComfyUI, ACE-Step, LTX-2, Ollama, n8n, Obsidian, graphify and the GPU signal —
+   * and nothing was wired to a display, so the owner had no way to see from BigKiji
+   * whether the thing they were about to route work to was up.
+   * @returns {Promise<{tools: object[], connected: number, scannedAt: number}>}
+   */
+  async refreshTools() {
+    let rows = [];
+    try {
+      const result = await detectAndProbeAll({});
+      rows = Array.isArray(result) ? result : (result?.tools || Object.values(result || {}));
+    } catch (_) { rows = []; }
+    const tools = rows.filter((row) => row && row.id).map((row) => ({
+      id: row.id, status: row.status || 'missing', detail: String(row.detail || row.note || '').slice(0, 120),
+    }));
+    this.tools = { tools, connected: tools.filter((tool) => tool.status === 'connected').length, scannedAt: Date.now() };
+    this.publish('tools', this.tools);
+    return this.tools;
+  }
+
   async refreshInventory({ limit = 700, maxDepth = 5 } = {}) {
     const files = []; const folders = new Set(); const root = this.workspace;
     const walk = async (directory, depth) => {
@@ -650,7 +679,7 @@ class DaemonEngine extends EventEmitter {
   state() {
     return { source: 'bigkiji-daemon', version: 2, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt,
       workspace: this.workspace, activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
-      tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, security: this.securityState,
+      tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, tools: this.tools, security: this.securityState,
       conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
   }
   shutdown() { clearInterval(this.inventoryTimer); this.runner.shutdown(); }
