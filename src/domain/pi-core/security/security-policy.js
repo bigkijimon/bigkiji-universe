@@ -24,8 +24,14 @@ const CREDENTIAL_FILES = Object.freeze({
   // Pi is a program, not a model: models.json is where it learns which provider and
   // key to borrow, and settings.json is version and package state. Neither holds a
   // secret here — this machine's models.json refers to ${ZAI_API_KEY} rather than
-  // storing the key — but both are required for `pi --model zai/...` to resolve.
+  // storing the key — but both are required for `pi --model ...` to resolve at all.
+  //
+  // Measured 2026-08-03: without them the sandbox hid Pi's own configuration from
+  // Pi, so every model BigKiji asked for came back `Model "..." not found` and the
+  // process exited. The same shape as Claude Code and the login keychain — the
+  // sandbox was hiding the store, not the secret.
   glm: ['.pi/agent/models.json', '.pi/agent/settings.json'],
+  pi: ['.pi/agent/models.json', '.pi/agent/settings.json'],
 });
 
 // Some logins are not a file you can lend — they are a few named fields inside a

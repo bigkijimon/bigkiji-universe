@@ -29,7 +29,12 @@ class PiBridge extends EventEmitter {
     this.lastStats = null;    // 前回get_session_statsの実測値（差分=ターン消費）
     this.modelIdx = 0;        // フォールバックチェーンの現在位置
     this.fallbackPromise = null; // 同じstderrを複数経路で受けても1ティアだけ降格する
-    this.security = new SecurityPolicy(); this.runtime = this.security.createRuntime(`pi-bridge-${process.pid}`);
+    this.ready = false;   // Pi は spawn 直後まだ RPC を読んでいない
+    this.queued = [];     // 読み始めるまでの発言を順序どおり保持する
+    this.security = new SecurityPolicy();
+    // 'pi' lends Pi its own models.json and settings.json into the sandbox HOME.
+    // Without them Pi cannot resolve any model id at all — see CREDENTIAL_FILES.
+    this.runtime = this.security.createRuntime(`pi-bridge-${process.pid}`, 'pi');
     fs.writeFileSync(this.runtime.policyFile, JSON.stringify(this.security.normalize({ valid: true, vaultRoot: cwd,
       taskRoot: cwd, allowRead: [], allowWrite: [] }), null, 2), { mode: 0o600 });
   }
@@ -119,10 +124,13 @@ class PiBridge extends EventEmitter {
     this.decoder = new StringDecoder('utf8');
     this.proc.stdout.on('data', (d) => this._ingest(this.decoder.write(d)));
     this.proc.stderr.on('data', (d) => this.emit('stderr', d.toString()));
+    this.ready = false; this.queued = [];
+    this._waitForReady();
     this.proc.on('exit', () => {
       // Flush whatever the decoder was still holding: a truncated final character
       // is better reported than silently dropped.
       if (this.decoder) { const tail = this.decoder.end(); if (tail) this._ingest(tail); this.decoder = null; }
+      clearTimeout(this.readyTimer); this.readyTimer = null; this.ready = false; this.queued = [];
       this.proc = null;
       this.isStreaming = false;
       this.emit('status', { running: false });
@@ -140,7 +148,39 @@ class PiBridge extends EventEmitter {
 
   _send(obj) {
     if (!this.proc) return;
-    this.proc.stdin.write(JSON.stringify(obj) + '\n');
+    // Pi is not ready the instant spawn() returns: it installs its packages first
+    // (measured, `added 6 packages ... audited 7 packages in 3s` on stderr) and only
+    // then starts reading RPC. A prompt written into that window is accepted by the
+    // pipe and dropped by Pi, which is exactly what "I asked and nothing happened"
+    // looked like. Queue until something has been answered.
+    if (!this.ready) { this.queued.push(obj); return; }
+    this.proc.stdin.write(`${JSON.stringify(obj)}\n`);
+  }
+
+  /**
+   * Poll until Pi answers, then release whatever was said while it was starting.
+   *
+   * Pi emits nothing unprompted, so there is no event to wait for — waiting for one
+   * deadlocks. get_session_stats is the cheapest question that must be answered, and
+   * asking it repeatedly is safe because it changes nothing. The first reply of any
+   * kind proves stdin is being read.
+   */
+  _waitForReady({ everyMs = 800, giveUpMs = 60000 } = {}) {
+    const deadline = Date.now() + giveUpMs;
+    const poke = () => {
+      if (this.ready || !this.proc) return;
+      if (Date.now() > deadline) { this.emit('status', { running: true, error: 'pi never answered' }); return; }
+      try { this.proc.stdin.write(`${JSON.stringify({ id: `ready-${++this.reqSeq}`, type: 'get_session_stats' })}\n`); } catch (_) {}
+      this.readyTimer = setTimeout(poke, everyMs); this.readyTimer.unref?.();
+    };
+    poke();
+  }
+
+  /** Flush whatever was said before Pi was listening, in the order it was said. */
+  _drain() {
+    if (!this.proc) return;
+    const pending = this.queued; this.queued = [];
+    for (const obj of pending) this.proc.stdin.write(`${JSON.stringify(obj)}\n`);
   }
 
   _ingest(chunk) {
@@ -156,6 +196,7 @@ class PiBridge extends EventEmitter {
         this.pending.get(evt.id)(evt);
         this.pending.delete(evt.id);
       }
+      if (!this.ready) { this.ready = true; clearTimeout(this.readyTimer); this._drain(); }
       if (evt.type === 'message_update') this.isStreaming = true;
       if (evt.type === 'agent_end' || evt.type === 'idle') this.isStreaming = false;
       this.emit('event', evt);
@@ -237,4 +278,26 @@ class PiBridge extends EventEmitter {
   }
 }
 
-module.exports = { PiBridge, MODEL };
+/**
+ * The answer text out of a Pi event, or ''.
+ *
+ * Shapes measured 2026-08-03 against pi 0.83: a delta arrives as
+ * `assistantMessageEvent.delta`, the finished block as `.content`, and the whole
+ * message as `message.content[].text`. Reading only `evt.text` — which is what a
+ * caller would reasonably try — finds nothing in any of them.
+ * @returns {string}
+ */
+function answerText(evt = {}) {
+  const inner = evt.assistantMessageEvent;
+  if (inner) {
+    if (inner.type === 'text_delta' && typeof inner.delta === 'string') return inner.delta;
+    if (inner.type === 'text_end' && typeof inner.content === 'string') return inner.content;
+    return '';
+  }
+  if (evt.type === 'message_end' && evt.message?.role === 'assistant') {
+    return (evt.message.content || []).filter((part) => part?.type === 'text').map((part) => part.text).join('');
+  }
+  return '';
+}
+
+module.exports = { PiBridge, MODEL, answerText };

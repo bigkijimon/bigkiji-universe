@@ -20,7 +20,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { StringDecoder } = require('string_decoder');
-const { PiBridge } = require('../src/domain/pi-agent/pi-bridge');
+const { PiBridge, answerText } = require('../src/domain/pi-agent/pi-bridge');
 
 let failures = 0;
 const ok = (name, body) => { try { body(); console.log(`  ok  ${name}`); } catch (error) { failures += 1; console.error(`  FAIL ${name}\n       ${error.message}`); } };
@@ -32,6 +32,7 @@ function harness() {
   const bridge = new PiBridge({ cwd: process.cwd() });
   const written = [];
   bridge.proc = { stdin: { write: (line) => written.push(line) }, kill() {} };
+  bridge.ready = true; bridge.queued = []; // a live session; the start-up queue has its own test
   bridge.decoder = new StringDecoder('utf8');
   const events = [];
   bridge.on('event', (event) => events.push(event));
@@ -146,6 +147,94 @@ ok('a key the owner just entered takes effect without a restart', () => {
   assert.ok(Array.isArray(chain) && chain.length, 'it returns the chain it rebuilt');
   assert.ok(chain.every((tier) => tier && tier.id), `every tier is a real model id: ${JSON.stringify(chain)}`);
   assert.ok(chain.some((tier) => tier.need === 'ollama'), 'and the local tier is always in it');
+});
+
+ok('a prompt sent before Pi is listening is not lost', () => {
+  // Pi installs its packages before it starts reading RPC — measured, `added 6
+  // packages ... audited 7 packages in 3s` on stderr — and a prompt written into
+  // that window is accepted by the pipe and dropped. That is what "I asked and
+  // nothing happened" was. And it cannot be solved by waiting for an event: Pi
+  // emits nothing unprompted, so waiting deadlocks.
+  const bridge = new PiBridge({ cwd: process.cwd() });
+  const written = [];
+  bridge.proc = { stdin: { write: (line) => written.push(line) }, kill() {} };
+  bridge.ready = false; bridge.queued = [];
+  bridge.prompt('first'); bridge.steer('second');
+  assert.equal(written.length, 0, 'nothing goes down the pipe before Pi is reading it');
+  assert.equal(bridge.queued.length, 2);
+  bridge._ingest('{"type":"response"}\n'); // the first answer of any kind proves it is reading
+  assert.equal(bridge.ready, true);
+  assert.equal(bridge.queued.length, 0, 'and the queue is released, not left behind');
+  assert.deepEqual(written.map((line) => JSON.parse(line).message), ['first', 'second'],
+    'in the order the owner said them');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'pi-bridge.js'), 'utf8');
+  assert.match(source, /get_session_stats/, 'readiness is polled with a question that changes nothing');
+  assert.match(source, /_waitForReady/);
+});
+
+ok('the answer can actually be found in the event', () => {
+  // Shapes measured against pi 0.83. `evt.text` — what a caller would reasonably
+  // try — is empty in every one of them.
+  assert.equal(answerText({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'PI ' } }), 'PI ');
+  assert.equal(answerText({ type: 'message_update', assistantMessageEvent: { type: 'text_end', content: 'PI OK' } }), 'PI OK');
+  assert.equal(answerText({ type: 'message_update', assistantMessageEvent: { type: 'text_start', partial: {} } }), '',
+    'a start carries no new text — counting it would double the first token');
+  assert.equal(answerText({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PI OK' }] } }), 'PI OK');
+  assert.equal(answerText({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'the prompt' }] } }), '',
+    'the owner\'s own words are not the answer');
+  assert.equal(answerText({ type: 'agent_end' }), '');
+  assert.equal(answerText({}), '');
+});
+
+ok('only the finished message reaches the transcript', () => {
+  const { renderEvent } = require('../src/cli/tui/transcript');
+  const done = renderEvent('pi', { type: 'message_end', message: { role: 'assistant', model: 'qwen2.5:0.5b', content: [{ type: 'text', text: 'PI OK' }] } }, { width: 78 })
+    .join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(done, /pi\(answered · qwen2\.5:0\.5b\)/);
+  assert.match(done, /PI OK/);
+  // The deltas are what the footer's cat already reports; printing a partial answer
+  // four times is the duplication the run block used to have.
+  assert.equal(renderEvent('pi', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'PI' } }, { width: 78 }).length, 0);
+  for (const noise of ['turn_start', 'message_start', 'agent_settled', 'agent_start']) {
+    assert.equal(renderEvent('pi', { type: noise }, { width: 78 }).length, 0, `${noise} is machinery, not conversation`);
+  }
+  assert.match(renderEvent('pi', { kind: 'degraded', model: 'ollama/qwen3.5:35b-a3b' }, { width: 78 }).join('').replace(/\x1b\[[0-9;]*m/g, ''),
+    /fell back to/, 'a demotion is something the owner should see');
+});
+
+ok('the daemon hosts one session and cannot execute through it', () => {
+  const daemon = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+  assert.match(daemon, /if \(this\.piSession\) return this\.piSession;/, 'one session, so the GUI and the CLI cannot disagree');
+  assert.match(daemon, /url\.pathname === '\/api\/pi\/prompt'/);
+  assert.match(daemon, /redactPayload\(String\(text \|\| ''\)\.trim\(\)\)/, 'the owner\'s text is inspected before it leaves');
+  // Toolless by construction — the approval gate stays the only door to work.
+  const bridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'pi-bridge.js'), 'utf8');
+  assert.match(bridgeSource, /'--no-tools'/);
+  const piBlock = daemon.slice(daemon.indexOf('  pi() {'), daemon.indexOf('  piPrompt('));
+  for (const term of ['approve', 'planHash', 'disclosureHash', '_seal']) {
+    assert.ok(!new RegExp(`\\b${term}\\b`).test(piBlock), `the Pi session must not reach ${term}`);
+  }
+  assert.match(daemon, /this\.piSession\?\.dispose\(\)/, 'and it is a child process — it has to be cleaned up');
+});
+
+ok('npm narrating its own work is not an error', () => {
+  // Pi installs its packages on every start. Nine lines of npm progress, funding
+  // notices and an upgrade advert reached the transcript as red error blocks before
+  // the answer did — the owner asked Pi a question and got a changelog.
+  const daemon = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+  const pattern = new RegExp(daemon.match(/const PI_STDERR_NOISE = \/(.*)\/i;/)[1], 'i');
+  for (const line of ['added 6 packages, and audited 7 packages in 3s', '1 package is looking for funding',
+    'run `npm fund` for details', 'found 0 vulnerabilities', 'npm notice',
+    'npm notice New major version of npm available! 11.17.0 -> 12.0.2', 'up to date, audited 11 packages in 1s']) {
+    assert.ok(pattern.test(line), `progress, not failure: ${line}`);
+  }
+  // And a real failure still has to get through — that is the whole point of not
+  // simply silencing stderr.
+  for (const line of ['Error: Model "ollama/x" not found.', 'EACCES: permission denied',
+    'TypeError: cannot read properties of undefined', 'found 3 vulnerabilities (2 high)']) {
+    assert.ok(!pattern.test(line), `must not be swallowed: ${line}`);
+  }
+  assert.match(daemon, /if \(!PI_STDERR_NOISE\.test\(line\)\)/);
 });
 
 if (failures) { console.error(`pi rpc selftest: ${failures} FAILED`); process.exit(1); }

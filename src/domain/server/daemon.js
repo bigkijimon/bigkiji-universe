@@ -64,6 +64,11 @@ const EVENT_CHANNEL = Object.freeze({
   review: 'run:review', reflection: 'run:reflection',
 });
 
+// npm narrating its own work while Pi boots. Everything here is progress or an
+// advertisement; a real failure says `Error`, `not found`, `EACCES` or similar and
+// is deliberately not matched.
+const PI_STDERR_NOISE = /^(?:added \d+ packages|removed \d+ packages|changed \d+ packages|up to date|audited \d+ packages|\d+ packages? (?:are|is) looking for funding|run `npm fund` for details|found 0 vulnerabilities|npm notice|npm warn deprecated|Changelog: https|To update run: npm)/i;
+
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
 // The content type comes from this map, never from the request or from sniffing, so a
 // file cannot be served as something it is not. An extension that is absent here is a
@@ -614,6 +619,71 @@ class DaemonEngine extends EventEmitter {
   // owners actually ask: what is waiting on me, what is running, what did I say I
   // wanted, and which models can even do the work.
   /**
+   * The owner's own line to Pi.
+   *
+   * Step ① of the workflow the owner described is "オーナーが Pi に話しかける", and
+   * until now there was no way to do that from the CLI at all — Pi ran only inside
+   * the Electron window, and the terminal talked to Ollama directly. This is the
+   * same PiBridge, hosted by the daemon, so both surfaces drive one session rather
+   * than two that disagree.
+   *
+   * It is deliberately toolless. PiBridge spawns with --no-tools, --no-extensions
+   * and a sandboxed HOME, so this is a second brain to consult and not a second way
+   * to execute anything: the approval gate stays the only door to work.
+   * @returns {object}
+   */
+  pi() {
+    if (this.piSession) return this.piSession;
+    const { PiBridge } = require('../pi-agent/pi-bridge');
+    const session = new PiBridge({ cwd: this.workspace });
+    session.on('event', (event) => this.publish('pi', event));
+    session.on('status', (status) => this.publish('pi', { kind: 'status', ...status, model: session.model }));
+    session.on('stderr', (text) => {
+      const line = String(text || '').trim();
+      if (!line) return;
+      // Pi installs its packages on every start and npm narrates it on stderr. Nine
+      // lines of "added 6 packages", funding notices and an npm upgrade advert
+      // arrived in the transcript as red error blocks before the answer did — the
+      // owner asked Pi a question and got a changelog. Progress is not a failure.
+      if (!PI_STDERR_NOISE.test(line)) this.publish('pi', { kind: 'stderr', text: line.slice(0, 400) });
+      // A model Pi does not have, a spent quota, a 429: demote a tier rather than
+      // dying silently. detectErrorAndFallback has existed since V13 and was wired
+      // only inside Electron, so from the daemon Pi simply exited — measured, with
+      // `Model "ollama/qwen2.5:0.5b" not found` on stderr and nothing anywhere else.
+      if (!session.detectErrorAndFallback(line)) return;
+      session.fallback().then((moved) => {
+        this.publish('pi', { kind: moved ? 'degraded' : 'exhausted', model: session.model, reason: line.slice(0, 160) });
+      }).catch(() => {});
+    });
+    session.on('degrade', (event) => this.publish('commentary', { source: 'Pi', status: 'DEGRADE',
+      text: `${event.model} → next tier · ${String(event.reason || '').slice(0, 120)}` }));
+    this.piSession = session;
+    return session;
+  }
+
+  /**
+   * One instruction to Pi, started on demand.
+   * @returns {{ok: boolean, model: string, running: boolean, error?: string}}
+   */
+  piPrompt(text, { steer = false } = {}) {
+    const inspected = redactPayload(String(text || '').trim());
+    if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
+    const message = inspected.text;
+    if (!message) throw new Error('Pi prompt is empty');
+    const session = this.pi();
+    if (!session.proc && !session.start()) return { ok: false, running: false, model: session.model, error: 'pi did not start' };
+    if (steer) session.steer(message); else session.prompt(message);
+    return { ok: true, running: true, model: session.model, streaming: session.isStreaming };
+  }
+
+  /** Which model Pi is borrowing, and whether it is up. */
+  piStatus() {
+    const session = this.piSession;
+    return { running: !!session?.proc, model: session?.model || null, streaming: !!session?.isStreaming,
+      chain: (session?.chainList || []).map((tier) => tier.id) };
+  }
+
+  /**
    * Ask the provider that did the work what it would do differently.
    *
    * Answered as data, not prose: model_performance.json had zero samples and priors
@@ -682,7 +752,13 @@ class DaemonEngine extends EventEmitter {
       tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, tools: this.tools, security: this.securityState,
       conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
   }
-  shutdown() { clearInterval(this.inventoryTimer); this.runner.shutdown(); }
+  shutdown() {
+    clearInterval(this.inventoryTimer); clearInterval(this.toolTimer);
+    // Pi is a child process. Leaving it behind means the next daemon finds the port
+    // free and the model still loaded by a process nobody owns.
+    try { this.piSession?.dispose(); } catch (_) {}
+    this.runner.shutdown();
+  }
 }
 
 function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}) {
@@ -768,6 +844,30 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       }
       // Free the card on demand. The owner asked for standby at zero, and a render
       // that has to wait sixty seconds for chat weights to time out is not zero.
+      // The owner's line to Pi. Toolless by construction — PiBridge spawns with
+      // --no-tools and --no-extensions — so nothing here can execute work, and the
+      // approval gate remains the only door to that.
+      if (req.method === 'POST' && url.pathname === '/api/pi/prompt') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        const body = await readJson(req);
+        return json(res, 200, engine.piPrompt(body.text, { steer: body.steer === true }));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/pi/model') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        const body = await readJson(req);
+        const session = engine.pi();
+        return json(res, 200, { model: session.setModel(body.model), running: !!session.proc });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/pi/compact') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        return json(res, 200, { compacted: !!(await engine.pi().compact()) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/pi/stop') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        engine.piSession?.stop();
+        return json(res, 200, engine.piStatus());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/pi/status') return json(res, 200, engine.piStatus());
       if (req.method === 'POST' && url.pathname === '/api/gpu/release') {
         if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
         return json(res, 200, await engine.releaseGpu());

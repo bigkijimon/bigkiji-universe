@@ -118,6 +118,11 @@ class DaemonClient extends EventEmitter {
     return this.post('/api/reload', { policyHash: state.security?.policyHash || '', ownerConfirmed: true });
   }
   publish(channel, payload) { return this.post('/api/publish', { channel, payload }); }
+  piPrompt(text, options = {}) { return this.post('/api/pi/prompt', { text, ...options }); }
+  piModel(model) { return this.post('/api/pi/model', { model }); }
+  piCompact() { return this.post('/api/pi/compact', {}); }
+  piStop() { return this.post('/api/pi/stop', {}); }
+  piStatus() { return this.get('/api/pi/status'); }
   sessions() { return this.get('/api/sessions'); }
   session(id) { return this.get(`/api/session?id=${encodeURIComponent(id)}`); }
   ideas(limit = 40) { return this.get(`/api/ideas?limit=${encodeURIComponent(limit)}`); }

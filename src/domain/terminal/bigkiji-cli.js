@@ -69,7 +69,7 @@ function header(state = {}, width = screenWidth()) {
   return [...panel, `${A.muted}${facts}${A.reset}`].join('\n');
 }
 
-const HINTS = '/help commands · /status fleet · /approve start waiting run · /gpu off free vram · /mode ask|auto-edit|plan · /exit';
+const HINTS = '/help commands · /status fleet · /approve start waiting run · /pi talk to pi · /gpu off free vram · /exit';
 function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HINTS, width)}${A.reset}`; }
 
 async function ensureClient() {
@@ -128,7 +128,7 @@ function stateText(state, width = screenWidth()) {
 }
 function printState(state) { console.log(stateText(state)); }
 
-const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint', 'review', 'reflection'];
+const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint', 'review', 'reflection', 'pi'];
 
 async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
@@ -291,6 +291,37 @@ async function repl(client) {
             ...renderToolResult(`${run.assignments?.length || 0} assignments released`, { ...view(), maxLines: 2 })]);
         }
       }
+      // Step 1 of the owner's own workflow: talk to Pi.
+      //
+      // Until now there was no way to do that from here — Pi ran only inside the
+      // Electron window and the terminal talked to Ollama directly. Same session as
+      // the GUI, so the two surfaces cannot disagree about what was said.
+      //
+      // Toolless by construction: PiBridge spawns with --no-tools and
+      // --no-extensions, so this is a second brain to consult, not a second way to
+      // execute anything. Work still goes through /run and /approve.
+      else if (text === '/pi' || text.startsWith('/pi ')) {
+        const rest = text.slice(3).trim();
+        const [word, ...others] = rest.split(/\s+/);
+        if (!rest || word === 'status') {
+          const status = await client.piStatus();
+          emit([...renderToolCall('pi', status.running ? `${lower(status.model)} ${glyphs().note} running` : 'stopped', view()),
+            ...renderToolResult(`model: ${status.model || '—'}\nchain: ${status.chain?.join(' -> ') || '—'}\nusage: /pi <message> · /pi model <id> · /pi steer <message> · /pi compact · /pi stop`,
+              { ...view(), maxLines: 4 })]);
+        } else if (word === 'model') {
+          const result = await client.piModel(others.join(' '));
+          emit(renderToolCall('pi', result.model ? `model ${lower(result.model)}` : 'model unchanged — give an id', view()));
+        } else if (word === 'stop') { emit(renderToolCall('pi', phrase((await client.piStop()).running ? 'running' : 'stopped'), view())); }
+        else if (word === 'compact') { emit(renderToolCall('pi', (await client.piCompact()).compacted ? 'compacted' : 'not compacted', view())); }
+        else {
+          const steer = word === 'steer';
+          const message = steer ? others.join(' ') : rest;
+          if (!message) throw new Error('usage: /pi <message> | /pi steer <message> | /pi model <id> | /pi compact | /pi stop');
+          const result = await client.piPrompt(message, { steer });
+          if (!result.ok) throw new Error(result.error || 'pi did not start');
+          emit(renderToolCall('pi', `${lower(result.model)} ${glyphs().note} ${steer ? 'steering' : 'thinking'}`, view()));
+        }
+      }
       // The owner's card also runs ComfyUI, LTX-2 and ACE-Step. `/gpu off` unloads
       // the local weights now instead of waiting out the 60s idle window, which is
       // the difference between starting a render and waiting a minute to start one.
@@ -302,7 +333,7 @@ async function repl(client) {
       }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. when a run is waiting, /approve starts it and /reject drops it; nothing external ever runs without that.', view()));
+      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. when a run is waiting, /approve starts it and /reject drops it; nothing external ever runs without that. /pi consults pi directly — it has no tools and cannot run anything.', view()));
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the

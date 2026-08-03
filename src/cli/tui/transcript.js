@@ -510,6 +510,22 @@ function renderEvent(event, data = {}, options = {}) {
       const body = [data.whatWentWrong, `${mark.active} ${data.whatToDoDifferently}`].filter(Boolean).join('\n');
       return [...head, ...renderToolResult(body, { ...base, indent: 6, maxLines: 4 })];
     }
+    // Pi's own voice.
+    //
+    // Only the finished message reaches the transcript: the deltas are what the
+    // footer's loading cat is already reporting, and printing a partial answer four
+    // times is the same duplication the run block had. Everything else Pi emits —
+    // turn_start, message_start, agent_settled — is machinery, not conversation.
+    case 'pi': {
+      if (data.kind === 'stderr') return renderToolResult(text, { ...base, maxLines: 2, isError: true });
+      if (data.kind === 'degraded') return renderNote(`pi fell back to ${lower(data.model || '?')}`, base);
+      if (data.kind === 'exhausted') return renderToolResult(`pi has no tier left: ${data.reason || 'unknown'}`, { ...base, maxLines: 2, isError: true });
+      if (data.type !== 'message_end' || data.message?.role !== 'assistant') return [];
+      const said = (data.message.content || []).filter((part) => part?.type === 'text').map((part) => part.text).join('').trim();
+      if (!said) return [];
+      const model = data.message.model ? ` ${mark.note} ${lower(data.message.model)}` : '';
+      return [...renderToolCall('pi', `answered${model}`, base), ...renderAssistantText(said, { ...base, maxLines: resultLines + 4 })];
+    }
     case 'checkpoint': {
       // Thirty minutes in, the owner is told where the run is rather than left to
       // guess or find it finished an hour later.
