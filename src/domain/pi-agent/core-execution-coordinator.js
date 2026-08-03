@@ -7,6 +7,7 @@ const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-mani
 const { SkillRegistry } = require('./skill-registry');
 const { resolveModel } = require('./model-router');
 const { CircuitBreaker } = require('./circuit-breaker');
+const { reviewResult } = require('./critique');
 const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
@@ -362,6 +363,16 @@ class CoreExecutionCoordinator extends EventEmitter {
     // retried still contributes its real result.
     if (['completed', 'failed'].includes(task.status) && !assignment.learned) {
       assignment.learned = true;
+      // BigKiji's half of the critique loop the owner asked for. Deterministic: a
+      // 9B model asked "is this good?" answers yes, so this asks it nothing and
+      // checks facts instead. A result with nothing to say about it stays quiet.
+      const review = reviewResult({ run, assignment, task });
+      assignment.review = review;
+      this.emit('review', review);
+      if (!review.quiet) {
+        knowledge.recordEvent(run.id, { type: 'result-review', status: task.status, provider: task.provider,
+          evidence: `${review.role}: ${review.summary}` });
+      }
       const durationMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt).getTime() - new Date(task.startedAt).getTime()) : 0;
       const ok = task.status === 'completed';
       const reason = ok ? '' : String(task.failureReason || '');

@@ -146,11 +146,15 @@ function wrapToWidth(text, width) {
 
 const UNICODE_GLYPHS = Object.freeze({
   turn: '●', result: '⎿', user: '>', note: '·',
+  // The critique thread. One cell wide, East Asian Width neutral, and distinct
+  // from the result elbow — a reply to a result is not a result.
+  reply: '⤷',
   done: '☑', active: '▸', pending: '☐', ellipsis: '…', rule: '─',
 });
 // TERM=dumb rarely has the box-drawing elbow or the ballot boxes.
 const ASCII_GLYPHS = Object.freeze({
   turn: '*', result: '\\', user: '>', note: '.',
+  reply: '->',
   done: '[x]', active: '>', pending: '[ ]', ellipsis: '...', rule: '-',
 });
 
@@ -287,14 +291,17 @@ function summarizeToolInput(name, input = {}, { width = 48 } = {}) {
 
 /** `● Bash(npm test)` — one line, name bold, argument dim. */
 function renderToolCall(name, input, options = {}) {
-  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 0 } = options;
+  // `glyph` overrides the gutter. The critique thread needs a mark that reads as a
+  // reply rather than as a new turn — the same shape at two indents is a wall.
+  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 0, glyph = null } = options;
   const label = String(name || 'tool');
   const argWidth = Math.max(8, width - indent - stringWidth(label) - 6);
   const arg = typeof input === 'string' ? truncateToWidth(input, argWidth) : summarizeToolInput(label, input, { width: argWidth });
   const head = `${theme.bold}${theme.ink}${label}${theme.reset}${theme.muted}(${arg})${theme.reset}`;
   const plainHead = `${label}(${arg})`;
-  const column = indent + stringWidth(mark.turn) + 1;
-  return [`${' '.repeat(indent)}${theme.accent}${mark.turn}${theme.reset} ${
+  const gutter = glyph || mark.turn;
+  const column = indent + stringWidth(gutter) + 1;
+  return [`${' '.repeat(indent)}${theme.accent}${gutter}${theme.reset} ${
     stringWidth(plainHead) > width - column ? truncateToWidth(plainHead, width - column) : head}`];
 }
 
@@ -483,6 +490,25 @@ function renderEvent(event, data = {}, options = {}) {
       // the only thing the transcript ever said about a failure was that it failed.
       const failure = String(data.error || data.reason || '').trim();
       return [...head, ...list, ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
+    }
+    // The critique thread the owner asked for: result, then BigKiji's comment, then
+    // the agent's answer, each one step further in. Two levels only — a third
+    // collapses on a narrow terminal — and no box, because the owner asked by name
+    // for the transcript to stay unboxed.
+    case 'review': {
+      const who = lower(data.role || data.provider || 'agent');
+      // Nothing to say is said in one line. A comment on every result is a comment
+      // nobody reads by Thursday.
+      if (data.quiet) return [`${' '.repeat(2)}${theme.dim}${mark.reply} bigkiji ${mark.note} ${who} ${mark.note} nothing to add${theme.reset}`];
+      const head = renderToolCall('bigkiji', `${who} ${mark.note} ${(data.findings || []).length} to answer`, { ...base, indent: 2, glyph: mark.reply });
+      const body = (data.findings || []).map((item) => `${item.id}: ${item.note}`).join('\n');
+      return [...head, ...renderToolResult(body, { ...base, indent: 4, maxLines: 4, isError: true })];
+    }
+    case 'reflection': {
+      const who = lower(data.role || data.provider || 'agent');
+      const head = renderToolCall(who, data.acknowledged ? 'reflection' : 'disagrees', { ...base, indent: 4, glyph: mark.reply });
+      const body = [data.whatWentWrong, `${mark.active} ${data.whatToDoDifferently}`].filter(Boolean).join('\n');
+      return [...head, ...renderToolResult(body, { ...base, indent: 6, maxLines: 4 })];
     }
     case 'checkpoint': {
       // Thirty minutes in, the owner is told where the run is rather than left to

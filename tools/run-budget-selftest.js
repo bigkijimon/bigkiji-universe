@@ -115,7 +115,8 @@ ok('the footer says what is happening, not what was answered', () => {
   const cli = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'bigkiji-cli.js'), 'utf8');
   assert.match(cli, /const text = data\.phase \|\| data\.status \|\| data\.action/);
   assert.ok(!/const text = data\.reply \|\|/.test(cli));
-  assert.match(cli, /'checkpoint'\]/, 'and the checkpoint has to reach the transcript at all');
+  const relay = cli.match(/const RELAY_EVENTS = \[([^\]]*)\]/)[1];
+  assert.match(relay, /'checkpoint'/, 'and the checkpoint has to reach the transcript at all');
 });
 
 ok('the bottom row says what the fleet is doing, and stays quiet when it is not', () => {

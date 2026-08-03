@@ -128,7 +128,7 @@ function stateText(state, width = screenWidth()) {
 }
 function printState(state) { console.log(stateText(state)); }
 
-const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint'];
+const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint', 'review', 'reflection'];
 
 async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();

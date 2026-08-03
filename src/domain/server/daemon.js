@@ -36,6 +36,7 @@ const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 const { ConversationEngine, normalizeKeepAlive } = require('../pi-core/conversation-engine');
+const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 const stt = require('./speech-to-text');
 
@@ -59,6 +60,7 @@ const EVENT_CHANNEL = Object.freeze({
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
   conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint',
+  review: 'run:review', reflection: 'run:reflection',
 });
 
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
@@ -196,6 +198,16 @@ class DaemonEngine extends EventEmitter {
     this.coordinator.on('run', (run) => { this.piFleet.ingestRun(run); this.onRun(run); });
     // The thirty-minute checkpoint. It is a report, not a kill — the owner asked for
     // 「期限で区切って途中経過を出す」, so the run continues and says where it is.
+    // The critique loop's second half: the agent answers BigKiji's findings.
+    //
+    // Fire and forget, and deliberately so. A reflection that fails must not touch
+    // the result it is about — the work is done and reported either way. It only
+    // runs when there is something to answer, so a clean run costs nothing.
+    this.coordinator.on('review', (review) => {
+      this.publish('review', review);
+      if (review.quiet) return;
+      this.reflect(review).catch(() => {});
+    });
     this.coordinator.on('checkpoint', (report) => {
       const sessionId = this.runSessions.get(report.runId);
       const late = report.overdueMinutes ? ` (${report.budgetMinutes + report.overdueMinutes} min elapsed)` : '';
@@ -572,6 +584,41 @@ class DaemonEngine extends EventEmitter {
   // shared with the transcript, so this buys its space by answering the questions
   // owners actually ask: what is waiting on me, what is running, what did I say I
   // wanted, and which models can even do the work.
+  /**
+   * Ask the provider that did the work what it would do differently.
+   *
+   * Answered as data, not prose: model_performance.json had zero samples and priors
+   * written by hand, so nothing could improve the routing. A structured reflection
+   * is training data for a store that is empty — which is why this exists at all,
+   * rather than being decoration on a result the owner has already read.
+   * @returns {Promise<object|null>}
+   */
+  async reflect(review) {
+    const prompt = reflectionPrompt(review);
+    const local = new (require('../pi-core/conversation-engine').ConversationEngine)({
+      model: this.conversation.model, endpoint: this.conversation.endpoint, timeoutMs: 12000, maxTurns: 2,
+    });
+    let parsed = null;
+    try {
+      // The local model, not the paid one. The finding is already known; this is
+      // shaping a sentence, and shaping a sentence is not worth $10 per million.
+      const turn = await local.turn({ text: prompt, sessionId: `reflect-${review.taskId}` });
+      if (turn.degraded) return null;
+      parsed = JSON.parse(String(turn.reply).replace(/^```(?:json)?\s*|\s*```$/g, ''));
+    } catch (_) {
+      try { parsed = JSON.parse(String(parsed || '')); } catch (__) { parsed = null; }
+    }
+    const reflection = normalizeReflection(parsed, review);
+    if (!reflection) return null;
+    this.publish('reflection', reflection);
+    this.models.ingestReflection?.(reflection);
+    knowledge.recordEvent(review.runId, { type: 'agent-reflection', status: 'REFLECTED', provider: review.provider,
+      evidence: `${review.role}: ${reflection.whatToDoDifferently}` });
+    const sessionId = this.runSessions.get(review.runId);
+    if (sessionId) this.sessions.append(sessionId, { type: 'reflection', ...reflection });
+    return reflection;
+  }
+
   facts() {
     const runs = this.coordinator.snapshot();
     const waiting = runs.filter((run) => run.status === 'AWAITING_APPROVAL');
