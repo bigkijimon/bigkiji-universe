@@ -69,7 +69,7 @@ function header(state = {}, width = screenWidth()) {
   return [...panel, `${A.muted}${facts}${A.reset}`].join('\n');
 }
 
-const HINTS = '/help commands · /status fleet · /mode ask|auto-edit|plan · /exit';
+const HINTS = '/help commands · /status fleet · /approve start waiting run · /mode ask|auto-edit|plan · /exit';
 function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HINTS, width)}${A.reset}`; }
 
 async function ensureClient() {
@@ -240,9 +240,35 @@ async function repl(client) {
       else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
         emit(renderEvent('run', result.run, view())); }
       else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('hud', lower(launched.launched || 'launched'), view())); }
+      // Approving from where the owner already is.
+      //
+      // Until now the only answer to "a run is waiting" was a note telling the
+      // owner to quit and open `bigkiji monitor`, so nothing was ever approved:
+      // the daemon had a run sitting in AWAITING_APPROVAL and the phase bar had
+      // read `awaiting approval` all day. A conversation that can create work and
+      // cannot start it is not a conversation about work.
+      //
+      // The gate itself is unchanged. The hashes below are the ones the
+      // coordinator demands back — a stale revision, plan or disclosure is still
+      // refused, which is the whole point of echoing them rather than sending a
+      // bare id.
+      else if (text === '/approve' || text === '/reject') {
+        live = await client.state();
+        const run = (live.runs || []).filter((item) => item.status === 'AWAITING_APPROVAL').at(-1);
+        if (!run) { emit(renderNote('nothing is waiting for approval', view())); }
+        else if (text === '/reject') {
+          const result = await client.abort(run.id);
+          emit(renderToolCall('reject', `${lower(run.id)} · ${phrase(result.status || 'aborted')}`, view()));
+        } else {
+          const result = await client.approve({ id: run.id, revision: run.revision, planHash: run.planHash,
+            disclosureHash: run.disclosureHash, idempotencyKey: `cli-${run.id}-${run.revision}-${run.disclosureHash}` });
+          emit([...renderToolCall('approve', `${lower(run.id)} · ${phrase(result.status || 'started')}`, view()),
+            ...renderToolResult(`${run.assignments?.length || 0} assignments released`, { ...view(), maxLines: 2 })]);
+        }
+      }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan; every external model still waits for owner approval.', view()));
+      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. when a run is waiting, /approve starts it and /reject drops it; nothing external ever runs without that.', view()));
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the
@@ -299,7 +325,7 @@ async function main(argv = process.argv.slice(2)) {
     if (result.draft) console.log(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, options).join('\n'));
     if (result.run) {
       console.log(renderEvent('run', result.run, options).join('\n'));
-      console.log(renderNote('awaiting owner directive — open “bigkiji monitor” and press a to accept.', options).join('\n'));
+      console.log(renderNote('awaiting your approval — type /approve to start it, or /reject to drop it.', options).join('\n'));
     }
     return;
   }

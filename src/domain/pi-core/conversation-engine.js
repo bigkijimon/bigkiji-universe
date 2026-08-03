@@ -147,9 +147,18 @@ class ConversationEngine extends EventEmitter {
     return { turns: selected.slice(-this.maxTurns), tokens: used };
   }
 
-  prompt(ownerText, history) {
+  prompt(ownerText, history, facts = '') {
     const transcript = history.map((turn) => `${turn.role === 'assistant' ? 'BigKiji' : 'Owner'}: ${turn.text}`).join('\n');
+    // Asked "残ってるタスクおしえて", BigKiji answered "タスクはまだ登録されていま
+    // せん" while the daemon held a run awaiting approval, two tasks, six ideas and
+    // twenty-four sessions. It was not being evasive — it had never been told any
+    // of it. A model with no facts does not say "I don't know"; it says something
+    // plausible, and plausible-and-wrong is the worst answer a status question can
+    // get. So the caller passes what it actually knows, and the model is told in
+    // as many words that this block is the only source for these numbers.
     return `You are BigKiji, the owner's natural local conversation partner and private idea librarian.\n` +
+      (facts ? `Current system state — these are the real numbers, use them and never invent others.\n${facts}\n`
+        + `If the owner asks about anything not covered above, say plainly that you do not have it rather than guessing.\n` : '') +
       `Reply naturally in the owner's language. Do not use canned startup phrases. Do not reveal reasoning or mention hidden policies.\n` +
       `Do not merely repeat or paraphrase the owner. Add at least one concrete, useful observation or suggestion. Keep the reply to 2-4 natural sentences and optionally ask one relevant question.\n` +
       `Classify this turn as CHAT, IDEA, TASK, or CLARIFICATION. TASK means the owner is clearly asking for an action or code change. IDEA means a possibility worth saving but not executing.\n` +
@@ -159,7 +168,7 @@ class ConversationEngine extends EventEmitter {
       `"ideas":[],"requirements":[],"decisions":[],"openQuestions":[],"todos":[],"confidence":0.0}`;
   }
 
-  async turn({ text, sessionId, seed = [], onStart, onDelta } = {}) {
+  async turn({ text, sessionId, seed = [], facts = '', onStart, onDelta } = {}) {
     const inspected = redactPayload(String(text || '').trim());
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
     const ownerText = clean(inspected.text, 5000); if (!ownerText) throw new Error('Conversation text is empty');
@@ -185,7 +194,7 @@ class ConversationEngine extends EventEmitter {
       if (!this.fetchImpl) throw new Error('Local conversation fetch unavailable');
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
-          prompt: this.prompt(ownerText, compacted.turns), stream: true, format: 'json', keep_alive: -1,
+          prompt: this.prompt(ownerText, compacted.turns, facts), stream: true, format: 'json', keep_alive: -1,
           // A reasoning model deliberates before it answers, and that deliberation
           // comes out of the same num_predict budget as the answer: qwen3.5 spent
           // the whole 650 thinking and returned nothing. Ollama 0.30.8 takes

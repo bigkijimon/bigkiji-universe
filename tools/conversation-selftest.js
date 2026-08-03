@@ -132,6 +132,30 @@ function ollama(value) {
   assert.strictEqual(sent.keep_alive, -1, 'and the model stays resident between turns');
   assert.strictEqual(sent.options.num_ctx, 4096);
 
+  // Asked "残ってるタスクおしえて", BigKiji answered "タスクはまだ登録されていま
+  // せん". It was not being evasive: the prompt carried a persona, style rules and
+  // the transcript, and nothing whatsoever about the runs, tasks or ideas the
+  // daemon was holding. A model with no facts does not say "I don't know" — it
+  // says something plausible, which for a status question is the worst answer
+  // available.
+  let withFacts = null;
+  const grab = async (url, init) => { withFacts = JSON.parse(init.body).prompt; return ollama({ kind: 'CHAT', reply: 'ok', confidence: 0.9 })(url, init); };
+  const informed = new ConversationEngine({ fetchImpl: grab, model: 'qwen3.5:latest' });
+  await informed.turn({ text: '残ってるタスクおしえて', sessionId: 'facts',
+    facts: '- runs awaiting your approval: 1 (latest: run-abc, 2 assignments)\n- saved ideas: 6' });
+  assert.ok(withFacts.includes('run-abc'), 'the facts have to reach the model, or it will make some up');
+  assert.ok(withFacts.includes('- saved ideas: 6'));
+  assert.ok(/never invent/i.test(withFacts), 'and it has to be told these are the only real numbers');
+  assert.ok(/do not have it rather than guessing/i.test(withFacts),
+    'with an explicit instruction to admit a gap instead of filling it');
+
+  // No facts supplied is not the same as facts saying zero, and the prompt must
+  // not claim otherwise.
+  let withoutFacts = null;
+  const bare = async (url, init) => { withoutFacts = JSON.parse(init.body).prompt; return ollama({ kind: 'CHAT', reply: 'ok', confidence: 0.9 })(url, init); };
+  await new ConversationEngine({ fetchImpl: bare, model: 'qwen3.5:latest' }).turn({ text: 'hi', sessionId: 'nofacts' });
+  assert.ok(!/Current system state/.test(withoutFacts), 'an empty facts block is omitted, not sent empty');
+
   // A response delivered in one piece still works — an injected fetch, a buffering
   // proxy, or a server without a readable body all land here.
   const whole = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'One piece.', confidence: 0.8 }), model: 'qwen2.5:0.5b' });

@@ -218,7 +218,7 @@ class DaemonEngine extends EventEmitter {
     this.publish('session', this.sessions.read(session.id));
     this.publish('conversation', { kind: 'turn_start', sessionId: session.id, model: this.conversation.model, text: clean.slice(0, 120), receivedAt: Date.now() });
     this.publish('pi', { kind: 'turn_start', model: this.conversation.model, text: clean.slice(0, 120) });
-    const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed,
+    const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
       turnId: result.turnId, provider: result.provider, latencyMs: result.latencyMs });
@@ -426,6 +426,40 @@ class DaemonEngine extends EventEmitter {
     this.inventory = { root, files, folders: [...folders], scannedAt: Date.now(), truncated: files.length >= limit };
     this.publish('inventory', this.inventory);
     return this.inventory;
+  }
+
+  // What the conversation model is allowed to state as fact.
+  //
+  // Everything here is read from live state at the moment of the turn; nothing is
+  // cached, defaulted or rounded up. A count of zero is written as zero, because
+  // "no runs are waiting" is a real and useful answer — it is the *absence* of
+  // this block that produced the failure it exists to fix, where the model
+  // announced there were no tasks while a run sat waiting for approval.
+  //
+  // It is deliberately a dozen short lines. The conversation runs on a 4k window
+  // shared with the transcript, so this buys its space by answering the questions
+  // owners actually ask: what is waiting on me, what is running, what did I say I
+  // wanted, and which models can even do the work.
+  facts() {
+    const runs = this.coordinator.snapshot();
+    const waiting = runs.filter((run) => run.status === 'AWAITING_APPROVAL');
+    const active = runs.filter((run) => ['EXECUTING', 'REPAIRING', 'VERIFYING', 'PLANNING'].includes(run.status));
+    const tasks = this.runner.snapshot();
+    const byStatus = tasks.reduce((acc, task) => ({ ...acc, [task.status]: (acc[task.status] || 0) + 1 }), {});
+    const fleet = this.models.snapshot()?.models || [];
+    const connected = fleet.filter((model) => model.connected).map((model) => model.id);
+    const ideas = this.ideas.list(6);
+    const lines = [
+      `- workspace: ${this.workspace}`,
+      `- runs awaiting your approval: ${waiting.length}${waiting.length ? ` (latest: ${waiting.at(-1).id}, ${waiting.at(-1).assignments?.length || 0} assignments)` : ''}`,
+      `- runs in progress: ${active.length}`,
+      `- tasks: ${tasks.length}${tasks.length ? ` (${Object.entries(byStatus).map(([status, count]) => `${count} ${status}`).join(', ')})` : ''}`,
+      `- saved ideas: ${ideas.length}${ideas.length ? `; most recent: ${ideas.slice(0, 3).map((idea) => idea.title).join(' / ')}` : ''}`,
+      `- conversation sessions on record: ${this.sessions.list(999).length}`,
+      `- models connected right now: ${connected.length ? connected.join(', ') : 'none — no external provider is reachable, so only local work can run'}`,
+      `- to start a waiting run the owner types /approve in the bigkiji CLI`,
+    ];
+    return lines.join('\n');
   }
 
   state() {

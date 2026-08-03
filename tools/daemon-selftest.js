@@ -18,6 +18,42 @@ const WebSocket = require('ws');
   assert.ok(planned.run.assignments.length >= 2);
   assert.ok(fs.existsSync(path.join(root, 'sessions', `${planned.sessionId}.jsonl`)));
   assert.equal(engine.runner.snapshot().filter((task) => task.status === 'running').length, 0, 'models must stay asleep before owner approval');
+
+  // What the conversation model is allowed to state as fact.
+  //
+  // Asked what work was outstanding, BigKiji answered that none was registered
+  // while this engine held a run awaiting approval. The prompt had never carried
+  // any of it, and a model with nothing to go on produces something plausible
+  // rather than admitting the gap. These assert the numbers are real and that the
+  // turn actually receives them — the second one matters because the wiring is a
+  // single argument and losing it looks like nothing at all.
+  {
+    const facts = engine.facts();
+    assert.match(facts, /runs awaiting your approval: 1/, `a waiting run has to be reported: ${facts}`);
+    assert.ok(facts.includes(planned.run.id), 'by id, so the owner can act on it');
+    assert.match(facts, /runs in progress: 0/, 'and zero is stated as zero, not omitted');
+    assert.match(facts, new RegExp(`tasks: ${engine.runner.snapshot().length}\\b`));
+    assert.ok(facts.includes(process.cwd()), 'the workspace is a fact the owner asks about');
+    assert.match(facts, /\/approve/, 'and it says how to start what is waiting');
+    assert.ok(facts.split('\n').length <= 12, 'it shares a 4k window with the transcript');
+
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+    assert.match(source, /facts: this\.facts\(\)/, 'the turn must actually be given them');
+
+    // The CLI can now start a waiting run. Until it could, the only answer to
+    // "a run is waiting" was a note telling the owner to quit and open a
+    // different program, so nothing was ever approved and the phase bar read
+    // `awaiting approval` all day. The gate is unchanged: approve() still
+    // refuses a stale revision, plan or disclosure, which is why the command
+    // echoes all three rather than sending a bare id.
+    const cli = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'bigkiji-cli.js'), 'utf8');
+    assert.match(cli, /text === '\/approve'/, 'the CLI has to be able to approve where the owner already is');
+    assert.match(cli, /text === '\/reject'/);
+    for (const field of ['revision: run.revision', 'planHash: run.planHash', 'disclosureHash: run.disclosureHash', 'idempotencyKey']) {
+      assert.ok(cli.includes(field), `/approve must echo ${field} or the coordinator rejects it`);
+    }
+    assert.ok(!/open .bigkiji monitor. and press a/.test(cli), 'and must not send the owner to another program');
+  }
   const listener = startDaemon({ engine, config: { bind: '127.0.0.1', port: 0, token: 'selftest-token' } });
   await new Promise((resolve) => listener.server.once('listening', resolve));
   const address = listener.server.address(); const base = `http://127.0.0.1:${address.port}`;
