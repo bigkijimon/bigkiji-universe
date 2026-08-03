@@ -2,6 +2,7 @@
 // Pi RPCブリッジ — Coreオーブの頭脳。ローカルOllama（トークン消費ゼロ）のPiを
 // JSONL RPCで子プロセスとして持ち、指示/応答/ツール実行/実測トークンを中継する。
 const { spawn } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
@@ -108,9 +109,20 @@ class PiBridge extends EventEmitter {
       this.emit('status', { running: false, error: err.message });
       return false;
     }
-    this.proc.stdout.on('data', (d) => this._ingest(d.toString()));
+    // Decode across chunk boundaries.
+    //
+    // `d.toString()` on each chunk decodes a partial UTF-8 sequence as replacement
+    // characters, and a 3-byte Japanese character split by a read boundary became
+    // U+FFFD U+FFFD U+FFFD. The line still parses as JSON — replacement characters
+    // are legal inside a JSON string — so nothing errored and the owner simply saw
+    // 承 arrive as ���. Measured: splitting at byte 34 of a message_update line.
+    this.decoder = new StringDecoder('utf8');
+    this.proc.stdout.on('data', (d) => this._ingest(this.decoder.write(d)));
     this.proc.stderr.on('data', (d) => this.emit('stderr', d.toString()));
     this.proc.on('exit', () => {
+      // Flush whatever the decoder was still holding: a truncated final character
+      // is better reported than silently dropped.
+      if (this.decoder) { const tail = this.decoder.end(); if (tail) this._ingest(tail); this.decoder = null; }
       this.proc = null;
       this.isStreaming = false;
       this.emit('status', { running: false });
@@ -160,12 +172,51 @@ class PiBridge extends EventEmitter {
 
   abort() { this._send({ type: 'abort' }); }
 
+  /**
+   * Interrupt the turn in flight without discarding it.
+   *
+   * `steer` reaches the agent after the tool it is currently running finishes, so
+   * the correction lands on work in progress rather than starting a new one.
+   * prompt() picks this automatically mid-stream; this is the explicit form.
+   */
+  steer(message) { this._send({ type: 'prompt', message, streamingBehavior: 'steer' }); }
+
+  /** Queue a message for after the current turn ends, rather than interrupting it. */
+  followUp(message) { this._send({ type: 'prompt', message, streamingBehavior: 'queue' }); }
+
+  /**
+   * Ask Pi to compact its own context.
+   *
+   * Pi compacts automatically at its own threshold. Doing it at a known-quiet
+   * moment — between runs, not mid-thought — is the difference between a pause the
+   * owner chose and one that lands in the middle of an answer.
+   */
+  compact() { return this.request('compact'); }
+
+  /**
+   * Switch which model Pi is borrowing, without restarting it.
+   *
+   * Pi is a program, not a model: it has no brain of its own and borrows one from a
+   * provider per call. Restarting the process to change that threw away the session
+   * with it, which is why setModel existed only as a stop/start.
+   */
+  setModel(model) {
+    if (!model) return null;
+    this._send({ type: 'set_model', model: String(model) });
+    return model;
+  }
+
   request(type, extra = {}) {
     return new Promise((resolve) => {
       const id = `req-${++this.reqSeq}`;
-      this.pending.set(id, resolve);
+      // The deadline is cleared when the answer arrives and never holds the loop
+      // open on its own. It did both wrong: a five minute timer stayed armed after
+      // every answered request, so the process could not exit for five minutes
+      // after its last question — which is why this file could not be tested at all.
+      const timer = setTimeout(() => { if (this.pending.delete(id)) resolve(null); }, 300000);
+      timer.unref?.();
+      this.pending.set(id, (event) => { clearTimeout(timer); resolve(event); });
       this._send({ id, type, ...extra });
-      setTimeout(() => { if (this.pending.delete(id)) resolve(null); }, 300000);
     });
   }
 
