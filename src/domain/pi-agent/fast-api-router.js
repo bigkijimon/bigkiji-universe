@@ -17,6 +17,13 @@ async function ollamaReady(timeoutMs = 850) {
   try { const response = await fetch('http://127.0.0.1:11434/api/tags', { signal: ctrl.signal }); return response.ok; }
   catch (_) { return false; } finally { clearTimeout(timer); }
 }
+// Which providers this front desk may use — not which providers exist.
+//
+// The paid entries are false on purpose: the front desk is local-only, because no
+// owner text may reach a paid provider before a disclosure manifest is approved.
+// This was also wired to the fleet display, where the same false meant "offline"
+// and put four working providers behind the word "Not available". Anything asking
+// "can this provider run" wants provider-readiness.survey(), not this.
 async function detect() { return { ollama: await ollamaReady(), glm: false, claude: false, codex: false,
   gemini: false, kimi: false, openrouter: false }; }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
@@ -98,4 +105,4 @@ class FastFacilitatorRouter {
   reset() { this.pending = null; }
 }
 
-module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText };
+module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, ollamaReady, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText };

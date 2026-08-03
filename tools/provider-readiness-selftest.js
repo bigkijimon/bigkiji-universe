@@ -132,4 +132,33 @@ ok('every provider declares how to fix it', () => {
   }
 });
 
+// The fleet display asked the wrong question.
+//
+// fast-api-router.detect() reports which providers the *front desk* may use, and it
+// is local-only on purpose: no owner text reaches a paid provider before a
+// disclosure manifest is approved. Wired to the status display, those deliberate
+// falses put four working providers behind the word "Not available" — measured on
+// screen 2026-08-03 while GLM and Codex were completing real work.
+ok('the front desk router is not a status display', () => {
+  const fastRouter = require('../src/domain/pi-agent/fast-api-router');
+  const routerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
+  for (const provider of ['glm', 'claude', 'codex', 'gemini']) {
+    assert.match(routerSource, new RegExp(`${provider}: false`), `${provider} is false here by design, and that is not a status`);
+  }
+  assert.equal(typeof fastRouter.ollamaReady, 'function', 'the display needs the local probe without the paid falses');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'main.js'), 'utf8');
+  assert.ok(!/fastRouter\.detect\(\)\.then\(\(availability\) => fleetMetrics\.setAvailability/.test(main),
+    'the fleet display must not be driven by the front desk router');
+  assert.match(main, /providerSurvey\(\{ secret:/, 'it asks readiness, the same question the daemon and the coordinator ask');
+});
+ok('a ready provider is shown as usable, an unready one is not', () => {
+  const { ModelStatusStore } = require('../src/domain/hud/model-status-store');
+  const store = new ModelStatusStore({});
+  store.setAvailability({ claude: true, codex: true, gemini: false, glm: true, ollama: true });
+  const byId = Object.fromEntries(store.snapshot().models.map((model) => [model.id, model]));
+  assert.strictEqual(byId['claude-code'].status, 'IDLE');
+  assert.strictEqual(byId.glm.available, true);
+  assert.strictEqual(byId.gemini.status, 'OFFLINE', 'a provider that really cannot start still says so');
+});
+
 console.log(`provider readiness selftest: PASS · ${checks} checks · a CLI login counts · GOOGLE_API_KEY works for gemini · an empty variable does not · settings outrank env · reasons carry no secrets · the daemon uses it for both routing and display`);

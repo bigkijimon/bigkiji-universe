@@ -48,7 +48,7 @@ const { SettingsStore } = require('./settings-store');
 const { NaturalTTSService } = require('./natural-tts-service');
 const { CmuxBridge } = require('./cmux-bridge');
 const { PreviewServer } = require('./preview-server');
-const { readiness: providerReadiness } = require('../domain/pi-agent/provider-readiness');
+const { readiness: providerReadiness, survey: providerSurvey } = require('../domain/pi-agent/provider-readiness');
 const { DaemonClient } = require('../domain/server/daemon-client');
 const { TailscaleRemoteAccess } = require('./tailscale-remote-access');
 const { TaskReportBuilder } = require('./task-report-builder');
@@ -1561,7 +1561,24 @@ app.whenReady().then(async () => {
   coordinator = new CoreExecutionCoordinator({ taskRunner, settingsProvider: () => settingsStore.get(), preview: previewServer,
     available: (provider) => providerReadiness(provider, { secret: (id) => settingsStore.getSecret(id === 'claude-code' ? 'claude' : id) || '' }).ready });
   coordinator.on('run', (event) => { fleetMetrics.ingestRun(event); piFleet.ingestRun(event); broadcast('run:event', event); });
-  fastRouter.detect().then((availability) => fleetMetrics.setAvailability(availability)).catch(() => {});
+  // The fleet display asked the front-desk router which providers exist, and that
+  // router is deliberately local-only: it returns claude/codex/gemini/glm as false
+  // unconditionally, because it must never send owner text to a paid provider
+  // before a disclosure manifest. Correct for routing, and a lie as a status
+  // display — every paid provider read OFFLINE / "Not available" on screen while
+  // GLM and Codex were completing real work. Readiness is the same question the
+  // daemon and the coordinator ask.
+  const refreshFleetAvailability = async () => {
+    const rows = providerSurvey({ secret: (id) => settingsStore.getSecret(id === 'claude-code' ? 'claude' : id) || '' });
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+    fleetMetrics.setAvailability({ claude: byId['claude-code']?.ready, codex: byId.codex?.ready,
+      gemini: byId.gemini?.ready, glm: byId.glm?.ready, ollama: await fastRouter.ollamaReady().catch(() => false) });
+    for (const row of rows) {
+      const id = row.id === 'claude' ? 'claude-code' : row.id;
+      fleetMetrics.touch?.(id, { metrics: { apiHealth: row.ready ? `ready · ${row.via}` : row.detail } });
+    }
+  };
+  refreshFleetAvailability().catch(() => {});
   if (settingsStore.get().preview.enabled) previewServer.start()
     .catch((error) => bus.push({ source: 'system', type: 'warn', text: `Preview unavailable: ${error.message}` }));
   if (E2E_FIXTURE) setTimeout(() => {
