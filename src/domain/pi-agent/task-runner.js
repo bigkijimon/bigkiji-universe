@@ -250,7 +250,15 @@ class TaskRunner extends EventEmitter {
     const hook = path.resolve(__dirname, '..', 'pi-core', 'security', 'hook-entry.js').replace(/'/g, "'\\''");
     if (provider === 'claude' || provider === 'claude-code') {
       runtime.claudeSettings = path.join(runtime.root, 'claude-settings.json'); runtime.mcpConfig = path.join(runtime.root, 'mcp.json');
+      // apiKeyHelper is how Anthropic documents authenticating without depending on
+      // HOME: a command named in settings whose stdout becomes the credential, run
+      // from an absolute path. The sandbox HOME hid the login keychain itself —
+      // `security` looks for it under $HOME/Library/Keychains, measured exit 44 —
+      // so every claude-code task reported "Not logged in". claude-key-helper.js
+      // addresses the keychain by absolute path instead, and reads one field of it.
+      const keyHelper = path.resolve(__dirname, '..', 'pi-core', 'security', 'claude-key-helper.js').replace(/'/g, "'\\''");
       const settings = { disableAllHooks: false, permissions: { deny: ['WebSearch', 'WebFetch', 'mcp__.*'] },
+        apiKeyHelper: `node '${keyHelper}'`,
         hooks: { PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command: `node '${hook}'`, timeout: 15 }] }] } };
       fs.writeFileSync(runtime.claudeSettings, JSON.stringify(settings, null, 2), { mode: 0o600 });
       fs.writeFileSync(runtime.mcpConfig, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
