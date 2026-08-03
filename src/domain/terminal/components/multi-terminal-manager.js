@@ -163,7 +163,16 @@
         });
         this.actionList.appendChild(strip);
       }
-      const runs = [...this.runs.values()].filter((run) => !this.dismissedRuns.has(run.id)).reverse().slice(0, 6);
+      // Everything waiting is shown; only the finished ones are capped.
+      //
+      // A flat slice(0, 6) meant the seventh run awaiting approval had no button
+      // anywhere in the app — twenty-one accumulated and fifteen of them were
+      // unreachable. A completed card falling off the end costs nothing; an
+      // approval falling off the end costs the whole run.
+      const visible = [...this.runs.values()].filter((run) => !this.dismissedRuns.has(run.id)).reverse();
+      const waiting = visible.filter((run) => run.status === 'AWAITING_APPROVAL');
+      const rest = visible.filter((run) => run.status !== 'AWAITING_APPROVAL').slice(0, Math.max(0, 6 - waiting.length));
+      const runs = [...waiting, ...rest];
       if (!history.length && !runs.length && !this.tasks.size) this.actionList.innerHTML = '<div class="session-empty">No sessions yet. Send a brief to let PiAgent choose the smallest useful model set.</div>';
       for (const run of runs) {
         const card = document.createElement('article'); card.className = 'task-card run-card'; card.style.setProperty('--task-color', '#86a995');
@@ -177,7 +186,14 @@
           if (button.dataset.runAct === 'approve') await window.bigkiji.approveRun({ id: run.id, revision: run.revision,
             planHash: run.planHash, disclosureHash: run.disclosureHash,
             idempotencyKey: `desktop-${run.id}-${run.revision}-${run.disclosureHash}` }); else await window.bigkiji.abortRun(run.id);
-        }); card.querySelector('[data-run-dismiss]').onclick = () => { this.dismissedRuns.add(run.id); this.renderCards(); }; this.actionList.appendChild(card);
+        }); card.querySelector('[data-run-dismiss]').onclick = () => {
+          // Hiding a run that is still waiting is the one thing this button must not
+          // do quietly: it looked like "later" and meant "never for this session",
+          // because nothing ever removed an id from dismissedRuns.
+          if (run.status === 'AWAITING_APPROVAL'
+            && !window.confirm('この run はまだ承認待ちです。閉じると、このセッション中は承認できなくなります。閉じますか？')) return;
+          this.dismissedRuns.add(run.id); this.renderCards();
+        }; this.actionList.appendChild(card);
       }
       for (const task of [...this.tasks.values()].filter((task) => !this.dismissedTasks.has(task.id)).reverse().slice(0, 12)) {
         const card = document.createElement('article');

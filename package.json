@@ -50,7 +50,7 @@
     "test:conversation": "node tools/conversation-selftest.js",
     "test:audio-wave": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/audio-wave-selftest.js",
     "test:tools": "node tools/tool-registry-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:malformed && npm run test:paste && npm run test:gpu-residency && npm run test:build-identity && npm run test:routing-assignment && npm run test:credentials && npm run test:claude-key && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:markdown && npm run test:embeddings && npm run test:gpu-scheduler && npm run test:app-menu && npm run test:text-index && npm run test:console && npm run test:skills && npm run test:tools && npm run test:provider-readiness && npm run test:circuit-breaker && npm run test:cli-render && npm run test:cli-theme",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:malformed && npm run test:paste && npm run test:gpu-residency && npm run test:build-identity && npm run test:routing-assignment && npm run test:credentials && npm run test:claude-key && npm run test:approval-flood && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:markdown && npm run test:embeddings && npm run test:gpu-scheduler && npm run test:app-menu && npm run test:text-index && npm run test:console && npm run test:skills && npm run test:tools && npm run test:provider-readiness && npm run test:circuit-breaker && npm run test:cli-render && npm run test:cli-theme",
     "audit:delegations": "node tools/delegation-audit.js",
     "index:memory": "node tools/index-system-memory.js",
     "postinstall": "node tools/postinstall.js",
@@ -75,7 +75,8 @@
     "test:build-identity": "node tools/build-identity-selftest.js",
     "test:routing-assignment": "node tools/routing-assignment-selftest.js",
     "test:credentials": "node tools/credential-lending-selftest.js",
-    "test:claude-key": "node tools/claude-key-helper-selftest.js"
+    "test:claude-key": "node tools/claude-key-helper-selftest.js",
+    "test:approval-flood": "node tools/approval-flood-selftest.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",

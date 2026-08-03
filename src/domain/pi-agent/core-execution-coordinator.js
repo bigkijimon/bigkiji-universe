@@ -42,6 +42,21 @@ const FALLBACKS = Object.freeze({
 const LOCAL_PROVIDER = 'qwen';
 const PAID_PROVIDERS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
+// How long a plan is worth approving. The code it was planned against moves.
+const APPROVAL_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Two ways of typing the same request compare equal.
+ *
+ * Whitespace goes entirely rather than collapsing: the owner writes Japanese, where
+ * a stray space between words is the most likely difference between two attempts at
+ * the same sentence, and "READMEのタイポを直して" against "README のタイポを 直して"
+ * is one request asked twice.
+ */
+function normalizeRequest(text) {
+  return String(text || '').toLowerCase().replace(/\s+/g, '').replace(/[。、.,!?！？]/g, '');
+}
+
 function selectRoles(prompt, routing = {}) {
   const text = String(prompt || '').toLowerCase();
   const roles = new Set(['leader']);
@@ -99,6 +114,22 @@ class CoreExecutionCoordinator extends EventEmitter {
   submit({ prompt, planHash = null, promptSpec = null, cwd, mode } = {}) {
     const text = knowledge.cleanText(prompt || promptSpec?.goal, 20000);
     if (!text) throw new Error('Run prompt is required');
+    this.expireStaleApprovals();
+    // Ask twice, wait once.
+    //
+    // Every TASK turn submitted a run, so re-phrasing the same request three times
+    // produced three identical plans all waiting for the owner. Twenty-one of them
+    // accumulated, the GUI showed the first six, and the rest were unreachable. An
+    // identical request that is already waiting is that same request.
+    const existing = this.findWaitingDuplicate(text, cwd);
+    if (existing) {
+      existing.updatedAt = new Date().toISOString();
+      existing.duplicateOf = (existing.duplicateOf || 0) + 1;
+      knowledge.recordEvent(existing.id, { type: 'run-deduplicated', status: existing.status, provider: existing.leader,
+        evidence: `the same request is already waiting for approval (asked ${existing.duplicateOf + 1} times)` });
+      this._emit(existing, 'deduplicated');
+      return publicRun(existing);
+    }
     const settings = this.settingsProvider() || {};
     const routing = settings.routing || {};
     const previewGame = /(?:3d|３d).*(?:shoot|シューティング)|(?:shoot|シューティング).*(?:game|ゲーム)/i.test(text);
@@ -396,6 +427,47 @@ class CoreExecutionCoordinator extends EventEmitter {
       evidence: plan.steps.length ? `${plan.steps.length} merged steps from ${plan.lenses} lenses` : 'no usable proposals' });
     this._planExecution(run);
     this._emit(run, 'deliberated');
+  }
+
+  /**
+   * A run waiting for approval with the same request in the same folder, if any.
+   * @returns {object|null}
+   */
+  findWaitingDuplicate(text, cwd) {
+    const key = normalizeRequest(text);
+    for (const run of this.runs.values()) {
+      if (run.status !== 'AWAITING_APPROVAL') continue;
+      if (String(run.cwd || '') !== String(cwd || run.cwd || '')) continue;
+      if (normalizeRequest(run.prompt) === key) return run;
+    }
+    return null;
+  }
+
+  /**
+   * Retire approvals nobody answered.
+   *
+   * `this.runs` had no delete in it at all, so a waiting run stayed waiting until
+   * the process ended and the map grew for as long as it ran. An hour-old plan is
+   * also stale in a way the owner cannot see — the code it was planned against has
+   * moved — so approving it later is worse than being asked again.
+   */
+  expireStaleApprovals(now = Date.now()) {
+    const expired = [];
+    for (const run of this.runs.values()) {
+      if (run.status !== 'AWAITING_APPROVAL') continue;
+      const age = now - new Date(run.updatedAt || run.createdAt).getTime();
+      if (!Number.isFinite(age) || age < APPROVAL_TTL_MS) continue;
+      run.status = 'EXPIRED';
+      run.error = `no answer in ${Math.round(APPROVAL_TTL_MS / 60000)} minutes — ask again if it still matters`;
+      run.updatedAt = new Date(now).toISOString();
+      expired.push(run);
+    }
+    for (const run of expired) {
+      knowledge.recordEvent(run.id, { type: 'run-expired', status: run.status, provider: run.leader, evidence: run.error });
+      this._emit(run, 'expired');
+      this.runs.delete(run.id);
+    }
+    return expired.length;
   }
 
   _fallback(run, assignment) {
