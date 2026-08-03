@@ -26,6 +26,60 @@ function read(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'u
 function atomic(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 }); fs.renameSync(tmp, file); }
 
+/**
+ * Sum two rows for the same (provider, model).
+ *
+ * Every field here is a counter or an average over counters, so two processes that
+ * each watched different tasks have each seen part of the truth. Taking one and
+ * discarding the other — which is what writing a whole snapshot does — throws away
+ * whatever the other process learned.
+ * @returns {object}
+ */
+function mergeRow(mine = {}, theirs = {}) {
+  const samples = Number(mine.samples || 0) + Number(theirs.samples || 0);
+  const successes = Number(mine.successes || 0) + Number(theirs.successes || 0);
+  // A row can carry throttles and no samples at all — a provider that answered "not
+  // now" twenty times has been asked twenty times and scored zero of them. Returning
+  // early on `samples === 0` overwrote that count with the delta instead of adding
+  // it, so twenty throttles were recorded as one.
+  const throttled = Number(mine.throttled || 0) + Number(theirs.throttled || 0);
+  if (!samples) {
+    const base = { ...theirs, ...mine };
+    if (throttled) base.throttled = throttled;
+    return base;
+  }
+  const roles = {};
+  for (const role of new Set([...Object.keys(mine.roles || {}), ...Object.keys(theirs.roles || {})])) {
+    const a = mine.roles?.[role] || { samples: 0, successes: 0 };
+    const b = theirs.roles?.[role] || { samples: 0, successes: 0 };
+    const rowSamples = Number(a.samples || 0) + Number(b.samples || 0);
+    const rowSuccesses = Number(a.successes || 0) + Number(b.successes || 0);
+    roles[role] = { samples: rowSamples, successes: rowSuccesses, successRate: rowSamples ? rowSuccesses / rowSamples : 0 };
+  }
+  const newer = String(mine.updatedAt || '') >= String(theirs.updatedAt || '') ? mine : theirs;
+  const merged = { ...theirs, ...mine, samples, successes,
+    successRate: successes / samples,
+    throttled, roles, lastTokens: newer.lastTokens, updatedAt: newer.updatedAt };
+  if (!throttled) delete merged.throttled;
+  // An unmeasured latency stays unmeasured. Averaging two absent numbers produces
+  // 0ms, which reads as the fastest possible provider — the same mistake the score
+  // function already had to be corrected for, arriving here by a different road.
+  const timed = [mine, theirs].filter((row) => Number(row.latencySamples || 0) && Number.isFinite(Number(row.ewmaLatencyMs)));
+  if (timed.length) {
+    const total = timed.reduce((sum, row) => sum + Number(row.latencySamples), 0);
+    merged.latencySamples = total;
+    merged.ewmaLatencyMs = timed.reduce((sum, row) => sum + (Number(row.ewmaLatencyMs) * Number(row.latencySamples)), 0) / total;
+  } else {
+    // An unmeasured count stays absent and an unmeasured time stays absent. Summing
+    // two absent counts gives 0 and averaging two absent times gives 0ms, which reads
+    // as the fastest possible provider — the same mistake score() had to be corrected
+    // for, arriving here by a different road.
+    delete merged.latencySamples;
+    if (!('ewmaLatencyMs' in mine) && !('ewmaLatencyMs' in theirs)) delete merged.ewmaLatencyMs;
+  }
+  return merged;
+}
+
 class ModelCapabilityRegistry {
   constructor({ root = knowledge.ROOT } = {}) {
     this.root = root; this.capabilityFile = path.join(root, 'model_capabilities.json'); this.performanceFile = path.join(root, 'model_performance.json');
@@ -72,6 +126,46 @@ class ModelCapabilityRegistry {
   // not a fact about Claude Code — it is a fact about the tier that ran. Priors stay
   // per provider; only observations are split.
   static key(provider, model = '') { return model ? `${provider}::${model}` : String(provider || ''); }
+
+  /**
+   * Write what we learned into whatever is on disk now, rather than over it.
+   *
+   * The daemon and the Electron app each hold this registry, each loaded its copy at
+   * boot, and each wrote the whole object back on every result. So whichever
+   * finished last erased everything the other had recorded since startup. Measured:
+   * the daemon records a glm success, the app records a codex success, and the file
+   * ends with codex only.
+   *
+   * Merging by row rather than by file also means a lost update costs one row, not
+   * the whole history — and the rows are counters, so two processes that watched
+   * different tasks have each seen part of the truth.
+   */
+  persistPerformance() {
+    const onDisk = read(this.performanceFile, { version: VERSION, models: {} });
+    const merged = { ...onDisk, version: VERSION, models: { ...onDisk.models } };
+    for (const [id, row] of Object.entries(this.performance.models)) {
+      merged.models[id] = mergeRow(this.delta(id, row), merged.models[id]);
+    }
+    atomic(this.performanceFile, merged);
+    // Our in-memory copy becomes the merged truth, and the baseline for the next delta.
+    this.performance = merged;
+    this.baseline = JSON.parse(JSON.stringify(merged.models));
+    return merged;
+  }
+
+  /** What this process added to a row since it last wrote — never the whole row. */
+  delta(id, row) {
+    const base = this.baseline?.[id];
+    if (!base) return row;
+    const sub = (a, b) => Math.max(0, Number(a || 0) - Number(b || 0));
+    const roles = {};
+    for (const [role, value] of Object.entries(row.roles || {})) {
+      const before = base.roles?.[role] || { samples: 0, successes: 0 };
+      roles[role] = { samples: sub(value.samples, before.samples), successes: sub(value.successes, before.successes) };
+    }
+    return { ...row, samples: sub(row.samples, base.samples), successes: sub(row.successes, base.successes),
+      latencySamples: sub(row.latencySamples, base.latencySamples), throttled: sub(row.throttled, base.throttled), roles };
+  }
 
   score(provider, role, model = '') {
     const prior = Number(this.capabilities.models[provider]?.roles?.[role] || .35);
@@ -120,7 +214,7 @@ class ModelCapabilityRegistry {
       row.lastTokens = { input: Number(tokens.input || 0), output: Number(tokens.output || 0) }; row.updatedAt = new Date().toISOString();
       this.performance.models[id] = row;
     }
-    atomic(this.performanceFile, this.performance);
+    this.persistPerformance();
     return this.learn({ provider, role, model, durationMs, ok });
   }
 
@@ -136,7 +230,7 @@ class ModelCapabilityRegistry {
       row.throttledReason = reason;
       this.performance.models[id] = row;
     }
-    atomic(this.performanceFile, this.performance);
+    this.persistPerformance();
     return { provider, model, role, throttled: true, reason,
       note: reason === 'quota' ? 'quota exhausted — not scored' : 'rate limited — not scored' };
   }

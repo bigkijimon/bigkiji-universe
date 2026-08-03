@@ -120,4 +120,41 @@ assert.deepStrictEqual(new ModelCapabilityRegistry({ root: dirty }).snapshot().p
   'the repair runs once, not on every open');
 
 for (const dir of [root, blank, dirty]) fs.rmSync(dir, { recursive: true, force: true });
+// Two processes hold this registry — the daemon and the Electron app — and each
+// loaded its copy at boot and wrote the whole object back on every result. So
+// whichever finished last erased everything the other had recorded since startup.
+// Measured before the fix: the daemon records a glm success, the app records a codex
+// success, and the file ends with codex only.
+{
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-two-writers-'));
+  const daemon = new ModelCapabilityRegistry({ root: shared });
+  const app = new ModelCapabilityRegistry({ root: shared });
+
+  daemon.record({ provider: 'glm', role: 'debug', ok: true, durationMs: 1200, tokens: { input: 10, output: 5 } });
+  app.record({ provider: 'codex', role: 'ui', ok: true, durationMs: 900, tokens: { input: 20, output: 3 } });
+  const both = JSON.parse(fs.readFileSync(path.join(shared, 'model_performance.json'), 'utf8')).models;
+  assert.ok(both.glm, 'the daemon\'s result must survive the app writing after it');
+  assert.ok(both.codex, 'and the other way round');
+
+  // Interleaved records are counters, so they sum — neither process has the whole
+  // truth and taking one and discarding the other loses half of it.
+  for (let i = 0; i < 5; i += 1) {
+    daemon.record({ provider: 'glm', role: 'debug', ok: true, durationMs: 1000, tokens: {} });
+    app.record({ provider: 'glm', role: 'debug', ok: false, durationMs: 1000, tokens: {} });
+  }
+  const glm = JSON.parse(fs.readFileSync(path.join(shared, 'model_performance.json'), 'utf8')).models.glm;
+  assert.strictEqual(glm.samples, 11, `every record counted once: ${glm.samples}`);
+  assert.strictEqual(glm.successes, 6, `and the successes are the real ones: ${glm.successes}`);
+  assert.strictEqual(glm.roles.debug.samples, 11);
+  assert.strictEqual(glm.roles.debug.successRate, 6 / 11);
+
+  // A throttle is counted the same way — it was the other whole-file write.
+  const before = JSON.parse(fs.readFileSync(path.join(shared, 'model_performance.json'), 'utf8')).models.codex.samples;
+  daemon.record({ provider: 'codex', role: 'ui', ok: false, reason: 'quota', durationMs: 0, tokens: {} });
+  const after = JSON.parse(fs.readFileSync(path.join(shared, 'model_performance.json'), 'utf8')).models;
+  assert.strictEqual(after.codex.samples, before, 'a throttle is not a sample');
+  assert.ok(after.glm, 'and it still must not erase the other provider');
+  fs.rmSync(shared, { recursive: true, force: true });
+}
+
 console.log('routing learning selftest: PASS · slow work penalised · keyed by (provider, model) · re-routes · decays · persists · unmeasured latency stays neutral · poisoned history repaired once');
