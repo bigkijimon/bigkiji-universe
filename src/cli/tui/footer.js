@@ -138,15 +138,52 @@ function buildFooter(options = {}) {
   lines.push(null); // readline draws the π> input row itself
   lines.push(rule);
 
-  // Row n+5 — mode · shell · agent
+  // Row n+5 — mode · shell · agent · work
+  //
+  // The owner asked for the current state of the work on this row. It is appended
+  // rather than given a row of its own: this footer already costs six rows of a
+  // terminal, and the transcript is what the owner is actually reading. When there
+  // is no run in flight the segment is absent entirely — an idle machine reporting
+  // its idleness every 67ms is the kind of chrome that stops being read.
   const agent = agentLabel(state, C);
-  const statusRow = `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`;
-  const statusRowPlain = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`;
-  lines.push(MARGIN + (stringWidth(statusRowPlain) > inner ? clip(statusRowPlain, inner) : statusRow));
+  const work = workSegment(state);
+  const statusRow = `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`
+    + (work ? `    ${C.muted}work:${C.reset} ${C.ink}${work}${C.reset}` : '');
+  const statusRowPlain = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`
+    + (work ? `    work: ${work}` : '');
+  // Narrow terminals drop `work` before they drop anything else on this row: it is
+  // the newest thing here and the only one repeated elsewhere on screen.
+  const withoutWork = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`;
+  if (stringWidth(statusRowPlain) <= inner) lines.push(MARGIN + statusRow);
+  else if (stringWidth(withoutWork) <= inner) lines.push(MARGIN + `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`);
+  else lines.push(MARGIN + clip(withoutWork, inner));
 
   return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };
 }
 
+/**
+ * What the fleet is doing, in one clause, or '' when it is doing nothing.
+ *
+ * Counts only what is really running. A number that includes work waiting for the
+ * owner would report the machine as busy while it waits on the owner — which is the
+ * opposite of the truth and the reason the phase bar read 92% for an unstarted run.
+ * @returns {string}
+ */
+function workSegment(state = {}) {
+  const runs = Array.isArray(state.runs) ? state.runs : [];
+  const active = runs.filter((run) => ['EXECUTING', 'DISPATCHING', 'REPAIRING', 'VERIFYING'].includes(String(run.status || '').toUpperCase()));
+  const waiting = runs.filter((run) => String(run.status || '').toUpperCase() === 'AWAITING_APPROVAL').length;
+  if (!active.length) return waiting ? `${waiting} awaiting /approve` : '';
+  const run = active[0];
+  const assignments = Array.isArray(run.assignments) ? run.assignments : [];
+  const done = assignments.filter((item) => String(item.status || '').toLowerCase() === 'completed').length;
+  const started = run.startedAt ? Date.now() - new Date(run.startedAt).getTime() : 0;
+  const minutes = started > 0 ? `${Math.floor(started / 60000)}m` : '';
+  const budget = run.deadlineAt ? Math.round((new Date(run.deadlineAt).getTime() - Date.now()) / 60000) : null;
+  const left = budget === null ? '' : (budget >= 0 ? `${budget}m left` : `${Math.abs(budget)}m over`);
+  return [assignments.length ? `${done}/${assignments.length}` : '', minutes, left].filter(Boolean).join(' · ');
+}
+
 function footerHeightFor(frameSet = loadingFrames()) { return Math.max(1, Number(frameSet?.rows) || 1) + ROWS_BELOW_ART; }
 
-module.exports = { buildFooter, footerHeightFor, formatElapsed, formatTokens, tokenTotals, shellLabel, agentLabel, ROWS_BELOW_ART };
+module.exports = { buildFooter, footerHeightFor, workSegment, formatElapsed, formatTokens, tokenTotals, shellLabel, agentLabel, ROWS_BELOW_ART };

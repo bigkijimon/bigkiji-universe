@@ -118,6 +118,28 @@ ok('the footer says what is happening, not what was answered', () => {
   assert.match(cli, /'checkpoint'\]/, 'and the checkpoint has to reach the transcript at all');
 });
 
+ok('the bottom row says what the fleet is doing, and stays quiet when it is not', () => {
+  const { workSegment, buildFooter } = require('../src/cli/tui/footer');
+  const now = Date.now();
+  assert.equal(workSegment({ runs: [] }), '', 'an idle machine reporting its idleness every 67ms stops being read');
+  assert.equal(workSegment({ runs: [{ status: 'AWAITING_APPROVAL' }, { status: 'AWAITING_APPROVAL' }] }), '2 awaiting /approve');
+  const running = { status: 'EXECUTING', startedAt: new Date(now - 8 * 60000).toISOString(),
+    deadlineAt: new Date(now + 22 * 60000).toISOString(), assignments: [{ status: 'completed' }, { status: 'running' }, { status: 'queued' }] };
+  assert.equal(workSegment({ runs: [running] }), '1/3 · 8m · 22m left', 'what, how far, how long left');
+  const late = { ...running, startedAt: new Date(now - 37 * 60000).toISOString(), deadlineAt: new Date(now - 7 * 60000).toISOString() };
+  assert.match(workSegment({ runs: [late] }), /7m over$/, 'past the mark it says so rather than counting down past zero');
+  // Waiting for the owner is not the machine being busy — that conflation is why
+  // the phase bar read 92% for a run that had not started.
+  assert.equal(workSegment({ runs: [{ status: 'AWAITING_APPROVAL' }, running] }), '1/3 · 8m · 22m left');
+
+  const wide = buildFooter({ cols: 100, mode: 'plan', state: { runs: [running] } });
+  assert.match(wide.lines.at(-1).replace(/\x1b\[[0-9;]*m/g, ''), /work: 1\/3 · 8m · 22m left/);
+  const narrow = buildFooter({ cols: 52, mode: 'plan', state: { runs: [running] } });
+  const plainNarrow = narrow.lines.at(-1).replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(!plainNarrow.includes('work:'), 'the newest segment is the first one a narrow terminal drops');
+  assert.ok(plainNarrow.includes('mode:'), 'and the row it shares does not break');
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`run budget selftest: ${failures} FAILED`); process.exit(1); }
 console.log('run budget selftest: PASS · 30 minutes reports and does not kill · keeps reporting · history bounded · no live timer in a response · actionable on screen');
