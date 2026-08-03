@@ -1376,6 +1376,8 @@ const chipsEl = document.getElementById('chips');
 function showPopup(agentId, text, tok) {
   const m = window.AGENT_META[agentId];
   if (!m) return;
+  // 近景では博物館プレートが同じ最終イベントを展示している——同じ情報を二重に出さない
+  if (museumO > 0.5) return;
   while (popups.length >= 3) { const p = popups.shift(); p.el.remove(); }
   const el = document.createElement('div');
   el.className = 'popup';
@@ -1748,7 +1750,8 @@ setInterval(() => {
     || (Date.now() - lastEvtWall < 5000);
   workStateEl.classList.toggle('idle', !working);
   workStateEl.classList.toggle('on', working);
-  workStateEl.querySelector('span').textContent = working ? 'WORKING' : 'IDLE';
+  // 先頭spanは#workCat（ピクセル猫）。状態文字はテキスト用の最後のspanへ書く
+  workStateEl.querySelector('span:last-of-type').textContent = working ? 'WORKING' : 'IDLE';
   const chips = [];
   if (now - lastPiDeltaAt < 2500) {
     chips.push(`<span class="lchip" style="--c:#FFE81F"><i></i>${window.t('youCore')}</span>`);
@@ -1902,7 +1905,8 @@ for (const id of ids) {
   el.className = 'plate';
   el.style.setProperty('--c', m.color);
   el.innerHTML = `<div class="ph">${m.icon}<b>${m.role}</b><span>${m.short}</span></div><div class="pb"></div>`;
-  popupsEl.parentElement.appendChild(el);
+  // ポップアップと同じ親に置く＝衝突ソルバのz-indexが同一文脈で効く
+  popupsEl.appendChild(el);
   plates[id] = el;
 }
 setInterval(() => {
@@ -1916,6 +1920,7 @@ setInterval(() => {
       (nodes[id].lastText ? `<em></em>` : '');
     const em = plates[id].querySelector('em');
     if (em) em.textContent = nodes[id].lastText.slice(0, 44);
+    plates[id]._bkW = plates[id]._bkH = 0; // 内容が変わったので次フレームで実寸を測り直す
   }
 }, 1000);
 
@@ -2422,26 +2427,66 @@ const clock = new THREE.Clock();
   }
 
   // DOMオーバーレイの3D追従（ポップアップ・博物館プレート）
+  // 設計3原則: ①ステージ矩形の内側に必ず収める（右端で切れない） ②矩形衝突は奥行き順に
+  // 解く＝カメラに近いものが場所を勝ち取り、遠いものが上下へ退く（z-indexも近景ほど上）
+  // ③プレート表示中は同じ役割名の3Dスプライトラベルをフェードアウト（同名を二重に描かない）。
   const rect = { w: wrap.clientWidth, h: wrap.clientHeight };
+  const overlayItems = []; // {el, x, y, w, h, depth}
   for (let i = popups.length - 1; i >= 0; i--) {
     const p = popups[i];
     if (now > p.until) { p.el.classList.remove('on'); setTimeout(() => p.el.remove(), 250); popups.splice(i, 1); continue; }
     const nd = nodes[p.agentId];
     if (!nd) continue;
-    _v.copy(nd.grp.position); _v.y += 0.55; _v.project(camera);
-    p.el.style.left = ((_v.x * 0.5 + 0.5) * rect.w) + 'px';
-    p.el.style.top = ((-_v.y * 0.5 + 0.5) * rect.h) + 'px';
+    // ラベルが惑星の上に出る軌道では、ラベルのさらに上へ載せる（題字への重ね書き禁止）
+    _v.copy(nd.grp.position); _v.y += nd.label.position.y > 0 ? 1.3 : 0.55; _v.project(camera);
+    if (_v.z > 1) { p.el.style.visibility = 'hidden'; continue; }
+    const w = p.el._bkW || (p.el._bkW = p.el.offsetWidth || 200);
+    const h = p.el._bkH || (p.el._bkH = p.el.offsetHeight || 26);
+    overlayItems.push({ el: p.el, w, h, depth: _v.z,
+      x: (_v.x * 0.5 + 0.5) * rect.w - w / 2,
+      y: (-_v.y * 0.5 + 0.5) * rect.h - h - 8 });
   }
   const showPlates = museumO > 0.05 && sysO > 0.5;
   for (const id of ids) {
     const el = plates[id];
-    if (!showPlates) { el.style.opacity = 0; continue; }
     const nd = nodes[id];
-    _v.copy(nd.grp.position); _v.x += 0.0; _v.y -= 0.15; _v.project(camera);
-    if (_v.z > 1) { el.style.opacity = 0; continue; }
-    el.style.opacity = museumO;
-    el.style.left = ((_v.x * 0.5 + 0.5) * rect.w + 74) + 'px';
-    el.style.top = ((-_v.y * 0.5 + 0.5) * rect.h) + 'px';
+    let plateO = 0;
+    if (showPlates) {
+      _v.copy(nd.grp.position); _v.y -= 0.15; _v.project(camera);
+      if (_v.z <= 1) {
+        plateO = museumO;
+        const w = el._bkW || (el._bkW = el.offsetWidth || 204);
+        const h = el._bkH || (el._bkH = el.offsetHeight || 58);
+        const px = (_v.x * 0.5 + 0.5) * rect.w;
+        // 定位置はオーブの右。右端からはみ出すなら左側へ振り替える（縮めずに出す場所を変える）
+        const x = px + 64 + w > rect.w - 8 ? px - 64 - w : px + 64;
+        overlayItems.push({ el, w, h, depth: _v.z, x, y: (-_v.y * 0.5 + 0.5) * rect.h - h / 2 });
+      }
+    }
+    el.style.opacity = plateO;
+    // LODの引き継ぎ: プレートが立つほど3Dの役割ラベルは退く
+    nd.label.material.opacity = 1 - plateO;
+  }
+  overlayItems.sort((a, b) => a.depth - b.depth); // 近景が先＝場所の優先権とz上位
+  const placedRects = [];
+  const OV_TOP = 64; // 上端の禁飛行帯: ビュー切替チップ・テロップ・WORKING表示の帯を空けておく
+  for (let rank = 0; rank < overlayItems.length; rank++) {
+    const it = overlayItems[rank];
+    let x = Math.max(8, Math.min(it.x, rect.w - it.w - 8));
+    let y = Math.max(OV_TOP, Math.min(it.y, rect.h - it.h - 8));
+    for (let guard = 0; guard < 6; guard++) {
+      const hit = placedRects.find((r) =>
+        x < r.x + r.w + 4 && r.x < x + it.w + 4 && y < r.y + r.h + 4 && r.y < y + it.h + 4);
+      if (!hit) break;
+      const up = hit.y - it.h - 6; // まず先客の上へ、天井を突くなら下へ
+      y = up >= OV_TOP ? up : hit.y + hit.h + 6;
+      if (y + it.h > rect.h - 8) { y = Math.max(OV_TOP, rect.h - it.h - 8); break; }
+    }
+    placedRects.push({ x, y, w: it.w, h: it.h });
+    it.el.style.left = x + 'px';
+    it.el.style.top = y + 'px';
+    it.el.style.zIndex = String(Math.max(21, 27 - rank));
+    it.el.style.visibility = '';
   }
 
   // 思考ストリーム: Core投影点の周りを実データ断片が周回（近景ほど濃い）
