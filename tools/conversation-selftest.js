@@ -195,5 +195,37 @@ function ollama(value) {
   assert.equal((await new ConversationEngine({ fetchImpl: dead, model: 'q' })
     .turn({ text: 'READMEのタイポを修正してください', sessionId: 'degraded-kind' })).kind, 'TASK');
 
+  // A turn the model never served must not read like one it did.
+  //
+  // The fallback is a template that sounds considered. After nine of them in a row
+  // — a pasted spec, nine parallel turns, eight timed out — the owner concluded the
+  // thing was stupid. It was absent. Saying so is the difference.
+  {
+    const dead = new ConversationEngine({ fetchImpl: async () => { throw new Error('Ollama is down'); } });
+    const jp = await dead.turn({ text: 'READMEのタイポを修正してください', sessionId: 'degraded-jp' });
+    assert.strictEqual(jp.degraded, true);
+    assert.ok(jp.reply.startsWith('（ローカルモデルが応答しませんでした'), `it has to admit it: ${jp.reply.slice(0, 40)}`);
+    const en = await dead.turn({ text: 'fix the readme typo', sessionId: 'degraded-en' });
+    assert.ok(en.reply.startsWith('(the local model did not answer'), 'in the language the owner is writing in');
+    for (const key of ['kind', 'reply', 'ideas', 'todos', 'confidence']) assert.ok(key in jp, `${key} must survive`);
+
+    const alive = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'A real answer.' }) });
+    const good = await alive.turn({ text: 'hello', sessionId: 'not-degraded' });
+    assert.strictEqual(good.degraded, false);
+    assert.strictEqual(good.reply, 'A real answer.', 'a served turn is not decorated');
+  }
+
+  // maxTurns counts exchanges; the seed is individual messages, and the trim is
+  // maxTurns * 2 for that reason. Slicing the seed by maxTurns threw half of a
+  // resumed conversation away before the model saw it — the daemon hands over 16
+  // and 8 arrived.
+  {
+    const engine = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'ok' }) });
+    const seed = Array.from({ length: 16 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'owner', text: `m${index}` }));
+    assert.strictEqual(engine.history('resumed', seed).length, 16, 'a resumed conversation keeps what the daemon sent');
+    const overflowing = Array.from({ length: 40 }, (_, index) => ({ role: 'owner', text: `m${index}` }));
+    assert.strictEqual(engine.history('long', overflowing).length, engine.maxTurns * 2, 'and the bound is still a bound');
+  }
+
   console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field');
 })().catch((error) => { console.error(error); process.exit(1); });

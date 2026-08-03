@@ -51,6 +51,13 @@ function fallbackReply(text, kind = heuristicKind(text)) {
     : `That is worth keeping, so I saved “${deriveTitle(text)}” as a private local draft. Separating its core idea from decisions that can wait will make it easier to develop without interrupting the conversation.` };
   return { kind, reply: japanese ? `その話、もう少し聞かせてください。特に「${clean(text, 80)}」のどの部分がいちばん気になっていますか？` : `Tell me a little more about that—what part of “${clean(text, 80)}” matters most to you?` };
 }
+/** A one-line admission, in the language the owner is writing in. */
+function degradedPrefix(text) {
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(text || ''))
+    ? '（ローカルモデルが応答しませんでした。以下は定型の下書きです）\n'
+    : '(the local model did not answer — what follows is a template, not a reply)\n';
+}
+
 // The shape every caller is entitled to assume.
 //
 // This used to return `{kind, reply}` and nothing else, which was correct for
@@ -187,7 +194,11 @@ class ConversationEngine extends EventEmitter {
   }
 
   history(sessionId, seed = []) {
-    if (!this.histories.has(sessionId)) this.histories.set(sessionId, seed.slice(-this.maxTurns));
+    // maxTurns counts exchanges; seed and history are individual messages, and the
+    // trim below is `maxTurns * 2` for exactly that reason. Slicing the seed by
+    // maxTurns threw away half of a resumed conversation before the model saw it:
+    // the daemon hands over the last 16 messages and 8 arrived.
+    if (!this.histories.has(sessionId)) this.histories.set(sessionId, seed.slice(-this.maxTurns * 2));
     return this.histories.get(sessionId);
   }
 
@@ -273,6 +284,14 @@ class ConversationEngine extends EventEmitter {
       result.error = clean(error.name === 'AbortError'
         ? `Local conversation ${ttftMs === null ? 'timeout before first token' : 'stalled mid-answer'}`
         : error.message, 180);
+      // Say that the model did not answer.
+      //
+      // The fallback is a template. It reads like a considered reply, so a turn the
+      // model never served was indistinguishable from one it did — and after nine
+      // of them in a row the owner concluded the thing was stupid rather than
+      // absent. It was absent. A degraded answer that admits it is a different
+      // product from one that pretends.
+      result.reply = `${degradedPrefix(ownerText)}${result.reply}`;
     } finally { clearTimeout(stall); clearTimeout(ceiling); this.active = Math.max(0, this.active - 1); }
     history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.reply });
     while (history.length > this.maxTurns * 2) history.shift();
@@ -288,5 +307,5 @@ class ConversationEngine extends EventEmitter {
     maxContextTokens: this.maxContextTokens, keepAlive: this.keepAlive }; }
 }
 
-module.exports = { ConversationEngine, heuristicKind, guardedKind, fallback, normalize, clean, deriveTitle, usableTitle,
+module.exports = { ConversationEngine, heuristicKind, guardedKind, fallback, normalize, clean, deriveTitle, usableTitle, degradedPrefix,
   normalizeKeepAlive, DEFAULT_KEEP_ALIVE };
