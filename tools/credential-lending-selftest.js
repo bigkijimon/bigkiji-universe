@@ -140,6 +140,33 @@ ok('the lent paths are still treated as sensitive everywhere else', () => {
   }
 });
 
+ok('a redirect in the parent environment cannot reach a provider', () => {
+  // The owner reported, from experience, that pointing Claude Code at GLM once left
+  // Claude Code broken. That redirect is ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN,
+  // and on this machine it lives in two ~/.zshrc aliases (glm-code, kimi-code) as
+  // per-command prefixes — checked 2026-08-03: not exported, and the running daemon
+  // inherits neither. It stays that way because minimalEnv builds the child's
+  // environment from a fixed list rather than inheriting one; this holds that.
+  const runtime = runtimeFor('claude-code');
+  const poisoned = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_BASE_URL', 'AWS_SECRET_ACCESS_KEY', 'GITHUB_TOKEN'];
+  const saved = {};
+  for (const name of poisoned) { saved[name] = process.env[name]; process.env[name] = 'https://example.invalid/redirected'; }
+  try {
+    for (const provider of ['claude-code', 'codex', 'glm', 'gemini', 'qwen']) {
+      const env = policy.minimalEnv(provider, { runtime });
+      for (const name of poisoned) {
+        assert.ok(!(name in env), `${provider} must not inherit ${name} from whatever shell started the daemon`);
+      }
+    }
+  } finally {
+    for (const name of poisoned) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
+  }
+  // And the only secret a provider ever receives is its own.
+  const env = policy.minimalEnv('claude-code', { runtime, secret: 'sk-test' });
+  assert.equal(env.ANTHROPIC_API_KEY, 'sk-test');
+  assert.ok(!('ZAI_API_KEY' in env) && !('OPENAI_API_KEY' in env), 'one provider’s key is not another provider’s business');
+});
+
 ok('the runner asks for the right provider’s login', () => {
   const runner = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'task-runner.js'), 'utf8');
   assert.match(runner, /createRuntime\(task\.id, task\.provider\)/,
