@@ -27,7 +27,12 @@ assert.equal(knowledge.canSpend('gemini', true), true);
   assert(warm.ms >= 0 && Number.isFinite(warm.ms), 'the caller gets a real duration, not a promise that it happened');
   assert.match(calls[0].url, /\/api\/generate$/);
   assert.strictEqual(calls[0].body.prompt, '', 'an empty prompt loads the weights without generating anything to discard');
-  assert.strictEqual(calls[0].body.keep_alive, -1, 'resident, matching what the conversation turn itself asks for');
+  // This asserted -1 — resident forever. It matched the conversation turn, and the
+  // turn was the thing that was wrong: measured 2026-08-03, `ollama ps` read UNTIL
+  // Forever while ComfyUI, LTX-2 and ACE-Step wanted the same card. The owner asked
+  // for standby at zero by name. Sixty seconds still means no cold load between two
+  // sentences, because every turn restarts the window.
+  assert.strictEqual(calls[0].body.keep_alive, '60s', 'resident for a minute, matching what the conversation turn itself asks for');
   assert.strictEqual(calls[0].body.options, undefined, 'no options asked for, none sent');
 
   // Ollama keys a loaded instance on its runtime options, so a warmup that omits the
