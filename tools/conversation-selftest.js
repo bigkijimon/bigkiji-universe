@@ -227,5 +227,28 @@ function ollama(value) {
     assert.strictEqual(engine.history('long', overflowing).length, engine.maxTurns * 2, 'and the bound is still a bound');
   }
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field');
+  // A default only reaches a key that is absent. The owner's settings.json was written
+  // when the default was qwen2.5:0.5b, so raising the default changed nothing on the one
+  // machine that mattered: an entire session ran on a 0.5B model, which replied
+  // 「承認フロー整理案の保存と考察を完了しました」 to hello, to 「おーい」 and to
+  // 「機能してないですよ」 alike — the same sentence every turn, in a screenshot from the
+  // owner captioned 使い物にならない.
+  {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { SettingsStore } = require('../src/core/settings-store');
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-settings-'));
+    fs.writeFileSync(path.join(userData, 'settings.json'),
+      JSON.stringify({ conversation: { model: 'qwen2.5:0.5b', contextTokens: 4096 } }));
+    const store = new SettingsStore({ userData });
+    assert.strictEqual(store.get().conversation.model, 'qwen3.5:latest',
+      'a model measured unfit for conversation must not survive in a saved file');
+    // Anything the owner actually chose is still theirs.
+    store.update({ conversation: { model: 'qwen3.6:latest' } });
+    assert.strictEqual(store.get().conversation.model, 'qwen3.6:latest', 'an owner choice is kept');
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file');
 })().catch((error) => { console.error(error); process.exit(1); });

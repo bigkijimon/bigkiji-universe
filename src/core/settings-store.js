@@ -135,6 +135,11 @@ function merge(base, patch) {
   }
   return out;
 }
+// Models measured unfit to hold a conversation. A saved settings.json outlives the
+// default that wrote it, so retiring one here is the only thing that actually removes it
+// from a machine that has already run.
+const RETIRED_CHAT_MODELS = new Set(['qwen2.5:0.5b', 'qwen2.5:1.5b']);
+
 function clamp(n, min, max, fallback) {
   n = Number(n); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 }
@@ -218,8 +223,15 @@ class SettingsStore {
     next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)
       ? next.routing.sessionLeader : 'auto';
     next.conversation = next.conversation || clone(DEFAULTS.conversation);
-    next.conversation.model = String(next.conversation.model || 'qwen3.5:latest').slice(0, 120);
-    next.conversation.contextTokens = clamp(next.conversation.contextTokens, 1024, 8192, 4096);
+    // Changing the default was not enough: a settings.json written before 2026-08-03
+    // still pins qwen2.5:0.5b, defaults never reach a key that is already present, and
+    // nothing migrated it. The owner ran an entire session against a 0.5B model, which
+    // answered 「承認フロー整理案の保存と考察を完了しました」 to hello, to 「おーい」 and to
+    // 「機能してないですよ」 alike. A model this project has measured as unfit for
+    // conversation is retired on load rather than left to sit in a saved file forever.
+    next.conversation.model = String(next.conversation.model || DEFAULTS.conversation.model).slice(0, 120);
+    if (RETIRED_CHAT_MODELS.has(next.conversation.model)) next.conversation.model = DEFAULTS.conversation.model;
+    next.conversation.contextTokens = clamp(next.conversation.contextTokens, 1024, 8192, DEFAULTS.conversation.contextTokens);
     next.conversation.autoIdeas = next.conversation.autoIdeas !== false;
     next.conversation.cloudEnhancementApproval = 'always';
     next.quality.gate = ['standard', 'strict'].includes(next.quality.gate) ? next.quality.gate : 'strict';
