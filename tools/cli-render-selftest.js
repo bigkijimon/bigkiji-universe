@@ -358,32 +358,59 @@ ok('a long version string cannot push the panel past the terminal', () => {
     assert.ok(widths[0] <= cols, `panel is ${widths[0]} wide in a ${cols} column terminal`);
   }
 });
-ok('the one-row cat is a shape, not a filled bar', () => {
-  // This is the defect the owner saw on screen and it is the reason the row
-  // moved. A terminal row is two pixel rows, and the two that carry the face are
-  // fourteen opaque cells out of sixteen — every half-block came out
-  // foreground-over-background in the same brown, so the "cat" was a rectangle.
-  // The ears are four cells in sixteen, with a gap between them.
+ok('the loading cat is a shape, not a filled bar, and it fits in one column', () => {
+  // Two techniques, two different ways to fail, both of which the owner has
+  // already hit once.
+  //
+  //   sprite sets — the cell *is* the pixel, so a row that is almost all ink is a
+  //   solid rectangle. That is exactly what shipped: the two rows carrying the
+  //   face are fourteen opaque cells out of sixteen and rendered as a brown bar.
+  //
+  //   glyph sets — the shape lives inside the cell, so ink ratio says nothing.
+  //   What matters is that it occupies one column and that consecutive frames
+  //   differ, because the whole point is motion the owner can see.
   const result = require('child_process').spawnSync(process.execPath, ['-e', `
     const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
-    process.stdout.write(JSON.stringify({ frames: L.loadingFrames().frames, mark: L.catMark() }));
+    process.stdout.write(JSON.stringify({ id: L.DEFAULT_FRAME_SET_ID, sets: L.FRAME_SETS, mark: L.catMark() }));
   `], { env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  const { frames, mark } = JSON.parse(result.stdout);
+  const { id, sets, mark } = JSON.parse(result.stdout);
 
-  for (const [index, frame] of frames.entries()) {
-    const ink = frame.replace(/\s/g, '').length;
-    assert.ok(ink > 0, `frame ${index} is empty`);
-    assert.ok(ink <= frame.length * 0.5,
-      `frame ${index} is ${ink}/${frame.length} inked — that renders as a bar, not a cat: |${frame}|`);
+  // The default is what the owner actually sees, and they asked for one column.
+  const active = sets[id];
+  assert.equal(active.rows, 1, `the footer reserves rows for this: ${id} claims ${active.rows}`);
+  for (const [index, frame] of active.frames.entries()) {
+    assert.equal(T.stringWidth(frame), 1,
+      `frame ${index} of "${id}" is ${T.stringWidth(frame)} columns wide, not 1: |${frame}|`);
+    assert.ok(!/[█⣿]/.test(frame), `frame ${index} is a solid block, which reads as a bar: |${frame}|`);
   }
-  // One pose has the wings spread and is legitimately solid; most should show
-  // the gap between the ears.
-  const gapped = frames.filter((frame) => /\s/.test(frame.trim())).length;
-  assert.ok(gapped >= frames.length / 2, `only ${gapped} of ${frames.length} frames have a gap: ${JSON.stringify(frames)}`);
-  assert.ok(new Set(frames).size >= 2, 'a loading animation has to actually change');
-  // The header mark is two rows and may be dense — it is a head, not a
-  // silhouette — but it must not be one uniform block either.
+  assert.ok(new Set(active.frames).size >= 3, `a loading animation has to actually change: ${JSON.stringify(active.frames)}`);
+
+  // The sprite sets stay selectable, and must not regress to the brown bar.
+  //
+  // Only the single-row ones: in a multi-row sprite the silhouette comes from the
+  // stack, so one dense row is the cat's body and is supposed to be dense. A
+  // single row has nowhere else to carry the shape, which is the whole reason the
+  // one-row set had to move off the face and onto the ears.
+  for (const [name, set] of Object.entries(sets)) {
+    if (!/^pixel-cat/.test(name)) continue;
+    if (set.rows === 1) {
+      for (const [index, frame] of set.frames.entries()) {
+        const ink = frame.replace(/\s/g, '').length;
+        assert.ok(ink <= frame.length * 0.5,
+          `${name} frame ${index} is ${ink}/${frame.length} inked — one row that full is a bar: |${frame}|`);
+      }
+      assert.ok(set.frames.filter((frame) => /\s/.test(frame.trim())).length >= set.frames.length / 2,
+        `${name} needs a gap between the ears in most frames`);
+    } else {
+      assert.ok(new Set(set.frames[0].split('\n')).size > 1,
+        `${name} draws every row identically, so it has no silhouette`);
+    }
+    assert.ok(new Set(set.frames).size >= 2, `${name} does not animate`);
+  }
+
+  // The header mark has room for a real head, so it stays two rows — but it must
+  // not be one uniform block either.
   assert.equal(mark.length, 2, 'the header mark is two rows, because one is not a cat');
   assert.ok(/\s/.test(mark[0].trim()), `the ears need a gap: |${mark[0]}|`);
 });
@@ -581,29 +608,33 @@ ok('unmeasured tokens still render as — in the footer', () => {
 // ---------------------------------------------------------------------------
 // 13. Loading frames — the pixel kijitora is real and the 1-row variant fits
 // ---------------------------------------------------------------------------
-ok('the default frame set is a 1-row pixel cat, not a kaomoji', () => {
+// 2026-08-03: the owner replaced the 16-column sprite with a one-cell mark,
+// pointing at Claude Code's single-glyph spinner — "a dot, small, that blinks or
+// moves". The two rules that came before it still hold: one row, and no faces.
+ok('the default frame set is one column wide, and still not a kaomoji', () => {
   const set = loadingFrames();
   assert.equal(set.rows, 1, 'the footer height contract is six rows, so the art gets one');
+  assert.equal(set.width, 1, `the owner asked for one cell, not ${set.width}`);
   assert.equal(frameRows(0, set).length, 1);
-  assert.equal(T.stringWidth(frameRows(0, set)[0]), set.width);
-  assert.ok(set.id.startsWith('pixel-cat'), `the owner retired the kaomoji: ${set.id}`);
+  assert.equal(T.stringWidth(frameRows(0, set)[0]), 1);
   assert.doesNotMatch(set.frames.join(''), /\(=\^/, 'no faces');
+  assert.ok(new Set(set.frames).size >= 3, 'it has to move, or it is just a character');
 });
-ok('a colourless terminal gets a shaded cat, never the kaomoji back', () => {
+ok('a colourless terminal keeps the same mark, and never the kaomoji back', () => {
+  // The braille cat carries its shape in the glyph, so unlike the sprite sets it
+  // needs no colour at all and NO_COLOR changes nothing. That is the point of
+  // moving off half-blocks: there is no second code path to keep in step.
   const result = require('child_process').spawnSync(process.execPath, ['-e', `
     const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
-    process.stdout.write(JSON.stringify({ id: L.DEFAULT_FRAME_SET_ID, frames: L.loadingFrames().frames, rows: L.loadingFrames().rows }));
-  `], { env: { ...process.env, NO_COLOR: '1' }, encoding: 'utf8' });
+    process.stdout.write(JSON.stringify({ id: L.DEFAULT_FRAME_SET_ID, frames: L.loadingFrames().frames, rows: L.loadingFrames().rows, width: L.loadingFrames().width }));
+  `], { env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const set = JSON.parse(result.stdout);
-  assert.equal(set.id, 'pixel-cat-mono-row', `NO_COLOR must land on the silhouette set: ${set.id}`);
   assert.equal(set.rows, 1);
+  assert.equal(set.width, 1, `NO_COLOR must not widen the mark: ${set.id}`);
   assert.doesNotMatch(set.frames.join(''), /\x1b/, 'a colourless set carries no escapes');
   assert.doesNotMatch(set.frames.join(''), /\(=\^/, 'and still no faces');
-  // Shading, not silhouette: every pixel of the face is opaque, so presence
-  // alone renders a solid bar. Measured, not assumed — that is why the mono row
-  // uses lightness and the mono panel uses half-blocks.
-  assert.ok(new Set(set.frames.join('')).size > 2, `the face must have internal detail: ${JSON.stringify(set.frames)}`);
+  assert.ok(new Set(set.frames).size >= 3, 'and it still animates without colour');
 });
 ok('BIGKIJI_CLI_CAT=none turns the mascot off entirely', () => {
   const set = FRAME_SETS.none;
@@ -650,4 +681,4 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   assert.deepStrictEqual(litSteps('IDLE'), [], 'idle lights nothing rather than guessing');
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · pixel cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact`);
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact`);

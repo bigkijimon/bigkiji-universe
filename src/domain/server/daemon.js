@@ -138,7 +138,7 @@ class DaemonEngine extends EventEmitter {
       if (value) this.secrets.set(provider === 'claude-code' ? 'claude' : provider, String(value));
     }
     this.runner.setSecretProvider((provider) => this.secrets.get(provider === 'claude-code' ? 'claude' : provider) || '');
-    this.models = new ModelStatusStore({ knowledge }); this.piFleet = new FleetMetricsStore({}); this.runSessions = new Map(); this.activeSessionId = '';
+    this.models = new ModelStatusStore({ knowledge }); this.piFleet = new FleetMetricsStore({}); this.runSessions = new Map(); this.turnQueue = new Map(); this.activeSessionId = '';
     const initialPolicy = this.runner.policy.resolve(this.workspace);
     this.securityState = { mode: 'strict-direct', status: 'ENFORCED', webSearch: 'broker-only', environment: 'minimal',
       blocked: 0, manifests: 0, recent: [], policyHash: initialPolicy.security?.policyHash || '',
@@ -221,7 +221,31 @@ class DaemonEngine extends EventEmitter {
       .map((entry) => ({ role: entry.role === 'assistant' ? 'assistant' : 'owner', text: entry.text })).slice(-16);
   }
 
-  async turn(text, { sessionId = '', mode = 'auto' } = {}) {
+  /**
+   * One conversation turn at a time per session.
+   *
+   * Nine turns arriving inside 31ms is not nine conversations: Ollama serves
+   * them one at a time, so eight of them sat in its queue until the 8s stall
+   * timeout fired and came back degraded. Queuing here makes the wait honest,
+   * and it also keeps the session transcript in the order the owner typed —
+   * appends used to land in completion order. Turns with no session id queue
+   * together too, because that is the burst that would otherwise open one
+   * session per line.
+   * @returns {Promise<object>}
+   */
+  turn(text, options = {}) {
+    const key = options.sessionId || 'new';
+    const result = (this.turnQueue.get(key) || Promise.resolve()).then(() => this._turn(text, options));
+    // The queue holds a rejection-proof handle: one failed turn must not cancel
+    // the turns behind it, and it must not become an unhandled rejection here
+    // while the caller still gets the real error.
+    const guarded = result.catch(() => {});
+    this.turnQueue.set(key, guarded);
+    guarded.then(() => { if (this.turnQueue.get(key) === guarded) this.turnQueue.delete(key); });
+    return result;
+  }
+
+  async _turn(text, { sessionId = '', mode = 'auto' } = {}) {
     const inspected = redactPayload(String(text || '').trim());
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
     const clean = inspected.text; if (!clean) throw new Error('Conversation text is empty');
@@ -251,7 +275,10 @@ class DaemonEngine extends EventEmitter {
       const promptSpec = { goal, constraints: result.requirements || [], steps: result.todos || [],
         acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
       run = this.coordinator.submit({ prompt: clean, promptSpec, cwd: this.workspace, mode: mode === 'manual' ? 'manual' : 'plan' });
-      this.runSessions.set(run.id, session.id); this.sessions.append(session.id, { type: 'run', status: run.status, run }); this.publish('run', run);
+      // submit() emits 'run' synchronously, so onRun has already appended this run
+      // to the session and published it. Doing it again here printed the same run
+      // twice in the transcript and wrote it twice into the session file.
+      this.runSessions.set(run.id, session.id);
     }
     const output = { accepted: true, kind: result.kind, reply: result.reply, sessionId: session.id, turnId: result.turnId,
       provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
@@ -299,10 +326,16 @@ class DaemonEngine extends EventEmitter {
   planIdea(id, { draftHash = '' } = {}) {
     const draft = this.ideas.read(id); if (!draft) throw new Error('Unknown idea draft');
     if (!draftHash || draftHash !== draft.draftHash) throw new Error('STALE_IDEA_DRAFT');
+    // Point the active session at the draft's own session first. onRun reads it to
+    // decide where the run belongs, and it fires inside submit() — so setting it
+    // afterwards filed the run under whichever session happened to be active, and
+    // the correcting append below then wrote it a second time somewhere else.
+    const sessionId = draft.sessionId || this.activeSessionId;
+    if (sessionId) this.activeSessionId = sessionId;
     const run = this.coordinator.submit({ prompt: draft.markdown, promptSpec: { goal: draft.summary || draft.title,
       constraints: draft.requirements, steps: draft.todos, acceptance: draft.decisions, questions: draft.openQuestions, ideaId: draft.id }, cwd: this.workspace, mode: 'plan' });
-    const sessionId = draft.sessionId || this.activeSessionId; if (sessionId) { this.runSessions.set(run.id, sessionId); this.sessions.append(sessionId, { type: 'run', status: run.status, run }); }
-    this.publish('run', run); return run;
+    if (sessionId) this.runSessions.set(run.id, sessionId);
+    return run;
   }
 
   // Tell the fleet display what the router already knows.
@@ -412,9 +445,7 @@ class DaemonEngine extends EventEmitter {
     this.publish('commentary', { source: 'PiAgent Engine', status: 'PRUNING', text: 'Inspecting sandbox memory and selecting only the required models.' });
     const run = this.coordinator.submit({ prompt: clean, promptSpec: { goal: clean, acceptance: [], decisions: [] }, cwd: this.workspace,
       mode: mode === 'auto' ? 'auto' : 'plan' });
-    this.runSessions.set(run.id, session.id);
-    this.sessions.append(session.id, { type: 'run', status: run.status, run });
-    this.publish('run', run);
+    this.runSessions.set(run.id, session.id); // onRun already appended and published it
     if (run.status === 'AWAITING_APPROVAL') {
       this.publish('phase', { sessionId: session.id, runId: run.id, phase: 'AWAITING_OWNER_DIRECTIVE', status: run.status, progress: 25 });
       this.publish('commentary', { source: 'BigKiji', status: 'SYNC', text: 'The change plan is ready. Accept, edit, reject, or send a custom directive.' });

@@ -8,6 +8,15 @@ const { catMark } = require('./loading-frames');
 const APP_VERSION = require('../../../package.json').version;
 
 const ESC = '\x1b';
+// Home, then erase forward — not ESC[2J.
+//
+// ED2 ("erase the whole display") is specified as erasing, but xterm.js and
+// several native terminals push the erased lines into scrollback first, so every
+// resize left another copy of the header sitting above the live one. Scrolling up
+// after a few resizes in a split pane shows a stack of them, which is what the
+// owner photographed. ED0 from the home position clears exactly the same cells and
+// never touches scrollback.
+const WIPE = `${ESC}[H${ESC}[J`;
 // Width-aware: measuring with String#length silently overflowed every line
 // carrying Japanese by up to 2x. ASCII behaviour is unchanged.
 const clip = (value, width) => truncateToWidth(value, width);
@@ -258,7 +267,7 @@ class StickyScreen {
   setFooterHeight(height) {
     const next = Math.max(1, Math.trunc(Number(height) || 1));
     if (next === this.footerHeight) return false;
-    this.footerHeight = next; if (this.active) { this.output.write(`${ESC}[2J`); this.layout(); }
+    this.footerHeight = next; if (this.active) { this.output.write(WIPE); this.layout(); }
     return true;
   }
   start({ header = [], footer = [], footerHeight, onLayout } = {}) {
@@ -266,8 +275,8 @@ class StickyScreen {
     if (footerHeight !== undefined) this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
     this.header = header; this.footer = footer; this.onLayout = onLayout || null; this.active = true;
     this.columns = this.cols; this.lines = this.rows;
-    this.output.write(`${ESC}[2J`); this.layout();
-    this._resize = () => { if (!this.active) return; this.columns = this.cols; this.lines = this.rows; this.output.write(`${ESC}[2J`); this.layout(); };
+    this.output.write(WIPE); this.layout();
+    this._resize = () => { if (!this.active) return; this.columns = this.cols; this.lines = this.rows; this.output.write(WIPE); this.layout(); };
     this.output.on('resize', this._resize);
     return true;
   }
@@ -325,7 +334,7 @@ class StickyScreen {
    */
   print(text) {
     if (!this.active) { this.output.write(`${String(text)}\n`); return; }
-    if (this.rows !== this.laidOutRows) { this.output.write(`${ESC}[2J`); this.layout(); }
+    if (this.rows !== this.laidOutRows) { this.output.write(WIPE); this.layout(); }
     const lines = String(text).split('\n');
     const capacity = Math.max(1, this.bottom - this.top + 1);
     const used = Number(this.used) || 0;
@@ -340,9 +349,9 @@ class StickyScreen {
     this.used = capacity;
     this.output.write(`${ESC}[${this.bottom};1H${lines.map((line) => `\n\r${line}`).join('')}`);
   }
-  clear() { if (this.active) { this.output.write(`${ESC}[2J`); this.layout(); } }
-  suspend() { if (!this.active) return; this.active = false; this.output.write(`${ESC}[r${ESC}[2J${ESC}[H`); }
-  resume() { if (!this.output.isTTY) return; this.active = true; this.output.write(`${ESC}[2J`); this.layout(); }
+  clear() { if (this.active) { this.output.write(WIPE); this.layout(); } }
+  suspend() { if (!this.active) return; this.active = false; this.output.write(`${ESC}[r${WIPE}`); }
+  resume() { if (!this.output.isTTY) return; this.active = true; this.output.write(WIPE); this.layout(); }
   stop() {
     if (this._resize) { this.output.off('resize', this._resize); this._resize = null; }
     if (!this.active) return; this.active = false;

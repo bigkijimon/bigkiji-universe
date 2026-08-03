@@ -216,6 +216,41 @@ function buildMonoFrameSets() {
   };
 }
 
+// One cell. The owner asked for "a dot, small, that blinks or moves", pointing at
+// Claude Code's single-glyph spinner.
+//
+// The 16x16 sprite could not be sampled down to this. A terminal row is two pixel
+// rows and a column is one pixel, so the sprite is 16 columns wide by
+// construction; squeezing it to one loses the silhouette entirely — the same
+// reason the first attempt at a one-row cat came out as a brown bar. So the cat is
+// drawn directly in the glyph instead of derived from the sprite.
+//
+// Braille packs 2x4 dots into a single cell, which is exactly enough for two ears
+// over two eyes:
+//
+//     dots 1,4  ->  ears        dots 2,5  ->  eyes
+//     ⠉             ⠛              ⠶              ⠒
+//     ears only     ears + eyes    head lowered   ears down
+//
+// Braille is East Asian Width neutral, so it measures one column, and it is
+// present in every monospace font that already renders the box drawing this CLI
+// uses. NO_COLOR is irrelevant here: the shape carries it, not the colour.
+const DOT_CAT = Object.freeze({
+  id: 'dot-cat',
+  label: 'One-cell braille cat — ears, blink, bob',
+  rows: 1,
+  width: 1,
+  frameMs: 140,
+  frames: Object.freeze([
+    '⠛',   // ears up, eyes open
+    '⠛',   // held, so the blink reads as a blink and not a flicker
+    '⠉',   // blink
+    '⠛',   // open
+    '⠶',   // head dips
+    '⠛',   // back up
+  ]),
+});
+
 // No art at all. A single frame means the ticker can advance forever and the
 // footer never changes, so this is also the setting for a screen reader —
 // gcloud, GitHub CLI and Gemini CLI all ship the same escape hatch, because a
@@ -223,6 +258,7 @@ function buildMonoFrameSets() {
 const NO_ART = Object.freeze({ id: 'none', label: 'No mascot — plain status text', rows: 1, width: 1, frameMs: 1000, frames: Object.freeze([' ']) });
 
 const FRAME_SETS = Object.freeze({
+  [DOT_CAT.id]: DOT_CAT,
   [WINGED_CAT_ASCII.id]: WINGED_CAT_ASCII,
   [WINGED_CAT_BOB.id]: WINGED_CAT_BOB,
   ...buildPixelFrameSets(),
@@ -236,12 +272,13 @@ const FRAME_SETS = Object.freeze({
 // get by default. If the sprite files are missing entirely we fall through to
 // no art rather than back to a face, because the instruction was to stop
 // drawing faces, not to draw them when convenient.
+// 2026-08-03, second pass: the pixel cat was correct but 16 columns wide, which
+// crowds the one line the owner actually reads. The default is now the one-cell
+// braille cat. The sprite sets are untouched and still selectable by name.
 function defaultFrameSetId() {
   const requested = String(process.env.BIGKIJI_CLI_CAT || '');
   if (FRAME_SETS[requested]) return requested;
-  if (FRAME_SETS['pixel-cat-16-row']) return 'pixel-cat-16-row';
-  if (FRAME_SETS['pixel-cat-mono-row']) return 'pixel-cat-mono-row';
-  return NO_ART.id;
+  return DOT_CAT.id;
 }
 const DEFAULT_FRAME_SET_ID = defaultFrameSetId();
 const LOADING_TEXT = 'loading...';

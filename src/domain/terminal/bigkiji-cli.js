@@ -127,7 +127,7 @@ async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
   // Sticky Bottom: 入力(π>)は罫線で挟んだ固定フッタの中・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
   const frameSet = loadingFrames();
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}π>${A.reset} ` });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}>${A.reset} ` });
   const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
   const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
@@ -160,6 +160,18 @@ async function repl(client) {
   // is ever allowed to run past the right edge.
   const view = () => ({ width: sticky.active ? sticky.cols : screenWidth(), theme: A, mark: glyphs() });
   const emit = (lines) => { const list = Array.isArray(lines) ? lines : [lines]; if (list.length) say(list.join('\n')); };
+  // The same run reaches the transcript from up to three places — the awaited
+  // response, the daemon's `run` event, and the status update that follows — so
+  // one submitted plan printed two or three identical blocks in a row. Each
+  // distinct state of a run is printed once; a real status change still prints.
+  const seenRuns = new Set();
+  const emitRun = (run) => {
+    if (!run?.id) return;
+    const key = `${run.id}:${run.status}:${run.revision ?? ''}:${run.assignments?.length ?? 0}`;
+    if (seenRuns.has(key)) return;
+    if (seenRuns.size > 200) seenRuns.delete(seenRuns.values().next().value);
+    seenRuns.add(key); emit(renderEvent('run', run, view()));
+  };
   if (!stickyOn) { console.log(header(live)); console.log(hintLine()); }
   // Animates the loading cat + elapsed clock, repainting only when the footer
   // actually changed. Three deliberate limits, all of them measured problems in
@@ -190,12 +202,12 @@ async function repl(client) {
     // the owner just typed are dropped by renderEvent rather than printed.
     const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
     if (text) comment = String(text).replace(/\s+/g, ' ').trim();
+    if (event === 'run') { emitRun(data); paintFooter(); refreshPrompt(); return; }
     const lines = renderEvent(event, data, { ...view(), resultLines: 4 });
     if (lines.length) emit(lines);
     paintFooter(); refreshPrompt();
   }); client.connect();
-  rl.on('line', async (line) => {
-    const text = line.trim();
+  const handleTurn = async (text) => {
     if (sticky.active && text) emit(renderUserTurn(text, view()));
     if (text) { turnStartedAt = Date.now(); frameIndex = 0; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
     try {
@@ -238,7 +250,7 @@ async function repl(client) {
         else throw new Error('unknown idea action');
       }
       else if (text.startsWith('/run ')) { const result = await client.prompt(text.slice(5), { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
-        emit(renderEvent('run', result.run, view())); }
+        emitRun(result.run); }
       else if (text === '/hud') { const launched = launchHud(); emit(renderToolCall('hud', lower(launched.launched || 'launched'), view())); }
       // Approving from where the owner already is.
       //
@@ -276,18 +288,82 @@ async function repl(client) {
         const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
         emit(renderAssistantText(result.reply, view()));
         if (result.draft) emit(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, view()));
-        if (result.run) emit(renderEvent('run', result.run, view()));
+        if (result.run) emitRun(result.run);
       }
     } catch (error) { emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true })); }
     finally { turnStartedAt = 0; }
     paintFooter(true); refreshPrompt();
-  });
+  };
+
+  // One paste is one turn.
+  //
+  // readline emits a 'line' per newline and never waits for the handler, so a
+  // nine-line paste fired nine turns inside 31ms: the daemon opened nine
+  // sessions, Ollama queued them, eight tripped the 8s stall timeout and every
+  // reply came back degraded. Lines are collected and dispatched together, and
+  // turns run one at a time.
+  //
+  // Bracketed paste (ESC[?2004h) gives the exact boundary when the terminal
+  // supports it. Node's readline already strips the markers out of the line
+  // content, so stdin is only watched for them. Terminals that ignore the
+  // request fall through to the quiet period, which is far shorter than a
+  // keystroke gap and far longer than the gap between two lines of one paste.
+  const PASTE_START = '\x1b[200~'; const PASTE_END = '\x1b[201~';
+  const QUIET_MS = 30; const PASTE_MAX_MS = 750;
+  let pending = []; let pasting = false; let pastedBatch = false;
+  let quietTimer = null; let pasteTimer = null; let chain = Promise.resolve();
+  const flush = () => {
+    quietTimer = null;
+    if (!pending.length) return;
+    // A paste that does not end in a newline leaves its last fragment on the
+    // input line. Sending now would submit the block without its final line, so
+    // the collected lines wait for Enter — which is what the screen shows.
+    if (rl.line && (pending.length > 1 || pastedBatch)) return;
+    const text = pending.join('\n').trim(); pending = []; pastedBatch = false;
+    chain = chain.then(() => handleTurn(text)).catch(() => {});
+  };
+  const schedule = () => { clearTimeout(quietTimer); quietTimer = setTimeout(flush, QUIET_MS); quietTimer.unref?.(); };
+  // readline echoes every line of a paste as it swallows it, and each echoed line
+  // scrolls the sticky region: mid-paste the bottom rule and the MODE/SHELL/AGENT
+  // row were overwritten by fragments of the pasted text. The echo is silenced for
+  // the duration of the paste and the footer is repainted once at the end, so the
+  // screen goes straight from the prompt to the finished block.
+  // Keep the width honest while muted: readline falls back to Infinity columns
+  // without it, and its idea of how many rows the line occupies has to survive
+  // the paste for the redraw afterwards to land on the right row.
+  const SINK = { write() { return true; }, get columns() { return process.stdout.columns; }, get rows() { return process.stdout.rows; } };
+  let muted = false;
+  const mute = () => { if (!muted) { muted = true; rl.output = SINK; } };
+  const endPaste = () => {
+    clearTimeout(pasteTimer); pasteTimer = null; pasting = false;
+    if (muted) { muted = false; rl.output = process.stdout; }
+    paintFooter(true); schedule();
+  };
+  const watchPaste = (chunk) => {
+    const seq = chunk.toString('latin1'); // the markers are ASCII; latin1 never mangles their bytes
+    const start = seq.lastIndexOf(PASTE_START); const end = seq.lastIndexOf(PASTE_END);
+    if (start < 0 && end < 0) return;
+    mute(); // this listener runs before readline's, so the echo is stopped before it happens
+    if (start > end) {
+      pasting = true; pastedBatch = true; clearTimeout(quietTimer); quietTimer = null;
+      // A marker split across two reads would otherwise hold the buffer forever.
+      clearTimeout(pasteTimer); pasteTimer = setTimeout(endPaste, PASTE_MAX_MS); pasteTimer.unref?.();
+    } else {
+      // The whole paste arrived in one read: stay muted until readline has finished
+      // processing this same chunk, which it does synchronously right after us.
+      pastedBatch = true; process.nextTick(endPaste);
+    }
+  };
+  if (process.stdin.isTTY) { process.stdout.write('\x1b[?2004h'); process.stdin.prependListener('data', watchPaste); }
+  rl.on('line', (line) => { pending.push(line); if (!pasting) schedule(); });
   // readline in terminal mode swallows ^C itself and emits this instead of
   // letting SIGINT reach the process, so without it Ctrl-C out of the REPL
   // closed the interface and exited 0.
   let interrupted = false;
   rl.on('SIGINT', () => { interrupted = true; rl.close(); });
   rl.on('close', () => {
+    clearTimeout(quietTimer); clearTimeout(pasteTimer);
+    if (process.stdin.isTTY) { process.stdin.off('data', watchPaste); rl.output = process.stdout; process.stdout.write('\x1b[?2004l'); }
     if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect();
     process.exit(interrupted ? 130 : 0);
   });

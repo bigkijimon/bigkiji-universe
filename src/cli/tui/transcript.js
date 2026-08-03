@@ -478,7 +478,11 @@ function renderEvent(event, data = {}, options = {}) {
     case 'run': {
       const head = renderToolCall('run', `${lower(data.id) || DASH} · ${phrase(data.status) || DASH}`, base);
       const list = formatTaskList(runAssignments(data), { ...base, indent: 2, maxLines: 8 });
-      return [...head, ...list];
+      // A failed run rendered as a status word with nothing behind it: the reason
+      // travelled all the way from the coordinator and was dropped right here, so
+      // the only thing the transcript ever said about a failure was that it failed.
+      const failure = String(data.error || data.reason || '').trim();
+      return [...head, ...list, ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
     }
     case 'idea': {
       const title = data?.draft?.title || data.ideaId || data.id || '';
