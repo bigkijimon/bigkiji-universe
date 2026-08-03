@@ -19,7 +19,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { SecurityPolicy, CREDENTIAL_FILES, isSensitivePath } = require('../src/domain/pi-core/security/security-policy');
+const { SecurityPolicy, CREDENTIAL_FILES, CREDENTIAL_FIELDS, isSensitivePath } = require('../src/domain/pi-core/security/security-policy');
 
 let failures = 0;
 const ok = (name, body) => { try { body(); console.log(`  ok  ${name}`); } catch (error) { failures += 1; console.error(`  FAIL ${name}\n       ${error.message}`); } };
@@ -43,6 +43,38 @@ ok('each provider is lent only the file that logs it in', () => {
     assert.deepEqual(listing(runtime.home).sort(), present.sort(),
       `${provider}'s sandbox must contain its login and nothing else`);
     assert.deepEqual(runtime.linked.sort(), present.sort(), 'and must report what it lent');
+  }
+});
+
+ok('a whole-file lend is never used where a few fields will do', () => {
+  // ~/.claude.json is 62KB and its `projects` key is every path the owner has opened
+  // plus their prompt history. The account binding is three fields of it. Copying the
+  // file would hand a provider the other 61KB for no reason.
+  for (const [provider, spec] of Object.entries(CREDENTIAL_FIELDS)) {
+    for (const [relative, fields] of Object.entries(spec)) {
+      assert.ok(!(CREDENTIAL_FILES[provider] || []).includes(relative),
+        `${relative} must be lent as fields or as a file, never both`);
+      const runtime = runtimeFor(provider);
+      const target = path.join(runtime.home, relative);
+      if (!fs.existsSync(path.join(os.homedir(), relative))) continue;
+      const written = JSON.parse(fs.readFileSync(target, 'utf8'));
+      assert.deepEqual(Object.keys(written).sort(), [...fields].sort(),
+        `${relative} must carry exactly the approved fields`);
+      assert.ok(!('projects' in written), 'the owner’s project history is not a credential');
+      assert.ok(fs.statSync(target).size < 4096, 'a lent binding is small by construction');
+      assert.equal(fs.statSync(target).mode & 0o777, 0o400);
+    }
+  }
+});
+
+ok('the stale July credentials file is not lent back', () => {
+  // Lending ~/.claude/.credentials.json did not help and may have shadowed the macOS
+  // login keychain, which is where this install's token actually lives. Measured
+  // 2026-08-03: with it lent, and again with only the binding lent, Claude Code
+  // answered "Not logged in" either way — so it is not lent at all.
+  for (const provider of ['claude', 'claude-code']) {
+    assert.ok(!(CREDENTIAL_FILES[provider] || []).includes('.claude/.credentials.json'),
+      `${provider} must not be handed a credential file this install does not use`);
   }
 });
 
@@ -74,7 +106,7 @@ ok('nothing else in the owner’s home crosses the boundary', () => {
 });
 
 ok('the lent copy is read-only, so a model cannot rewrite the owner’s login', () => {
-  const runtime = runtimeFor('claude-code');
+  const runtime = runtimeFor('codex');
   for (const relative of runtime.linked) {
     const file = path.join(runtime.home, relative);
     assert.equal(fs.statSync(file).mode & 0o777, 0o400, `${relative} must be lent read-only`);
@@ -83,7 +115,7 @@ ok('the lent copy is read-only, so a model cannot rewrite the owner’s login', 
 });
 
 ok('the copy dies with the task', () => {
-  const runtime = policy.createRuntime('selftest-cleanup', 'claude-code');
+  const runtime = policy.createRuntime('selftest-cleanup', 'codex');
   assert.ok(runtime.linked.length ? fs.existsSync(path.join(runtime.home, runtime.linked[0])) : true);
   fs.rmSync(runtime.root, { recursive: true, force: true }); // what cleanupRuntime does
   assert.ok(!fs.existsSync(runtime.home), 'nothing survives the run that produced it');

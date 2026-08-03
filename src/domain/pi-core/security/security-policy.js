@@ -17,14 +17,30 @@ const PROVIDER_SECRET = Object.freeze({
 // The single file each provider CLI reads to know it is logged in. One path per
 // provider, and only the path that authenticates — not the directory around it.
 const CREDENTIAL_FILES = Object.freeze({
-  claude: ['.claude/.credentials.json'],
-  'claude-code': ['.claude/.credentials.json'],
+  // Claude Code is not here on purpose. On macOS its token is in the login keychain,
+  // which HOME cannot hide; ~/.claude/.credentials.json is a July file this install
+  // no longer uses, and lending it made things worse rather than better — see below.
   codex: ['.codex/auth.json'],
   // Pi is a program, not a model: models.json is where it learns which provider and
   // key to borrow, and settings.json is version and package state. Neither holds a
   // secret here — this machine's models.json refers to ${ZAI_API_KEY} rather than
   // storing the key — but both are required for `pi --model zai/...` to resolve.
   glm: ['.pi/agent/models.json', '.pi/agent/settings.json'],
+});
+
+// Some logins are not a file you can lend — they are a few named fields inside a
+// file that also holds things the provider has no business seeing.
+//
+// On macOS, Claude Code's token lives in the login keychain, which a sandboxed HOME
+// does not affect. What HOME hides is ~/.claude.json, and without the account
+// binding in it the CLI decides it is a fresh install and answers "Not logged in".
+// That file is 62KB here and its `projects` key is every path the owner has ever
+// opened together with their prompt history. So the binding is rebuilt from three
+// named fields rather than copied: the owner approved lending a login, not a
+// history, and named this file and these fields to do it (2026-08-03).
+const CREDENTIAL_FIELDS = Object.freeze({
+  claude: { '.claude.json': ['userID', 'hasCompletedOnboarding', 'oauthAccount'] },
+  'claude-code': { '.claude.json': ['userID', 'hasCompletedOnboarding', 'oauthAccount'] },
 });
 
 const SENSITIVE_SEGMENT = /(?:^|\/)(?:\.env(?:\..*)?|\.ssh|\.aws|\.azure|\.kube|\.gnupg|\.bigkiji|secrets?|credentials?|private[-_]?keys?|auth(?:entication)?)(?:\/|$)/i;
@@ -139,7 +155,29 @@ class SecurityPolicy {
         lent.push(relative);
       } catch (_) { /* a login we cannot lend is a provider that reports itself unauthenticated */ }
     }
+    for (const [relative, fields] of Object.entries(CREDENTIAL_FIELDS[provider] || {})) {
+      const extracted = this.extractFields(path.join(os.homedir(), relative), fields);
+      if (!extracted) continue;
+      const target = path.join(home, relative);
+      try {
+        fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(target, JSON.stringify(extracted), { mode: 0o400 });
+        lent.push(relative);
+      } catch (_) { /* same: an unauthenticated provider beats a widened sandbox */ }
+    }
     return lent;
+  }
+
+  /**
+   * The named fields of a JSON file. Never the file, and never a field not asked for.
+   * @returns {object|null}
+   */
+  extractFields(source, fields) {
+    let parsed; try { parsed = JSON.parse(fs.readFileSync(source, 'utf8')); } catch (_) { return null; }
+    if (!parsed || typeof parsed !== 'object') return null;
+    const out = {};
+    for (const field of fields) if (Object.prototype.hasOwnProperty.call(parsed, field)) out[field] = parsed[field];
+    return Object.keys(out).length ? out : null;
   }
 
   minimalEnv(provider, { runtime, secret = '', extra = {} } = {}) {
@@ -171,4 +209,4 @@ class SecurityPolicy {
   }
 }
 
-module.exports = { SecurityPolicy, PROVIDER_SECRET, CREDENTIAL_FILES, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };
+module.exports = { SecurityPolicy, PROVIDER_SECRET, CREDENTIAL_FILES, CREDENTIAL_FIELDS, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };
