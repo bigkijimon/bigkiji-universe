@@ -29,7 +29,17 @@ const CLAUDE_MODELS = Object.freeze({
   general: process.env.BIGKIJI_CLAUDE_MODEL || 'claude-opus-5',
 });
 
-const DESIGN_SIGNALS = /(?:markdown|readme|\.md\b|docs?\b|documentation|design|ux\b|ui\b|visual|layout|css|animation|typography|copy(?:writing)?|デザイン|レイアウト|見た目|文章|資料|文書|記事)/i;
+// Two of these used to fire on words that were not about design at all, and each
+// one doubled the price of a run.
+//
+//   `ui\b` had no leading boundary, so the "ui" inside a path matched: measured
+//   2026-08-03, "Read src/cli/tui/footer.js and report..." resolved to the design
+//   tier because of `tui/`. A file path is not a request.
+//
+//   `copy(?:writing)?` matched the ordinary verb. "copy this function" is not
+//   copywriting, and the alternative — Fable at $10/$50 — is not what the owner
+//   asked for when they said prose and design go to Fable.
+const DESIGN_SIGNALS = /(?:markdown|readme|\.md\b|\bdocs?\b|documentation|design|\bux\b|\bui\b|visual|layout|\bcss\b|animation|typography|copywriting|デザイン|レイアウト|見た目|文章|資料|文書|記事)/i;
 const COMPLEX_SIGNALS = /(?:architect|refactor|migrat|redesign|rebuild|overhaul|end-to-end|複雑|設計|再構築|作り直|全面)/i;
 
 // Which brain, not which vendor. Provider selection happens first (capability

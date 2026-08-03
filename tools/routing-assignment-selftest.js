@@ -46,6 +46,21 @@ ok('the owner’s standing design rule still reaches every role', () => {
   assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'debug'), CLAUDE_MODELS.design);
 });
 
+ok('a file path cannot decide the tier either', () => {
+  // Same family as the title bug, found by running a real task through the daemon:
+  // `ui\b` had no leading boundary, so the "ui" inside src/cli/tui/ matched and a
+  // plain code-reading request planned onto Fable at $10/$50.
+  assert.equal(resolveModel('claude-code', 'Read src/cli/tui/footer.js and report what it degrades first', 'leader'),
+    CLAUDE_MODELS.general, 'a path containing tui/ is not a design request');
+  assert.equal(resolveModel('claude-code', 'fix the guard in src/gui/main.js', 'debug'), CLAUDE_MODELS.general);
+  assert.equal(resolveModel('claude-code', 'copy this function into the new module', 'leader'), CLAUDE_MODELS.general,
+    'the verb "copy" is not copywriting');
+  // and the signals that should fire still do
+  assert.equal(resolveModel('claude-code', 'update the UI copywriting on the pricing page', 'leader'), CLAUDE_MODELS.design);
+  assert.equal(resolveModel('claude-code', 'restyle the button with css', 'leader'), CLAUDE_MODELS.design);
+  assert.equal(resolveModel('claude-code', 'ログイン画面のレイアウトを直したい', 'leader'), CLAUDE_MODELS.design);
+});
+
 // --- R-5: every chain ends local, and only local -----------------------------
 ok('no fallback chain climbs from free to paid', () => {
   const paid = new Set(['claude-code', 'codex', 'gemini', 'glm']);
