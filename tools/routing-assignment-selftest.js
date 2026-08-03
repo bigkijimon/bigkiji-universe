@@ -39,11 +39,17 @@ ok('a role title cannot decide the tier', () => {
 });
 ok('the owner’s standing design rule still reaches every role', () => {
   // Pinning leader to Opus would have cancelled [[design-changes-use-fable5]] for
-  // the role most likely to be handed a redesign. Only `ui` is pinned.
-  assert.deepEqual(Object.keys(ROLE_TIER), ['ui'], 'exactly one role is decided before the words are read');
+  // the role most likely to be handed a redesign. Two roles are pinned, and leader is
+  // deliberately not one of them:
+  //   ui     the owner's standing design rule
+  //   debug  the owner asked for debugging to be owned by a model good at debugging
+  //          (Terminal-Bench 2.1: Fable 5 83.8% / Opus 5 78.9%)
+  assert.deepEqual(Object.keys(ROLE_TIER), ['ui', 'debug'], 'only the roles the owner named are decided before the words are read');
+  assert.ok(!Object.keys(ROLE_TIER).includes('leader'),
+    'leader must stay word-driven, or a redesign handed to it would miss the design rule');
   assert.equal(resolveModel('claude-code', 'anything at all', 'ui'), CLAUDE_MODELS.design);
   assert.equal(resolveModel('claude-code', 'ログイン画面を作り直したい', 'leader'), CLAUDE_MODELS.design);
-  assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'debug'), CLAUDE_MODELS.design);
+  assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'facilitator'), CLAUDE_MODELS.design);
 });
 
 ok('a file path cannot decide the tier either', () => {
@@ -52,7 +58,9 @@ ok('a file path cannot decide the tier either', () => {
   // plain code-reading request planned onto Fable at $10/$50.
   assert.equal(resolveModel('claude-code', 'Read src/cli/tui/footer.js and report what it degrades first', 'leader'),
     CLAUDE_MODELS.general, 'a path containing tui/ is not a design request');
-  assert.equal(resolveModel('claude-code', 'fix the guard in src/gui/main.js', 'debug'), CLAUDE_MODELS.general);
+  // facilitator, not debug: debug is now pinned by role, so it can no longer serve as
+  // the control that proves the tier is decided by the words rather than by the role.
+  assert.equal(resolveModel('claude-code', 'fix the guard in src/gui/main.js', 'facilitator'), CLAUDE_MODELS.general);
   assert.equal(resolveModel('claude-code', 'copy this function into the new module', 'leader'), CLAUDE_MODELS.general,
     'the verb "copy" is not copywriting');
   // and the signals that should fire still do

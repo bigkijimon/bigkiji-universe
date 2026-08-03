@@ -72,7 +72,18 @@ const COMPLEX_SIGNALS = /(?:architect|refactor|migrat|redesign|rebuild|overhaul|
 // design and large redesigns go to Fable regardless of which role carries them —
 // pinning leader to Opus would quietly cancel that rule for the role most likely to
 // be handed a redesign.
-const ROLE_TIER = Object.freeze({ ui: 'design' });
+// Roles whose model is decided by what the role IS, not by what the request says.
+//
+//   ui     the owner's standing rule: design work goes to Fable.
+//   debug  the owner asked for debugging to be owned by a model that is good at
+//          debugging. The 'design' key is the Fable tier — the name is historical.
+//          Debugging is pinned there because Terminal-Bench 2.1, which measures
+//          exactly this work (run the command, read the failure, fix it), puts
+//          Fable 5 at 83.8% and Opus 5 at 78.9%. It is not because debugging is
+//          design. This tier costs $10/$50 against Opus's $5/$25, and debug is
+//          read-only and runs on most runs, so it is the second most expensive
+//          standing decision in this file after leader.
+const ROLE_TIER = Object.freeze({ ui: 'design', debug: 'design' });
 
 function pickModelTier(text, role = '') {
   const pinned = ROLE_TIER[String(role || '')];

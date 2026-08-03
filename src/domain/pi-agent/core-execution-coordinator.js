@@ -11,10 +11,19 @@ const { reviewResult } = require('./critique');
 const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
-  { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'gemini', title: 'Requirements and acceptance trace', write: false },
+  // GLM, not Gemini. Gemini's quota is limit:0 — a billing plan, not a key — so this
+  // role could never actually run, and every run silently fell through the chain to
+  // fill it. GLM-5.2 is the cheapest paid provider on the fleet ($1.4/$4.4) and this
+  // role is read-only, which is the right shape for it.
+  { role: 'facilitator', agent: 'Facilitator-Pi', provider: 'glm', title: 'Requirements and acceptance trace', write: false },
   { role: 'leader', agent: 'Lead-Pi', provider: 'claude-code', title: 'Architecture, system implementation and integration', write: true },
   { role: 'ui', agent: 'Design-Pi', provider: 'codex', title: 'UI/UX and interactive frontend implementation', write: true },
-  { role: 'debug', agent: 'Debug-Pi', provider: 'glm', title: 'Diagnostics, tests and failure analysis', write: false },
+  // The owner asked for debugging to be owned by a model that is good at debugging.
+  // It was on GLM, which ran with --no-tools: it could not read a file or run a test,
+  // so "diagnostics, tests and failure analysis" was being done from the prompt text
+  // alone. Claude Code has Read/Bash/Grep and is pinned to the Fable tier in
+  // model-router.js for this role.
+  { role: 'debug', agent: 'Debug-Pi', provider: 'claude-code', title: 'Diagnostics, tests and failure analysis', write: false },
   { role: 'context', agent: 'Context-Pi', provider: 'qwen', title: 'Local context pruning and continuity check', write: false },
 ]);
 

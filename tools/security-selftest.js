@@ -107,7 +107,12 @@ function fakeChild() {
   // ---- the model is part of what gets approved ---------------------------------
   const { resolveModel, CLAUDE_MODELS, GLM_MODELS } = require('../src/domain/pi-agent/model-router');
   assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'leader'), CLAUDE_MODELS.design);
-  assert.equal(resolveModel('claude-code', 'fix the null check in the daemon', 'debug'), CLAUDE_MODELS.general);
+  // debug was on the general tier as the cheap default. The owner then asked for
+  // debugging to be owned by a model that is good at debugging, so it is pinned to the
+  // Fable tier — Terminal-Bench 2.1 measures exactly this work and puts Fable 5 at
+  // 83.8% against Opus 5's 78.9%. Pinned by role, so the request text cannot move it.
+  assert.equal(resolveModel('claude-code', 'fix the null check in the daemon', 'debug'), CLAUDE_MODELS.design);
+  assert.equal(resolveModel('claude-code', 'anything at all', 'debug', { write: false }), CLAUDE_MODELS.design);
   assert.equal(resolveModel('claude-code', 'anything at all', 'ui'), CLAUDE_MODELS.design, 'the UI role is design work by definition');
   // This asserted '' — only Claude picked a tier, so GLM ran its flagship for every
   // task including read-only checks, and the performance registry (keyed by provider
