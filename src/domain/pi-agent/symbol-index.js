@@ -80,13 +80,26 @@ function maskJs(text) {
       }
       prev = 'x'; continue;
     }
-    if (c === '`') { templates.push(depth); blank(i++); prev = 'x'; continue; }
-    if (templates.length) {
+    // Inside a template *body* means the brace depth is exactly what it was when
+    // that backtick opened. Anything deeper is an interpolation, which is ordinary
+    // code and may open templates of its own.
+    //
+    // Without this distinction the open case below ran for the closing backtick
+    // too — it pushed a second template instead of popping the first, `templates`
+    // never emptied, and everything after the first template literal in the file
+    // was blanked as if it were string content. Measured on footer.js: 1 of 9
+    // top-level declarations survived, and symbolsOf returned nothing for every
+    // file in this codebase that uses a template string, which is most of them.
+    const inTemplateBody = templates.length > 0 && depth === templates[templates.length - 1];
+    if (c === '`') {
+      if (inTemplateBody) { templates.pop(); blank(i++); prev = 'x'; continue; }
+      templates.push(depth); blank(i++); prev = 'x'; continue;
+    }
+    if (inTemplateBody) {
       // Inside a template literal: blank everything until the closing backtick
       // or the start of an interpolation.
       if (c === '\\') { blank(i); blank(i + 1); i += 2; continue; }
       if (c === '$' && next === '{') { blank(i); out[i + 1] = '{'; depth += 1; i += 2; prev = '{'; continue; }
-      if (c === '`') { templates.pop(); blank(i++); prev = 'x'; continue; }
       if (c === '}' && depth === templates[templates.length - 1] + 1) { out[i] = '}'; depth -= 1; i += 1; prev = '}'; continue; }
       if (c === '{' || c === '}') { blank(i++); continue; }
       blank(i++); continue;
