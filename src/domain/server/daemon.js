@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
+// The daemon is spawned detached by whichever surface got there first, so it
+// inherits that process's environment — and the CLI, unlike Electron, never
+// loaded .env. Loading it here makes the answer the same either way. dotenv does
+// not overwrite a variable that is already set, so an explicit export still wins.
+try { require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '..', '.env') }); } catch (_) { /* optional */ }
+
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -11,6 +17,7 @@ const { WebSocketServer } = require('ws');
 const { TaskRunner } = require('../pi-agent/task-runner');
 const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordinator');
 const { warmModel } = require('../pi-agent/model-router');
+const { readiness, survey } = require('../pi-agent/provider-readiness');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -138,10 +145,18 @@ class DaemonEngine extends EventEmitter {
       credentials: Object.fromEntries(['claude', 'codex', 'gemini', 'glm'].map((provider) => [provider, this.secrets.has(provider)])) };
     this.inventory = { root: this.workspace, files: [], folders: [], scannedAt: 0, truncated: false };
     this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => this.ownerSettings(),
-    // Local providers need no credential; a paid one without a key cannot start, and
-    // finding that out at spawn costs a whole plan-approve-fail-repair cycle.
-    available: (provider) => ['qwen', 'ollama'].includes(provider)
-      || this.secrets.has(provider === 'claude-code' ? 'claude' : provider) });
+    // Can this provider actually start — not "did the owner paste an API key".
+    //
+    // The old test asked the second question and answered no for every paid
+    // provider, permanently. Claude Code and Codex authenticate with their own
+    // CLI login and have no key to paste; Gemini's CLI reads GOOGLE_API_KEY as
+    // readily as GEMINI_API_KEY; and the owner's keys lived in .env, which the
+    // settings store never sees. So there were four usable providers, a
+    // coordinator that believed it had none, and every plan quietly routed to
+    // the local model. Nothing errored. It just did less. See
+    // provider-readiness.js, which also explains why a provider is not ready.
+    available: (provider) => readiness(provider, { secret: (id) => this.secrets.get(id) || '' }).ready });
+    this.refreshAvailability();
     setImmediate(() => { try { writeSystemMemory({ appRoot: this.appRoot }); } catch (error) {
       this.publish('commentary', { source: 'PiAgent Engine', status: 'WARN', text: `System memory indexing failed: ${String(error.message).slice(0, 160)}` });
     } });
@@ -290,6 +305,28 @@ class DaemonEngine extends EventEmitter {
     this.publish('run', run); return run;
   }
 
+  // Tell the fleet display what the router already knows.
+  //
+  // These were two unconnected paths: the coordinator decided who could work,
+  // and the model store decided what the owner was shown, and nobody ever told
+  // the store anything. So every provider read `offline` regardless — which is
+  // a word that explains nothing and cost an evening of looking for a fault
+  // that was not there. The reason now travels with the verdict.
+  refreshAvailability() {
+    const rows = survey({ secret: (id) => this.secrets.get(id) || '' });
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+    this.providerReadiness = rows;
+    this.models.setAvailability({
+      claude: byId['claude-code']?.ready, codex: byId.codex?.ready,
+      gemini: byId.gemini?.ready, glm: byId.glm?.ready, ollama: true,
+    });
+    for (const row of rows) {
+      const id = row.id === 'claude' ? 'claude-code' : row.id;
+      this.models.touch?.(id, { metrics: { apiHealth: row.ready ? `ready · ${row.via}` : row.detail } });
+    }
+    return rows;
+  }
+
   setCredentials(values = {}, { replace = false } = {}) {
     for (const provider of ['claude', 'codex', 'gemini', 'glm']) {
       if (!replace && !Object.prototype.hasOwnProperty.call(values, provider)) continue;
@@ -299,7 +336,12 @@ class DaemonEngine extends EventEmitter {
     }
     this.securityState.credentials = Object.fromEntries(['claude', 'codex', 'gemini', 'glm']
       .map((provider) => [provider, this.secrets.has(provider)]));
+    // A key the owner just entered has to change what the fleet shows and what
+    // the router will choose, in that order and immediately — pi-bridge has a
+    // refreshChain() for exactly this that nothing has ever called.
+    this.refreshAvailability();
     this.publish('security', this.securityState);
+    this.publish('models', this.models.snapshot());
     return { ok: true, credentials: this.securityState.credentials };
   }
 
