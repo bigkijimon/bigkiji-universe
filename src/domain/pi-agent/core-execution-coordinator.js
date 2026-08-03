@@ -8,6 +8,7 @@ const { SkillRegistry } = require('./skill-registry');
 const { resolveModel } = require('./model-router');
 const { CircuitBreaker } = require('./circuit-breaker');
 const { reviewResult } = require('./critique');
+const { costOf, contextUse } = require('./pricing');
 const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
@@ -369,7 +370,14 @@ class CoreExecutionCoordinator extends EventEmitter {
     // Text only. This injects guidance, never filesystem access, so the sandbox
     // boundary is exactly what it was before the skill registry existed.
     let skillBrief = '';
-    try { skillBrief = this.skills.brief(`${run.prompt} ${item.title}`); } catch (_) {}
+    // Which of the owner's skills reached this assignment. It was injected silently, so
+    // when it fired on the wrong thing — measured: 「READMEを直して」 pulled in
+    // token-saver and n8n-binary-and-data — nothing said so and nobody could tell.
+    try {
+      const matched = this.skills.match(`${run.prompt} ${item.title}`) || [];
+      item.skills = matched.map((skill) => skill.id);
+      skillBrief = this.skills.brief(`${run.prompt} ${item.title}`);
+    } catch (_) {}
     const plan = deliberate.brief(run.deliberation);
     const suffix = `${plan ? `\n\n${plan}\n` : ''}${skillBrief ? `\n\n${skillBrief}\n` : ''}`;
     const shared = `BIGKIJI RUN ${run.id}\nOwner goal: ${run.prompt}\n` +
@@ -630,6 +638,11 @@ class CoreExecutionCoordinator extends EventEmitter {
         // are null when the provider does not report them: codex names its files but
         // gives no counts, and a zero there would read as "changed nothing".
         changed: this.taskRunner.changedFiles ? this.taskRunner.changedFiles(task) : [],
+        // Null when the price or the window is unknown, or when the provider reported no
+        // usage at all. A provider that said nothing did not spend zero.
+        cost: costOf(assignment.provider, assignment.model, tokens),
+        context: contextUse(assignment.model, tokens),
+        skills: assignment.skills || [],
       };
     });
     const done = rows.filter((row) => row.status === 'completed');
@@ -640,6 +653,10 @@ class CoreExecutionCoordinator extends EventEmitter {
       completed: done.length, total: rows.length,
       ms: started ? finished - started : null,
       tokens: totalTokens || null,
+      // Sum of the parts that could be priced; null when none of them could. A partial
+      // total is still worth showing — it is a floor, not a guess — and the rows say
+      // which providers contributed a dash.
+      cost: rows.reduce((sum, row) => (row.cost === null ? sum : (sum || 0) + row.cost), null),
       checks: run.quality.checks.map((check) => ({ id: check.id, pass: check.pass })),
       repairs: run.repairCycle || 0,
       collisions,

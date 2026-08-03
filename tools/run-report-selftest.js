@@ -159,8 +159,12 @@ ok('the owner reads it as one block', () => {
   assert.match(text, /401 Unauthorized/);
   assert.match(text, /not verified: maker-checker/, 'an unmet check is the point of a report');
   assert.match(text, /repair cycles: 1/);
-  assert.match(text, /9s —$/m, 'an unreported token count is a dash, not a zero');
+  // The row is elapsed, tokens, cost, context. A failed run reported none of the last
+  // three, and all three are dashes rather than zeros.
+  assert.match(text, /9s — — —$/m, 'an unreported token count is a dash, not a zero');
   assert.ok(!/0 tok/.test(text), 'and never a fabricated zero');
+  assert.ok(!/\$0\.00/.test(text), 'nor a fabricated free — an unpriced model costs an unknown amount, not nothing');
+  assert.ok(!/0%\//.test(text), 'nor a context percentage against a window nobody knows');
   for (const line of lines) assert.ok(line.replace(/\s+$/, '').length <= 88, `overflows: ${JSON.stringify(line)}`);
   // Unboxed, like the rest of the transcript — the owner asked for that by name.
   for (const line of lines) assert.ok(!/[╭╮╰╯│]/.test(line));

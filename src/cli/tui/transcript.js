@@ -25,6 +25,7 @@
 // terminal state — so it can be asserted line by line in a self test.
 
 const { NO_COLOR, themeFor, stripAnsi } = require('../../domain/terminal/cli-theme');
+const { formatCost, formatContext } = require('../../domain/pi-agent/pricing');
 
 const SGR_STRIKE = NO_COLOR ? '' : '\x1b[9m';
 const DASH = '—';
@@ -536,10 +537,14 @@ function renderEvent(event, data = {}, options = {}) {
       const ok = data.status === 'COMPLETED';
       const took = data.ms ? ` ${mark.note} ${Math.round(data.ms / 1000)}s` : '';
       const tok = data.tokens ? ` ${mark.note} ${data.tokens} tok` : '';
-      const head = renderToolCall('report', `${data.completed}/${data.total} done ${mark.note} ${phrase(data.status)}${took}${tok}`, base);
+      // The owner's stated reason this project exists is one CLI that manages billing
+      // across every model, and until now it showed no figure in dollars anywhere.
+      const spend = data.cost === null || data.cost === undefined ? '' : ` ${mark.note} ${formatCost(data.cost)}`;
+      const head = renderToolCall('report', `${data.completed}/${data.total} done ${mark.note} ${phrase(data.status)}${took}${tok}${spend}`, base);
       const rows = (data.rows || []).map((row) => {
         const glyph = row.status === 'completed' ? mark.done : mark.pending;
-        const cost = [row.ms ? `${Math.round(row.ms / 1000)}s` : DASH, row.tokens ? `${row.tokens} tok` : DASH].join(' ');
+        const cost = [row.ms ? `${Math.round(row.ms / 1000)}s` : DASH, row.tokens ? `${row.tokens} tok` : DASH,
+          formatCost(row.cost), formatContext(row.context)].join(' ');
         const stood = row.standInFor ? ` (for ${lower(row.standInFor)})` : '';
         const note = row.error || row.headline || '';
         // What it put on disk. A provider that reports no line counts gets the file
@@ -552,7 +557,10 @@ function renderEvent(event, data = {}, options = {}) {
         const wrote = files
           ? `\n   ${files} file${files === 1 ? '' : 's'} ${mark.note} ${lines.added === null ? DASH : `+${lines.added}`} ${lines.removed === null ? DASH : `-${lines.removed}`}`
           : '';
-        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}${wrote}`;
+        // Which of the owner's own skills steered this assignment. It used to be
+        // injected silently, so when it matched the wrong thing nothing said so.
+        const steered = (row.skills || []).length ? `\n   skills: ${row.skills.join(', ')}` : '';
+        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}${wrote}${steered}`;
       }).join('\n');
       const failed = (data.checks || []).filter((check) => !check.pass).map((check) => check.id);
       const tail = failed.length ? `\nnot verified: ${failed.join(', ')}` : '';
