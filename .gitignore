@@ -10,3 +10,8 @@ tools/selftest-result-*.json
 __pycache__/
 *.py[cod]
 src/core/build-info.json
+src/components/UI/console-dist/
+
+# Isolated copies of the repo, one per provider, created by src/domain/pi-agent/worktree.js.
+# Working space: git worktree already refuses to track them, but the parent dir is ours.
+.bigkiji/
