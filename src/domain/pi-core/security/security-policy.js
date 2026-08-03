@@ -14,8 +14,29 @@ const PROVIDER_SECRET = Object.freeze({
   glm: 'ZAI_API_KEY',
 });
 
+// The single file each provider CLI reads to know it is logged in. One path per
+// provider, and only the path that authenticates — not the directory around it.
+const CREDENTIAL_FILES = Object.freeze({
+  claude: ['.claude/.credentials.json'],
+  'claude-code': ['.claude/.credentials.json'],
+  codex: ['.codex/auth.json'],
+  // Pi is a program, not a model: models.json is where it learns which provider and
+  // key to borrow, and settings.json is version and package state. Neither holds a
+  // secret here — this machine's models.json refers to ${ZAI_API_KEY} rather than
+  // storing the key — but both are required for `pi --model zai/...` to resolve.
+  glm: ['.pi/agent/models.json', '.pi/agent/settings.json'],
+});
+
 const SENSITIVE_SEGMENT = /(?:^|\/)(?:\.env(?:\..*)?|\.ssh|\.aws|\.azure|\.kube|\.gnupg|\.bigkiji|secrets?|credentials?|private[-_]?keys?|auth(?:entication)?)(?:\/|$)/i;
-const SENSITIVE_FILE = /(?:^|\/)(?:credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|secrets\.enc\.json|remote\.json|id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:pem|key|p8|p12|pfx|jks|keystore|kdbx))$/i;
+// The leading dot used to defeat this. `~/app/credentials.json` was sensitive and
+// `~/.claude/.credentials.json` — the file that logs Claude Code in — was not, and
+// neither was `~/.codex/auth.json`. Every reader that asks this question (the
+// context pruner, the disclosure manifest, the sandbox policy) was told those two
+// were ordinary files. Found 2026-08-03 while lending exactly those files to a task.
+//
+// `auth` is matched only as a config file, never as source: `src/routes/auth.ts` is
+// code the owner may well want a provider to read.
+const SENSITIVE_FILE = /(?:^|\/)(?:\.?credentials?(?:\.[^/]*)?|\.?auth\.(?:json|toml|ya?ml)|secrets?(?:\.[^/]*)?|secrets\.enc\.json|remote\.json|id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:pem|key|p8|p12|pfx|jks|keystore|kdbx))$/i;
 
 function canonical(value) {
   const absolute = path.resolve(String(value || '.'));
@@ -76,13 +97,49 @@ class SecurityPolicy {
     return target;
   }
 
-  createRuntime(taskId) {
+  createRuntime(taskId, provider = '') {
     fs.mkdirSync(this.runtimeRoot, { recursive: true, mode: 0o700 });
     const safeId = String(taskId || 'task').replace(/[^a-z0-9._-]/gi, '-').slice(0, 80);
     const root = fs.mkdtempSync(path.join(this.runtimeRoot, `${safeId}-`));
     const home = path.join(root, 'home'); const tmp = path.join(root, 'tmp');
     fs.mkdirSync(home, { recursive: true, mode: 0o700 }); fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
-    return { root, home, tmp, policyFile: path.join(root, 'security-policy.json') };
+    const linked = provider ? this.lendCredentials(provider, home) : [];
+    return { root, home, tmp, linked, policyFile: path.join(root, 'security-policy.json') };
+  }
+
+  /**
+   * Copy in the one file this provider needs to prove who it is, and nothing else.
+   *
+   * The sandbox gives every task a throwaway HOME so a provider cannot read the
+   * owner's ~/.ssh, ~/.aws or anything else it was never asked to see. Claude Code,
+   * Codex and Pi all authenticate from a file under HOME, so the sandbox also
+   * removed their logins: measured 2026-08-03, Claude Code answered "Not logged in ·
+   * Please run /login" and Codex got 401 Unauthorized from its websocket. That is
+   * the whole explanation for 27 assignments and zero paid completions — the
+   * providers were never broken, they were never authenticated.
+   *
+   * Each entry below is one path, chosen because the CLI cannot start without it.
+   * Nothing is copied that the provider does not need, the copies live and die with
+   * the task, and they are written read-only so a model cannot rewrite the owner's
+   * credentials through its own sandbox.
+   * @returns {string[]} the relative paths that were lent
+   */
+  lendCredentials(provider, home) {
+    const files = CREDENTIAL_FILES[provider] || [];
+    const lent = [];
+    for (const relative of files) {
+      const source = path.join(os.homedir(), relative);
+      let stat; try { stat = fs.statSync(source); } catch (_) { continue; }
+      if (!stat.isFile()) continue;
+      const target = path.join(home, relative);
+      try {
+        fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+        fs.copyFileSync(source, target);
+        fs.chmodSync(target, 0o400);
+        lent.push(relative);
+      } catch (_) { /* a login we cannot lend is a provider that reports itself unauthenticated */ }
+    }
+    return lent;
   }
 
   minimalEnv(provider, { runtime, secret = '', extra = {} } = {}) {
@@ -114,4 +171,4 @@ class SecurityPolicy {
   }
 }
 
-module.exports = { SecurityPolicy, PROVIDER_SECRET, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };
+module.exports = { SecurityPolicy, PROVIDER_SECRET, CREDENTIAL_FILES, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };

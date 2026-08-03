@@ -136,7 +136,7 @@ class TaskRunner extends EventEmitter {
       // approval and launch would run a model they never saw.
       if ((task.disclosure.model || '') !== (task.model || '')) throw new Error('STALE_MODEL_SELECTION');
       prepared = { prompt: task.preparedPrompt, metrics: task.context };
-      task.runtime = this.security.createRuntime(task.id);
+      task.runtime = this.security.createRuntime(task.id, task.provider);
       fs.writeFileSync(task.runtime.policyFile, JSON.stringify(policy, null, 2), { mode: 0o600 });
       this.writeProviderPolicies(task.provider, task.runtime, policy);
       ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy, task.runtime, task.model));
