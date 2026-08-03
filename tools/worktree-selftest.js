@@ -152,6 +152,23 @@ ok('it refuses to isolate into weaker permissions than the run was approved unde
   worktree.release(committed);
 });
 
+ok('the coordinator isolates before it plans, not after', () => {
+  // The disclosure the owner approves is sealed against a policy hash that includes the
+  // task's working directory, and start() refuses a task whose policy no longer hashes
+  // the same (task-runner.js: STALE_SECURITY_POLICY). Creating the worktree after
+  // approval would block every task it was meant to protect.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'core-execution-coordinator.js'), 'utf8');
+  const planned = source.slice(source.indexOf('run.assignments = blueprint.map'), source.indexOf('this._seal(run);', source.indexOf('run.assignments = blueprint.map')));
+  assert.ok(planned.indexOf('isolate({') < planned.indexOf('this.taskRunner.plan('),
+    'isolate() must run before plan(), or the approved policy hash is the wrong one');
+  assert.match(planned, /item\.write\s*\?\s*isolate\(/, 'only writers are isolated');
+  assert.match(planned, /cwd: workspace\.path/, 'and the task actually runs there');
+  // Not being isolated is reported, never silent — silence would read as "isolated".
+  assert.match(source, /notIsolated: assignment\.write && !assignment\.workspace\?\.isolated/);
+  const transcript = fs.readFileSync(path.join(__dirname, '..', 'src', 'cli', 'tui', 'transcript.js'), 'utf8');
+  assert.match(transcript, /not isolated: \$\{row\.notIsolated\}/);
+});
+
 ok('this module cannot merge, commit or push', () => {
   // The step with no working precedent is combining several providers' edits
   // automatically. Every published parallel-agent tool stops at "a human reviews the
@@ -166,4 +183,4 @@ ok('this module cannot merge, commit or push', () => {
 
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`worktree selftest: ${failures} FAILED`); process.exit(1); }
-console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · refuses to isolate under a weaker policy · cannot merge, commit or push');
+console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · refuses to isolate under a weaker policy · isolated before the plan is sealed · cannot merge, commit or push');

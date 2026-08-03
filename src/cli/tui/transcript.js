@@ -560,7 +560,11 @@ function renderEvent(event, data = {}, options = {}) {
         // Which of the owner's own skills steered this assignment. It used to be
         // injected silently, so when it matched the wrong thing nothing said so.
         const steered = (row.skills || []).length ? `\n   skills: ${row.skills.join(', ')}` : '';
-        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}${wrote}${steered}`;
+        // A writer that shared the directory with another writer has to say so here,
+        // because the collision line below only fires once they have actually clashed.
+        const where = row.isolated ? `\n   isolated: ${row.workspacePath}`
+          : (row.notIsolated ? `\n   not isolated: ${row.notIsolated}` : '');
+        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}${wrote}${steered}${where}`;
       }).join('\n');
       const failed = (data.checks || []).filter((check) => !check.pass).map((check) => check.id);
       const tail = failed.length ? `\nnot verified: ${failed.join(', ')}` : '';

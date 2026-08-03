@@ -9,6 +9,7 @@ const { resolveModel } = require('./model-router');
 const { CircuitBreaker } = require('./circuit-breaker');
 const { reviewResult } = require('./critique');
 const { costOf, contextUse } = require('./pricing');
+const { isolate, collectDiff, release } = require('./worktree');
 const deliberate = require('./deliberation');
 
 const ROLE_BLUEPRINT = Object.freeze([
@@ -256,18 +257,33 @@ class CoreExecutionCoordinator extends EventEmitter {
       : knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, deliberation: run.deliberation?.steps || [],
         assignments: blueprint.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
     run.assignments = blueprint.map((item, index) => {
+      // Isolation happens HERE, before plan(), and not later.
+      //
+      // The disclosure the owner approves is sealed against a policy hash that includes
+      // the task's working directory (security-policy.js), and start() refuses a task
+      // whose policy no longer hashes the same. Creating a worktree after approval would
+      // therefore block every task it was meant to protect. Doing it first means the
+      // owner approves the isolated path in the first place.
+      //
+      // Only writers, and only when the directory is a git repository — which the Vault
+      // is not, so today this returns the shared directory and says why. That reason
+      // travels into the report rather than being silently dropped.
+      const workspace = item.write
+        ? isolate({ cwd: run.cwd, runId: run.id, role: item.role })
+        : { path: run.cwd, isolated: false, reason: 'read-only role' };
       const task = this.taskRunner.plan({
         id: `${run.id}-${item.role}`,
         provider: item.provider,
         model: item.model,
         prompt: this._assignmentPrompt(run, item),
-        cwd: run.cwd,
+        cwd: workspace.path,
         planHash: run.planHash,
         metadata: { runId: run.id, role: item.role, agent: item.agent, title: item.title, write: item.write, order: index },
       });
       this.taskToRun.set(task.id, run.id);
       return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, model: item.model, title: item.title,
         write: item.write, status: task.status, fallbackIndex: 0, homeProvider: item.provider,
+        workspace, skills: item.skills || [],
         disclosureHash: task.disclosure?.disclosureHash || '' };
     });
     this._seal(run);
@@ -598,7 +614,16 @@ class CoreExecutionCoordinator extends EventEmitter {
    * map of dangling pointers that only grows.
    */
   forgetRun(run) {
-    for (const assignment of run.assignments || []) this.taskToRun.delete(assignment.taskId);
+    for (const assignment of run.assignments || []) {
+      this.taskToRun.delete(assignment.taskId);
+      // An empty worktree is removed; one with work in it is kept, because that work is
+      // the only copy of it and the owner has not looked at it yet. The report names the
+      // path so it can be found again.
+      const workspace = assignment.workspace;
+      if (workspace?.isolated) {
+        try { release(workspace, { keep: (collectDiff(workspace).files || 0) > 0 }); } catch (_) {}
+      }
+    }
     this.runs.delete(run.id);
   }
 
@@ -640,6 +665,11 @@ class CoreExecutionCoordinator extends EventEmitter {
         changed: this.taskRunner.changedFiles ? this.taskRunner.changedFiles(task) : [],
         // Null when the price or the window is unknown, or when the provider reported no
         // usage at all. A provider that said nothing did not spend zero.
+        // Where this provider actually worked, and if it was not isolated, why not.
+        // Silence here would read as "isolated" — which is the one thing it must not do.
+        isolated: !!assignment.workspace?.isolated,
+        workspacePath: assignment.workspace?.isolated ? assignment.workspace.path : '',
+        notIsolated: assignment.write && !assignment.workspace?.isolated ? (assignment.workspace?.reason || 'unknown') : '',
         cost: costOf(assignment.provider, assignment.model, tokens),
         context: contextUse(assignment.model, tokens),
         skills: assignment.skills || [],
