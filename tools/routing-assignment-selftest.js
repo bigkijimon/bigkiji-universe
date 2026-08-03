@@ -127,6 +127,44 @@ ok('a provider in cooldown is not planned onto in the first place', () => {
   assert.notEqual(coordinator.pickProvider('debug', ['glm', 'codex']), 'glm');
 });
 
+// --- R-7: the owner's paid allowlist is a real control, not a dead setting -----
+ok('an exhausted provider can be taken out of rotation', () => {
+  // settings-store forced this to a constant on every save, and no assignment code
+  // ever read it, so there was no way to stop sending work to an exhausted provider.
+  const withAll = new CoreExecutionCoordinator({ taskRunner: runner(), registry: registry(), available: () => true });
+  assert.equal(withAll.pickProvider('leader', ['claude-code', 'glm', 'codex', 'qwen']), 'claude-code');
+  const glmOnly = new CoreExecutionCoordinator({ taskRunner: runner(), registry: registry(), available: () => true,
+    settingsProvider: () => ({ routing: { paidAllowlist: ['glm'] } }) });
+  assert.equal(glmOnly.pickProvider('leader', ['claude-code', 'glm', 'codex', 'qwen']), 'glm');
+  assert.equal(glmOnly.pickProvider('leader', ['claude-code', 'codex', 'qwen']), 'qwen',
+    'with every permitted paid provider gone the work goes local, not to a forbidden one');
+  // An empty or absent list means all of them, never none of them: a normalise bug
+  // must not silently stop the whole fleet.
+  const empty = new CoreExecutionCoordinator({ taskRunner: runner(), registry: registry(), available: () => true,
+    settingsProvider: () => ({ routing: { paidAllowlist: [] } }) });
+  assert.equal(empty.pickProvider('leader', ['claude-code', 'glm']), 'claude-code');
+});
+ok('the allowlist survives a settings save', () => {
+  const { SettingsStore } = require('../src/core/settings-store');
+  const store = new SettingsStore({ userData: fs.mkdtempSync(path.join(root, 's-')) });
+  store.update({ routing: { paidAllowlist: ['glm', 'codex'] } });
+  assert.deepEqual(store.get().routing.paidAllowlist, ['glm', 'codex'], 'it used to be overwritten with a constant every time');
+  store.update({ routing: { paidAllowlist: ['glm', 'not-a-provider'] } });
+  assert.deepEqual(store.get().routing.paidAllowlist, ['glm'], 'and an unknown name is dropped, not trusted');
+});
+
+// --- R-9: something has to decide which model codex runs ----------------------
+ok('codex is told which model to run', () => {
+  const { resolveModel: resolve, CODEX_MODELS } = require('../src/domain/pi-agent/model-router');
+  assert.equal(resolve('codex', 'anything', 'leader'), CODEX_MODELS.general);
+  const { TaskRunner } = require('../src/domain/pi-agent/task-runner');
+  const args = new TaskRunner({ cwd: root }).adapter('codex', 'p', root, { allowRead: [], allowWrite: [] }, {}, CODEX_MODELS.general).args;
+  assert.ok(args.includes('--model'), 'BigKiji passes --ignore-user-config, so without this nobody chose the model');
+  assert.equal(args[args.indexOf('--model') + 1], CODEX_MODELS.general);
+  const bare = new TaskRunner({ cwd: root }).adapter('codex', 'p', root, { allowRead: [], allowWrite: [] }, {}, '').args;
+  assert.ok(!bare.includes('--model'), 'and no model id is invented when none was resolved');
+});
+
 // --- R-4: no dispatch path may name its provider in source --------------------
 ok('idea enhancement goes through the router like everything else', () => {
   const daemon = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');

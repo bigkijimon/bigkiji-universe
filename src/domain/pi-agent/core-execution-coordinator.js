@@ -40,6 +40,7 @@ const FALLBACKS = Object.freeze({
 
 // The provider that needs no key, no quota and no network.
 const LOCAL_PROVIDER = 'qwen';
+const PAID_PROVIDERS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
 function selectRoles(prompt, routing = {}) {
   const text = String(prompt || '').toLowerCase();
@@ -215,10 +216,21 @@ class CoreExecutionCoordinator extends EventEmitter {
   // nothing is startable the answer is the local model — no key, no quota, no
   // network — which is the owner's stated last resort.
   _pick(role, candidates) {
-    const startable = candidates.filter((provider) => this.isAvailable(provider) && this.breaker.allow(provider));
+    // The owner's paid allowlist is read here and nowhere else. It was a dead
+    // setting: forced to a constant on every save, and never consulted by the code
+    // that assigns work, so taking an exhausted provider out of rotation was impossible.
+    const allowed = this.paidAllowlist();
+    const permitted = candidates.filter((provider) => !PAID_PROVIDERS.has(provider) || allowed.has(provider));
+    const startable = permitted.filter((provider) => this.isAvailable(provider) && this.breaker.allow(provider));
     if (startable.length) return this.registry.choose(role, startable) || startable[0];
     if (this.isAvailable(LOCAL_PROVIDER)) return LOCAL_PROVIDER;
-    return candidates[0];
+    return permitted[0] || candidates[0];
+  }
+
+  /** The providers the owner still wants paid work sent to. */
+  paidAllowlist() {
+    const configured = this.settingsProvider()?.routing?.paidAllowlist;
+    return new Set(Array.isArray(configured) && configured.length ? configured.map(String) : [...PAID_PROVIDERS]);
   }
 
   _seal(run) {

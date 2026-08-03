@@ -188,7 +188,15 @@ class SettingsStore {
     for (const category of SFX_CATEGORIES) {
       next.audio.sfx[category] = clamp(next.audio.sfx[category], 0, 1, DEFAULTS.audio.sfx[category]);
     }
-    next.routing.paidAllowlist = ['claude', 'codex', 'gemini', 'glm'];
+    // This used to be an unconditional assignment, so the owner's choice was
+    // overwritten on every normalise and the setting could not be changed at all —
+    // there was no way to take an exhausted provider out of rotation. It is a
+    // filter over the known providers now: unknown names are dropped, and an empty
+    // or absent list means all of them rather than none of them.
+    const PAID = ['claude', 'codex', 'gemini', 'glm'];
+    const requested = Array.isArray(next.routing.paidAllowlist)
+      ? next.routing.paidAllowlist.map(String).filter((id) => PAID.includes(id)) : [];
+    next.routing.paidAllowlist = requested.length ? [...new Set(requested)] : [...PAID];
     next.routing.localDefault = 'qwen';
     next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
     next.routing.maxAgents = clamp(next.routing.maxAgents, 1, 5, 3);

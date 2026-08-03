@@ -321,6 +321,51 @@ ok('when every fallback is in cooldown the run fails instead of looping', () => 
   const assignment = { taskId: 't1', provider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
   assert.equal(coordinator._fallback(run, assignment), false);
 });
+ok('a cooldown survives a restart', () => {
+  // A quota is spent for hours and sometimes a week. Held only in memory, every
+  // daemon restart walked back into the same wall — and this daemon restarted five
+  // times in one afternoon.
+  const time = clock();
+  const file = path.join(fs.mkdtempSync(path.join(root, 'cb-')), 'circuit-breaker.json');
+  const first = new CircuitBreaker({ file, threshold: 1, cooldownMs: 600000, now: time.now });
+  first.record('gemini', { ok: false, reason: 'quota' });
+  assert.equal(first.allow('gemini'), false);
+
+  const restarted = new CircuitBreaker({ file, threshold: 1, cooldownMs: 600000, now: time.now });
+  assert.equal(restarted.allow('gemini'), false, 'the outage has to be remembered across a restart');
+  assert.ok(restarted.retryInMs('gemini') > 0);
+  assert.equal(restarted.allow('claude-code'), true, 'and remembering one provider must not indict another');
+
+  // An expired cooldown is not resurrected, or the file would slowly become a
+  // permanent ban list.
+  time.advance(4000000);
+  assert.equal(new CircuitBreaker({ file, threshold: 1, now: time.now }).allow('gemini'), true);
+
+  // Recovery is written too: a provider that came back must not be skipped again
+  // by the next process to start.
+  const recovered = new CircuitBreaker({ file, threshold: 1, cooldownMs: 600000, now: time.now });
+  recovered.record('glm', { ok: false, reason: 'quota' });
+  assert.equal(new CircuitBreaker({ file, now: time.now }).allow('glm'), false);
+  recovered.record('glm', { ok: true });
+  assert.equal(new CircuitBreaker({ file, now: time.now }).allow('glm'), true);
+});
+ok('a breaker with no file still works', () => {
+  // The deliberation path and every test build one without persistence.
+  const breaker = new CircuitBreaker({ threshold: 1, cooldownMs: 1000 });
+  breaker.record('glm', { ok: false, reason: 'quota' });
+  assert.equal(breaker.allow('glm'), false);
+});
+ok('a corrupt or unwritable file never takes a run down', () => {
+  const dir = fs.mkdtempSync(path.join(root, 'cbx-'));
+  const file = path.join(dir, 'circuit-breaker.json');
+  fs.writeFileSync(file, 'not json at all');
+  const breaker = new CircuitBreaker({ file, threshold: 1 });
+  assert.equal(breaker.allow('glm'), true, 'unreadable memory means no memory, not a crash');
+  assert.doesNotThrow(() => breaker.record('glm', { ok: false, reason: 'quota' }));
+  const blocked = new CircuitBreaker({ file: path.join(dir, 'nope', '\0bad', 'x.json'), threshold: 1 });
+  assert.doesNotThrow(() => blocked.record('glm', { ok: false, reason: 'quota' }));
+});
+
 ok('the breaker never touches the approval gate', () => {
   // The whole safety design is that nothing external runs without the owner
   // saying so. A throttled API is not a reason to relax that, so assert it in

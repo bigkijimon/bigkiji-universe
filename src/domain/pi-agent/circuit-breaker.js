@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 // Stop asking a provider that has just told us to stop asking.
 //
 // BigKiji's fallback table is static: when claude-code fails, try glm, then
@@ -53,6 +56,53 @@ class CircuitBreaker {
     this.maxCooldownMs = Math.max(this.cooldownMs, Math.trunc(maxCooldownMs));
     this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.circuits = new Map();
+    // Where the memory survives a restart. Optional: tests and the deliberation
+    // path construct breakers with no file at all and must keep working.
+    this.file = options.file ? String(options.file) : '';
+    if (this.file) this.load();
+  }
+
+  /**
+   * Read back cooldowns that have not expired yet.
+   *
+   * A quota is spent for hours and sometimes a week. Holding that only in memory
+   * meant every restart walked back into the same wall — and this daemon restarted
+   * five times in one afternoon. Expired entries are dropped on the way in, so the
+   * file cannot accumulate and cannot resurrect an outage that is already over.
+   */
+  load() {
+    let saved;
+    try { saved = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch (_) { return; }
+    const now = this.now();
+    for (const [provider, circuit] of Object.entries(saved?.circuits || {})) {
+      const openUntil = Number(circuit?.openUntil || 0);
+      if (!Number.isFinite(openUntil) || openUntil <= now) continue;
+      this.circuits.set(String(provider), {
+        hits: [], openUntil,
+        cooldownMs: Math.max(0, Number(circuit.cooldownMs) || 0),
+        opens: Math.max(0, Math.trunc(Number(circuit.opens) || 0)),
+        reason: String(circuit.reason || '').slice(0, 80),
+        // A trial that was never taken before the restart is still owed.
+        trialTaken: false,
+      });
+    }
+  }
+
+  /** Persist the open circuits. Never throws: losing the memory beats losing the run. */
+  save() {
+    if (!this.file) return;
+    const now = this.now();
+    const circuits = {};
+    for (const [provider, circuit] of this.circuits) {
+      if (!circuit.openUntil || circuit.openUntil <= now) continue;
+      circuits[provider] = { openUntil: circuit.openUntil, cooldownMs: circuit.cooldownMs, opens: circuit.opens, reason: circuit.reason };
+    }
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      const tmp = `${this.file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, savedAt: now, circuits }), { mode: 0o600 });
+      fs.renameSync(tmp, this.file);
+    } catch (_) { /* the breaker is an optimisation; it must never take a run down */ }
   }
 
   _circuit(provider) {
@@ -82,6 +132,7 @@ class CircuitBreaker {
     if (ok) {
       if (!circuit.hits.length && !circuit.openUntil) return null;
       this.circuits.set(String(provider), { hits: [], openUntil: 0, cooldownMs: 0, opens: 0, reason: '', trialTaken: false });
+      this.save(); // a provider that came back must not be skipped again after a restart
       return { provider, state: 'closed', opened: false, openUntil: 0, reason: '' };
     }
     if (!THROTTLED.has(reason)) return null; // a crash says nothing about reachability
@@ -108,6 +159,7 @@ class CircuitBreaker {
     circuit.opens += 1;
     circuit.hits = [];
     circuit.trialTaken = false; // a fresh cooldown earns a fresh trial
+    this.save();
     return { provider, state: 'open', opened: true, openUntil: circuit.openUntil, reason, cooldownMs: wait };
   }
 

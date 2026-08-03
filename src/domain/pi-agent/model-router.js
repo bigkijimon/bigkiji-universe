@@ -20,6 +20,19 @@ const GLM_MODELS = Object.freeze({
   flash: process.env.BIGKIJI_GLM_FLASH_MODEL || 'glm-4.7-flash',
 });
 
+// Codex model ID, single source of truth like the two below.
+//
+// BigKiji starts codex with --ignore-user-config on purpose: the owner's
+// ~/.codex/config.toml can add MCP servers and tools, and a security sandbox that
+// reads the config it is sandboxing is not one. But it then named no model either,
+// so codex ran whatever its own default was — nobody controlled what executed, and
+// no cost figure could be honest about it. The default here is the model the owner
+// chose in that config (gpt-5.6-sol), so ignoring the file does not quietly change
+// which model does the work.
+const CODEX_MODELS = Object.freeze({
+  general: process.env.BIGKIJI_CODEX_MODEL || 'gpt-5.6-sol',
+});
+
 // Claude model IDs, in the same single-source-of-truth shape as GLM_MODELS.
 // Owner rule: prose, design and large redesigns go to Fable; ordinary engineering
 // stays on Opus. Only these two tiers are wired — no model is used here that the
@@ -72,6 +85,7 @@ function pickModelTier(text, role = '') {
 // '' means "the adapter already pins the model" (GLM) or "there is nothing to pin"
 // (local Ollama), which keeps the disclosure manifest honest rather than inventing an id.
 function resolveModel(provider, text, role = '') {
+  if (provider === 'codex') return CODEX_MODELS.general;
   if (provider !== 'claude' && provider !== 'claude-code') return '';
   return CLAUDE_MODELS[pickModelTier(text, role)];
 }
@@ -284,7 +298,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 
 module.exports = {
   ROLE_TIER,
-  GLM_MODELS, CLAUDE_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
+  GLM_MODELS, CLAUDE_MODELS, CODEX_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN, RATE_LIMIT_PATTERN, QUOTA_PATTERN,
   classifyFailure, retryAfterMs,
   handoffSummary, saveTaskState, loadTaskState, STATE_PATH, ollamaHealth, warmModel, ollamaKickstart,

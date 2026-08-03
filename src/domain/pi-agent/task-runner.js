@@ -295,6 +295,7 @@ class TaskRunner extends EventEmitter {
     };
     if (provider === 'codex') return { command: process.env.CODEX_BIN || 'codex',
       args: ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--strict-config',
+        ...(model ? ['--model', model] : []),
         '-c', 'web_search="disabled"', '-c', 'shell_environment_policy.inherit="none"',
         '--sandbox', policy.allowWrite.length ? 'workspace-write' : 'read-only', '--cd', cwd, prompt] };
     if (provider === 'gemini') return { command: process.env.GEMINI_BIN || 'gemini',

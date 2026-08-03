@@ -16,6 +16,7 @@ const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
 const { TaskRunner } = require('../pi-agent/task-runner');
 const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordinator');
+const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
 const { ModelStatusStore } = require('../hud/model-status-store');
@@ -144,7 +145,11 @@ class DaemonEngine extends EventEmitter {
       blocked: 0, manifests: 0, recent: [], policyHash: initialPolicy.security?.policyHash || '',
       credentials: Object.fromEntries(['claude', 'codex', 'gemini', 'glm'].map((provider) => [provider, this.secrets.has(provider)])) };
     this.inventory = { root: this.workspace, files: [], folders: [], scannedAt: 0, truncated: false };
-    this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => this.ownerSettings(),
+    // The breaker keeps its cooldowns on disk. A quota is spent for hours, sometimes
+    // a week; holding that in memory alone meant every daemon restart walked back
+    // into the same wall, and this daemon restarts often.
+    this.breaker = new CircuitBreaker({ file: path.join(this.stateRoot, 'circuit-breaker.json') });
+    this.coordinator = new CoreExecutionCoordinator({ taskRunner: this.runner, settingsProvider: () => this.ownerSettings(), breaker: this.breaker,
     // Can this provider actually start — not "did the owner paste an API key".
     //
     // The old test asked the second question and answered no for every paid
