@@ -84,10 +84,48 @@ function pickModelTier(text, role = '') {
 
 // '' means "the adapter already pins the model" (GLM) or "there is nothing to pin"
 // (local Ollama), which keeps the disclosure manifest honest rather than inventing an id.
-function resolveModel(provider, text, role = '') {
+// The local tiers, by what a task needs rather than by what is installed.
+//
+// Both exist on this machine and both are Apache-2.0. 9B answers in a second and
+// holds a conversation; 35B-A3B is the one to hand a judgement to. Sending every
+// read-only check to the 21GB model costs a load and a card the owner also needs
+// for ComfyUI.
+const LOCAL_MODELS = Object.freeze({
+  light: process.env.BIGKIJI_QWEN_LIGHT_MODEL || 'qwen3.5:latest',
+  heavy: process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b',
+});
+
+// Heavy or light, for the providers whose axis is effort rather than kind.
+//
+// A read-only assignment on a short, unremarkable request is a check, and a check
+// does not need the expensive tier. Anything that writes, anything the owner
+// described in complex terms, and anything long is heavy. The default is heavy:
+// being wrong about this in the cheap direction produces a bad answer, and being
+// wrong in the expensive direction produces a slightly larger bill.
+function pickWeight(text, role = '', { write = true } = {}) {
+  const value = String(text || '');
+  if (write) return 'heavy';
+  if (COMPLEX_SIGNALS.test(value) || value.length > 1200) return 'heavy';
+  // `leader` is never light — it is the role that decides what the others do.
+  return role === 'leader' ? 'heavy' : 'light';
+}
+
+/**
+ * The exact model a provider should run for this task.
+ *
+ * Every provider names one now. Before, only Claude did: GLM always ran its
+ * flagship even for a read-only check, the local tier was pinned to the 21GB model
+ * whatever was asked, and the performance registry — which is keyed by (provider,
+ * model) — therefore had one row per provider and could not tell the tiers apart.
+ * @returns {string}
+ */
+function resolveModel(provider, text, role = '', options = {}) {
+  if (provider === 'claude' || provider === 'claude-code') return CLAUDE_MODELS[pickModelTier(text, role)];
   if (provider === 'codex') return CODEX_MODELS.general;
-  if (provider !== 'claude' && provider !== 'claude-code') return '';
-  return CLAUDE_MODELS[pickModelTier(text, role)];
+  const weight = pickWeight(text, role, options);
+  if (provider === 'glm') return GLM_MODELS[weight === 'light' ? 'flash' : 'flagship'];
+  if (provider === 'qwen' || provider === 'ollama') return LOCAL_MODELS[weight];
+  return '';
 }
 
 // 役割定義（スペック§1①）。2段階モデル構造：
@@ -297,7 +335,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 }
 
 module.exports = {
-  ROLE_TIER,
+  ROLE_TIER, LOCAL_MODELS, pickWeight,
   GLM_MODELS, CLAUDE_MODELS, CODEX_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN, RATE_LIMIT_PATTERN, QUOTA_PATTERN,
   classifyFailure, retryAfterMs,

@@ -9,6 +9,8 @@ const PI_AGENT_NAME_MAX = 32;
 const PI_AGENT_NAME_FALLBACK = 'PiAgent';
 // Render priority: 'auto' keeps the adaptive FPS tuner, the other two pin a fixed tier.
 const RENDER_PRIORITIES = ['auto', 'performance', 'graphics'];
+// 'auto' maps to nativeTheme.themeSource = 'system'; the other two force it either way.
+const COLOR_SCHEMES = ['auto', 'light', 'dark'];
 // Sound-effect buses. Each one is an independent gain node in the renderer audio engine.
 const SFX_CATEGORIES = ['ui', 'alert', 'ambient'];
 
@@ -43,6 +45,7 @@ const DEFAULTS = Object.freeze({
   },
   routing: {
     paidAllowlist: ['claude', 'codex', 'gemini', 'glm'],
+    maxParallel: 3,
     localDefault: 'qwen',
     qwenBypassTimeoutMs: 1000,
     executionMode: 'plan',
@@ -82,6 +85,12 @@ const DEFAULTS = Object.freeze({
   },
   appearance: {
     theme: 'studio',
+    // Which design language ('studio') and whether it is light or dark are two different
+    // questions, so they are two different settings rather than one list of four themes.
+    // 'auto' follows the OS, which is what nativeTheme.themeSource = 'system' means.
+    colorScheme: 'auto',
+    // Console session drawer. Open by default — there is already a real history to show.
+    consoleSidebar: true,
     density: 'comfortable',
     textScale: 1,
     reducedGlow: true,
@@ -200,6 +209,9 @@ class SettingsStore {
     next.routing.localDefault = 'qwen';
     next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
     next.routing.maxAgents = clamp(next.routing.maxAgents, 1, 5, 3);
+    // maxAgents is how many roles one run may use; maxParallel is how many jobs run
+    // at once across every run. They are different questions and had one answer.
+    next.routing.maxParallel = clamp(next.routing.maxParallel, 1, 8, 3);
     next.routing.deliberationLenses = clamp(next.routing.deliberationLenses, 0, 3, 2);
     next.routing.activationMode = 'on-demand';
     next.routing.allSpecialists = false;
@@ -219,6 +231,9 @@ class SettingsStore {
     next.preview.enabled = next.preview.enabled !== false; next.preview.liveReload = next.preview.liveReload !== false;
     next.preview.viewport = ['desktop', 'tablet', 'mobile'].includes(next.preview.viewport) ? next.preview.viewport : 'desktop';
     next.appearance.theme = 'studio';
+    next.appearance.colorScheme = COLOR_SCHEMES.includes(next.appearance.colorScheme)
+      ? next.appearance.colorScheme : 'auto';
+    next.appearance.consoleSidebar = next.appearance.consoleSidebar !== false;
     next.appearance.textScale = clamp(next.appearance.textScale, 0.85, 1.25, 1);
     next.appearance.renderPriority = RENDER_PRIORITIES.includes(next.appearance.renderPriority)
       ? next.appearance.renderPriority : 'auto';
@@ -269,4 +284,4 @@ class SettingsStore {
   }
 }
 
-module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, SFX_CATEGORIES, normalizePaths };
+module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, COLOR_SCHEMES, SFX_CATEGORIES, normalizePaths };

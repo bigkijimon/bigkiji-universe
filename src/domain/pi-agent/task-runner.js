@@ -7,7 +7,11 @@ const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { SandboxPolicyResolver } = require('./sandbox-policy');
 const { GLM_MODELS, resolveModel, classifyFailure, retryAfterMs } = require('./model-router');
+
+// Every one of these runs on the single GPU this machine has.
+const LOCAL_PROVIDERS = new Set(['qwen', 'ollama']);
 const { ContextPruner } = require('./context-pruner');
+const { createStepReader, providerEmitsSteps } = require('./stream-steps');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
 const { createDisclosureManifest, verifyDisclosureManifest } = require('../pi-core/security/disclosure-manifest');
@@ -21,6 +25,8 @@ class TaskRunner extends EventEmitter {
     this.cwd = cwd;
     this.maxParallel = maxParallel;
     this.tasks = new Map();
+    // Per-task JSONL line buffers for the work-step parser. Freed in finish().
+    this.stepReaders = new Map();
     this.spawnImpl = spawnImpl;
     this.broker = broker;
     this.secretProvider = null;
@@ -72,7 +78,7 @@ class TaskRunner extends EventEmitter {
       ? 'Retry this task before approving it: its disclosure is stale'
       : `Task is not approvable: ${task.status}`);
     if (!expected.disclosureHash || expected.disclosureHash !== task.disclosure?.disclosureHash) throw new Error('STALE_DISCLOSURE_HASH');
-    if ([...this.tasks.values()].filter((t) => t.status === 'running').length >= this.maxParallel) {
+    if (!this.canStart(task)) {
       task.status = 'queued'; this.emit('task', this.public(task)); return this.public(task);
     }
     return this.start(task);
@@ -169,7 +175,13 @@ class TaskRunner extends EventEmitter {
   }
 
   append(task, buf, isError) {
-    const redacted = redactPayload(buf.toString()); const text = knowledge.cleanText(redacted.text, 4000);
+    const redacted = redactPayload(buf.toString());
+    // Steps are read from the redacted-but-unflattened text, before cleanText() collapses
+    // newlines and truncates. Everything below this block is unchanged: task:log still
+    // carries the same cleaned string it always has, and captureUsage still runs on it.
+    // This only adds a second, structured reading of the same bytes.
+    if (!isError && !redacted.blocked && this.stepReaders) this.emitSteps(task, redacted.text);
+    const text = knowledge.cleanText(redacted.text, 4000);
     if (!text) return;
     if (redacted.blocked) {
       this.emit('security', { taskId: task.id, provider: task.provider, decision: 'DENY', reason: 'SECURITY_CRITICAL_SECRET_IN_MODEL_OUTPUT', at: new Date().toISOString() });
@@ -195,6 +207,7 @@ class TaskRunner extends EventEmitter {
     task.failureReason = code === 0 ? '' : classifyFailure(task.error);
     if (task.failureReason) task.retryAfterMs = retryAfterMs(task.error);
     task.finishedAt = new Date().toISOString(); task.updatedAt = task.finishedAt; delete task.child;
+    this.stepReaders.delete(task.id);
     if (['qwen', 'ollama'].includes(task.provider)) this.qwenGuardrails.leave({
       durationMs: Math.max(0, new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()), timedOut: !!task.timedOut });
     knowledge.recordEvent(task.id, { type: 'finish', status: task.status, provider: task.provider,
@@ -212,11 +225,35 @@ class TaskRunner extends EventEmitter {
     delete task.runtime;
   }
 
+  /**
+   * Whether this task may start right now.
+   *
+   * Two limits, for two different reasons. `maxParallel` is about the machine as a
+   * whole. The second is about the card: every local model runs on the one GPU the
+   * owner also uses for ComfyUI, LTX-2 and ACE-Step, and the standing rule for this
+   * machine is that GPU work goes one at a time — two at once is the Metal error and
+   * the OOM that rule exists to prevent. Paid providers are network calls and are
+   * not affected, so a local check and three cloud tasks genuinely run together.
+   *
+   * `enter()` on the guardrails only counted; nothing ever refused a second one.
+   * @returns {boolean}
+   */
+  canStart(task) {
+    const running = [...this.tasks.values()].filter((item) => item.status === 'running');
+    if (running.length >= this.maxParallel) return false;
+    if (!LOCAL_PROVIDERS.has(task.provider)) return true;
+    return !running.some((item) => LOCAL_PROVIDERS.has(item.provider));
+  }
+
   drain() {
-    const active = [...this.tasks.values()].filter((t) => t.status === 'running').length;
-    if (active >= this.maxParallel) return;
-    const next = [...this.tasks.values()].find((t) => t.status === 'queued');
-    if (next) this.start(next);
+    // Look past a blocked task rather than stopping at it: with one local task
+    // running, the first queued item may be another local one, and stopping there
+    // would idle every paid provider behind it.
+    for (const next of [...this.tasks.values()].filter((item) => item.status === 'queued')) {
+      if (!this.canStart(next)) continue;
+      this.start(next);
+      return;
+    }
   }
 
   shutdown() {
@@ -301,11 +338,34 @@ class TaskRunner extends EventEmitter {
     if (provider === 'gemini') return { command: process.env.GEMINI_BIN || 'gemini',
       args: ['--prompt', prompt, '--output-format', 'stream-json', '--approval-mode', policy.allowWrite.length ? 'default' : 'plan', '--sandbox',
         ...(runtime.geminiPolicy ? ['--admin-policy', runtime.geminiPolicy] : [])] };
+    // Both of these used to ignore the model the router chose: GLM ran its flagship
+    // for every task including read-only checks, and the local tier was pinned to
+    // the 21GB model whatever was asked. The resolved model is used when there is
+    // one, and the old pin is the fallback so a caller that resolves nothing still
+    // gets a working command.
     if (provider === 'glm') return { command: process.env.PI_BIN || 'pi',
-      args: ['--print', '--model', `zai/${GLM_MODELS.flagship}`, '--no-context-files', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', prompt] };
+      args: ['--print', '--model', `zai/${model || GLM_MODELS.flagship}`, '--no-context-files', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', prompt] };
     if (provider === 'qwen' || provider === 'ollama') return { command: process.env.OLLAMA_BIN || 'ollama',
-      args: ['run', process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b', prompt] };
+      args: ['run', model || process.env.BIGKIJI_QWEN_MODEL || 'qwen3.5:35b-a3b', prompt] };
     throw new Error(`No task adapter for provider: ${provider}`);
+  }
+
+  // Structured work steps, emitted alongside the raw log rather than instead of it.
+  //
+  // The raw log stays the source of truth the owner can fall back on: if a provider
+  // changes its stream format this parser goes quiet, and a quiet timeline next to a live
+  // log is a degradation, whereas a timeline that were the only surface would be a
+  // blackout right before an approval decision.
+  emitSteps(task, rawText) {
+    if (!providerEmitsSteps(task.provider)) return;
+    let reader = this.stepReaders.get(task.id);
+    if (!reader) { reader = createStepReader(); this.stepReaders.set(task.id, reader); }
+    for (const step of reader(rawText)) {
+      this.emit('step', Object.assign({
+        taskId: task.id, runId: task.runId || '', provider: task.provider,
+        seq: (this.stepSeq = (this.stepSeq || 0) + 1), at: new Date().toISOString(),
+      }, step));
+    }
   }
 
   captureUsage(task, text) {

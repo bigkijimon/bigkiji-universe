@@ -143,7 +143,11 @@ class DaemonEngine extends EventEmitter {
     this.customState = path.resolve(stateRoot) !== path.resolve(STATE_ROOT);
     const rootFor = (key, name) => (this.customState ? path.join(this.stateRoot, name) : layout[key]);
     this.startedAt = Date.now(); this.sessions = new SessionStore({ root: rootFor('sessionsRoot', 'sessions') });
-    this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace, maxParallel: 3 });
+    // How many jobs run at once. The owner sets it; 3 was a literal nobody could
+    // reach. Local tasks are additionally serialised inside the runner, because they
+    // all share one GPU — see canStart().
+    this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
+      maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });
     this.conversation = conversationEngine || new ConversationEngine();
     this.ideas = ideaStore || new IdeaDraftStore({ root: rootFor('ideasRoot', 'ideas'), workspace: this.workspace });
     this.ideaEnhancements = new Map();
@@ -766,7 +770,11 @@ class DaemonEngine extends EventEmitter {
   state() {
     return { source: 'bigkiji-daemon', version: 2, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt,
       workspace: this.workspace, activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
-      tasks: this.runner.snapshot(), models: this.models.snapshot(), inventory: this.inventory, tools: this.tools, security: this.securityState,
+      tasks: this.runner.snapshot(),
+      // The fleet by provider (who is up) and the record by model (what each tier
+      // actually did). They are different questions and only the first was answered.
+      models: { ...this.models.snapshot(), performance: this.coordinator.registry?.snapshot?.().performance || { models: {} } },
+      inventory: this.inventory, tools: this.tools, security: this.securityState,
       conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
   }
   shutdown() {

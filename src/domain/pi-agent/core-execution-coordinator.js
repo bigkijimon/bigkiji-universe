@@ -188,7 +188,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       const candidates = [lens.provider, ...(FALLBACKS[lens.provider] || [])].filter((item) => !used.has(item));
       const provider = this._pick(lens.role, candidates.length ? candidates : [lens.provider]);
       used.add(provider);
-      return { ...lens, provider, model: resolveModel(provider, run.prompt, lens.role) };
+      return { ...lens, provider, model: resolveModel(provider, run.prompt, lens.role, { write: false }) };
     });
     run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, stage: 'deliberation',
       lenses: chosen.map(({ id, provider, model }) => ({ id, provider, model })) }));
@@ -219,7 +219,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
       const provider = this._pick(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]);
-      return { ...item, provider, model: resolveModel(provider, run.prompt, item.role) };
+      return { ...item, provider, model: resolveModel(provider, run.prompt, item.role, { write: item.write }) };
     });
     run.planHash = (run.explicitPlanHash && run.revision === 1) ? run.explicitPlanHash
       : knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, deliberation: run.deliberation?.steps || [],
@@ -637,7 +637,7 @@ class CoreExecutionCoordinator extends EventEmitter {
    */
   _reassign(run, assignment, next) {
     const oldTask = this.taskRunner.get(assignment.taskId);
-    const model = resolveModel(next, run.prompt, assignment.role);
+    const model = resolveModel(next, run.prompt, assignment.role, { write: assignment.write });
     const task = this.taskRunner.plan({
       id: `${assignment.taskId}-repair-${run.repairCycle}`,
       provider: next, model, cwd: run.cwd, planHash: run.planHash,

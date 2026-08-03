@@ -105,11 +105,18 @@ function fakeChild() {
   assert.equal(new ToolInterceptor().sanitizeResearch('/Users/owner/private/file.js').blocked, true);
 
   // ---- the model is part of what gets approved ---------------------------------
-  const { resolveModel, CLAUDE_MODELS } = require('../src/domain/pi-agent/model-router');
+  const { resolveModel, CLAUDE_MODELS, GLM_MODELS } = require('../src/domain/pi-agent/model-router');
   assert.equal(resolveModel('claude-code', 'Rewrite the README markdown', 'leader'), CLAUDE_MODELS.design);
   assert.equal(resolveModel('claude-code', 'fix the null check in the daemon', 'debug'), CLAUDE_MODELS.general);
   assert.equal(resolveModel('claude-code', 'anything at all', 'ui'), CLAUDE_MODELS.design, 'the UI role is design work by definition');
-  assert.equal(resolveModel('glm', 'Rewrite the README markdown', 'leader'), '', 'only Claude has a tier to pick here');
+  // This asserted '' — only Claude picked a tier, so GLM ran its flagship for every
+  // task including read-only checks, and the performance registry (keyed by provider
+  // and model) had one anonymous row for it. The owner asked for the fleet to be
+  // managed per model, so every provider names one and the disclosure carries it.
+  assert.equal(resolveModel('glm', 'Rewrite the README markdown', 'leader', { write: true }), GLM_MODELS.flagship);
+  assert.equal(resolveModel('glm', 'run the tests', 'debug', { write: false }), GLM_MODELS.flash,
+    'a read-only check does not need the expensive tier');
+  assert.equal(resolveModel('gemini', 'anything', 'leader'), '', 'a provider with one model still names none, honestly');
   const claudeArgs = brokerRunner.adapter('claude-code', 'p', project, policy, {}, CLAUDE_MODELS.design).args;
   assert.deepStrictEqual(claudeArgs.slice(0, 4), ['--print', 'p', '--model', CLAUDE_MODELS.design]);
   assert(!brokerRunner.adapter('claude-code', 'p', project, policy, {}, '').args.includes('--model'),

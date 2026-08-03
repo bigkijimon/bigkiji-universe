@@ -621,6 +621,30 @@ function renderStatus(state = {}, options = {}) {
   }
   out.push(...renderNote(`${count(connected)} busy of ${count(fleet)} · ${fleet.filter((model) => model.available ?? model.connected).length} ready`, { width, theme, mark }));
 
+  // The fleet by model, not by provider.
+  //
+  // The owner asked to manage this per model, and until now there was nothing to
+  // manage: three of the four providers ran one pinned model, so a row per provider
+  // was a row per model by accident. Now that each task names its own tier, what was
+  // measured — how often it worked, how long it took — is per (provider, model), and
+  // this is where that becomes visible. Unmeasured stays '—'.
+  const perModel = Object.entries(state?.models?.performance?.models || state?.performance?.models || {})
+    .filter(([id]) => id.includes('::'))
+    .map(([id, row]) => ({ id, ...row }))
+    .sort((a, b) => Number(b.samples || 0) - Number(a.samples || 0));
+  if (perModel.length) {
+    out.push(...renderToolCall('models', `${perModel.length} measured`, { width, theme, mark }));
+    const idWidth = Math.max(16, Math.min(30, width - 40));
+    for (const row of perModel.slice(0, 10)) {
+      const samples = Number(row.samples || 0);
+      const rate = samples ? `${Math.round(Number(row.successRate || 0) * 100)}%` : DASH;
+      const latency = Number(row.latencySamples || 0) ? `${Math.round(Number(row.ewmaLatencyMs || 0) / 100) / 10}s` : DASH;
+      const throttled = Number(row.throttled || 0) ? ` ${mark.note} ${row.throttled} throttled` : '';
+      out.push(`  ${theme.accent}${mark.turn}${theme.reset} ${theme.ink}${padToWidth(lower(row.id.replace('::', ' ')), idWidth)}${theme.reset} ${
+        theme.muted}${padToWidth(`${samples || DASH} run`, 8)}${padToWidth(rate, 6)}${padToWidth(latency, 7)}${throttled}${theme.reset}`);
+    }
+  }
+
   // The local tools. Detection and health checks for all nine have existed since
   // V2.5 and were wired to nothing, so there was no way to see from BigKiji whether
   // the thing you were about to route work to was up. Anything not connected says
