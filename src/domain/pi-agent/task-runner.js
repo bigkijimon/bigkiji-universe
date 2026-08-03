@@ -10,6 +10,10 @@ const { GLM_MODELS, resolveModel, classifyFailure, retryAfterMs } = require('./m
 
 // Every one of these runs on the single GPU this machine has.
 const LOCAL_PROVIDERS = new Set(['qwen', 'ollama']);
+// Tools that put bytes on disk. Read and search tools are deliberately absent: the point
+// of this list is who could have overwritten whom.
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit', 'Delete']);
+const MAX_TRACKED_EDITS = 200;
 const { ContextPruner } = require('./context-pruner');
 const { createStepReader, providerEmitsSteps } = require('./stream-steps');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
@@ -383,11 +387,33 @@ class TaskRunner extends EventEmitter {
     let reader = this.stepReaders.get(task.id);
     if (!reader) { reader = createStepReader(); this.stepReaders.set(task.id, reader); }
     for (const step of reader(rawText)) {
+      this.recordEdit(task, step);
       this.emit('step', Object.assign({
         taskId: task.id, runId: task.runId || '', provider: task.provider,
         seq: (this.stepSeq = (this.stepSeq || 0) + 1), at: new Date().toISOString(),
       }, step));
     }
+  }
+
+  // What this provider actually changed, kept per task so the report can say it and so
+  // two providers touching the same file can be seen at all. Counts stay null when the
+  // provider does not report them — codex names its files but gives no line counts, and a
+  // zero there would read as "changed nothing".
+  recordEdit(task, step) {
+    if (step.phase !== 'start' || !WRITE_TOOLS.has(step.tool) || !step.target) return;
+    task.edits = task.edits || new Map();
+    if (!task.edits.has(step.target) && task.edits.size >= MAX_TRACKED_EDITS) return;
+    const row = task.edits.get(step.target) || { writes: 0, added: null, removed: null };
+    row.writes += 1;
+    if (typeof step.added === 'number') row.added = (row.added || 0) + step.added;
+    if (typeof step.removed === 'number') row.removed = (row.removed || 0) + step.removed;
+    task.edits.set(step.target, row);
+  }
+
+  /** The files this task wrote, as plain data — Maps do not survive the IPC boundary. */
+  changedFiles(task) {
+    if (!task?.edits?.size) return [];
+    return [...task.edits.entries()].map(([path, row]) => ({ path, ...row }));
   }
 
   captureUsage(task, text) {

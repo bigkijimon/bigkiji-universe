@@ -81,6 +81,27 @@ function firstLine(output) {
   return text ? text.slice(0, 100) : '';
 }
 
+// Two providers writing the same file is the one thing this report exists to catch.
+//
+// They share one working directory and are separated only by wording in their prompts
+// ("index.html and app.css only" / "game.js only"), which is a request, not a boundary.
+// When both of them touch a file, the later writer won and nothing said so. Only the
+// writers are compared: a role that reads the same file is not a conflict.
+function findCollisions(rows) {
+  const byPath = new Map();
+  for (const row of rows) {
+    if (!row.wrote) continue;
+    for (const change of row.changed || []) {
+      const seen = byPath.get(change.path) || [];
+      if (!seen.some((entry) => entry.role === row.role)) seen.push({ role: row.role, provider: row.provider });
+      byPath.set(change.path, seen);
+    }
+  }
+  return [...byPath.entries()]
+    .filter(([, writers]) => writers.length > 1)
+    .map(([path, writers]) => ({ path, writers }));
+}
+
 function runId(prompt) { return `run-${Date.now().toString(36)}-${knowledge.hash(prompt)}`; }
 function publicRun(run) {
   // deadlineTimer is a live Timeout. Spreading it into a response body serialises a
@@ -596,10 +617,15 @@ class CoreExecutionCoordinator extends EventEmitter {
         error: assignment.status === 'completed' ? '' : String(task.failureReason || task.error || '').split('\n')[0].slice(0, 120),
         findings: (assignment.review?.findings || []).map((finding) => finding.id),
         standInFor: assignment.homeProvider && assignment.homeProvider !== assignment.provider ? assignment.homeProvider : '',
+        // What this provider actually put on disk, read from its own stream. Line counts
+        // are null when the provider does not report them: codex names its files but
+        // gives no counts, and a zero there would read as "changed nothing".
+        changed: this.taskRunner.changedFiles ? this.taskRunner.changedFiles(task) : [],
       };
     });
     const done = rows.filter((row) => row.status === 'completed');
     const totalTokens = rows.reduce((sum, row) => sum + (row.tokens || 0), 0);
+    const collisions = findCollisions(rows);
     return {
       runId: run.id, status: run.status, goal: run.promptSpec?.goal || run.promptPreview || '',
       completed: done.length, total: rows.length,
@@ -607,6 +633,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       tokens: totalTokens || null,
       checks: run.quality.checks.map((check) => ({ id: check.id, pass: check.pass })),
       repairs: run.repairCycle || 0,
+      collisions,
       rows,
     };
   }

@@ -69,6 +69,46 @@ ok('the report is measurements, and an absent measurement is absent', () => {
   assert.equal(report.repairs, 1);
 });
 
+ok('what each provider put on disk, and where two of them collided', () => {
+  // The one thing this report exists to catch. leader (claude-code) and ui (codex) both
+  // carry write:true, share one working directory, and are separated only by wording in
+  // their prompts — "index.html and app.css only" / "game.js only" — which is a request,
+  // not a boundary. When both touched a file the later writer won and nothing said so.
+  const { TaskRunner } = require('../src/domain/pi-agent/task-runner');
+  const coordinator = build({
+    't-leader': { startedAt: '2026-08-04T10:00:00Z', finishedAt: '2026-08-04T10:00:42Z', output: 'split it up',
+      edits: new Map([['src/app.js', { writes: 2, added: 12, removed: 3 }], ['src/ui.css', { writes: 1, added: 4, removed: 0 }]]) },
+    't-ui': { startedAt: '2026-08-04T10:00:00Z', finishedAt: '2026-08-04T10:00:38Z', output: 'styled it',
+      edits: new Map([['src/app.js', { writes: 1, added: null, removed: null }]]) },
+    't-debug': { startedAt: '2026-08-04T10:00:00Z', finishedAt: '2026-08-04T10:00:20Z', output: 'tests pass' },
+  });
+  coordinator.taskRunner.changedFiles = TaskRunner.prototype.changedFiles;
+  const report = coordinator.buildReport({
+    id: 'run-4', status: 'COMPLETED', quality: { checks: [] }, assignments: [
+      { taskId: 't-leader', role: 'leader', provider: 'claude-code', status: 'completed', write: true },
+      { taskId: 't-ui', role: 'ui', provider: 'codex', status: 'completed', write: true },
+      { taskId: 't-debug', role: 'debug', provider: 'glm', status: 'completed', write: false },
+    ],
+  });
+  assert.deepStrictEqual(report.rows[0].changed.map((change) => change.path), ['src/app.js', 'src/ui.css']);
+  assert.strictEqual(report.rows[0].changed[0].added, 12, 'claude reports line counts and they are kept');
+  assert.strictEqual(report.rows[1].changed[0].added, null,
+    'codex names its files but reports no line counts, and an absent measurement stays absent');
+  assert.deepStrictEqual(report.rows[2].changed, [], 'a read-only role changed nothing');
+  assert.strictEqual(report.collisions.length, 1);
+  assert.strictEqual(report.collisions[0].path, 'src/app.js');
+  assert.deepStrictEqual(report.collisions[0].writers.map((writer) => writer.role), ['leader', 'ui']);
+
+  // A file only one of them wrote is not a collision, and neither is a reader.
+  assert.ok(!report.collisions.some((hit) => hit.path === 'src/ui.css'));
+
+  const text = renderEvent('report', report, { width: 88 }).map((line) => line.replace(/\x1b\[[0-9;]*m/g, '')).join('\n');
+  assert.match(text, /2 files · \+16 -3/, 'the owner is told how much, per provider');
+  assert.match(text, /1 file · — —/, 'and a dash where nothing was measured');
+  assert.match(text, /same file, two writers: src\/app\.js \(leader \+ ui\)/);
+  assert.ok(!/\+0 -0/.test(text), 'never a fabricated zero');
+});
+
 ok('a failure says why, in the report rather than only in a log', () => {
   const coordinator = build({ 't-ui': { startedAt: '2026-08-03T10:00:00Z', finishedAt: '2026-08-03T10:00:09Z', failureReason: '', error: '401 Unauthorized\nstack…' } });
   const report = coordinator.buildReport({
@@ -137,4 +177,4 @@ ok('it is published and recorded, not just built', () => {
 
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`run report selftest: ${failures} FAILED`); process.exit(1); }
-console.log('run report selftest: PASS · measurements only · an absent number is a dash · stand-ins named · failures say why · nothing combined · one block');
+console.log('run report selftest: PASS · measurements only · an absent number is a dash · stand-ins named · failures say why · nothing combined · per-provider file changes · two writers on one file are named · one block');

@@ -542,12 +542,27 @@ function renderEvent(event, data = {}, options = {}) {
         const cost = [row.ms ? `${Math.round(row.ms / 1000)}s` : DASH, row.tokens ? `${row.tokens} tok` : DASH].join(' ');
         const stood = row.standInFor ? ` (for ${lower(row.standInFor)})` : '';
         const note = row.error || row.headline || '';
-        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}`;
+        // What it put on disk. A provider that reports no line counts gets the file
+        // count and a dash, never a fabricated 0.
+        const files = (row.changed || []).length;
+        const lines = (row.changed || []).reduce((acc, change) => ({
+          added: change.added === null ? acc.added : (acc.added || 0) + change.added,
+          removed: change.removed === null ? acc.removed : (acc.removed || 0) + change.removed,
+        }), { added: null, removed: null });
+        const wrote = files
+          ? `\n   ${files} file${files === 1 ? '' : 's'} ${mark.note} ${lines.added === null ? DASH : `+${lines.added}`} ${lines.removed === null ? DASH : `-${lines.removed}`}`
+          : '';
+        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}${wrote}`;
       }).join('\n');
       const failed = (data.checks || []).filter((check) => !check.pass).map((check) => check.id);
       const tail = failed.length ? `\nnot verified: ${failed.join(', ')}` : '';
+      // Two providers on one file is the thing the owner has to see before anything
+      // else in this report: the later writer won and nothing else would say so.
+      const clash = (data.collisions || []).length
+        ? `\nsame file, two writers: ${(data.collisions || []).map((hit) => `${hit.path} (${hit.writers.map((w) => lower(w.role)).join(' + ')})`).join(', ')}`
+        : '';
       const repairs = data.repairs ? `\nrepair cycles: ${data.repairs}` : '';
-      return [...head, ...renderToolResult(`${rows}${tail}${repairs}`, { ...base, maxLines: 14, isError: !ok })];
+      return [...head, ...renderToolResult(`${rows}${clash}${tail}${repairs}`, { ...base, maxLines: 16, isError: !ok })];
     }
     case 'checkpoint': {
       // Thirty minutes in, the owner is told where the run is rather than left to
