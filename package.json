@@ -19,6 +19,10 @@
     "start": "electron .",
     "dev": "electron . --show-main",
     "dev:console": "electron . --show-console",
+    "build:console": "vite build --config vite.console.config.js",
+    "dev:console:web": "vite --config vite.console.config.js",
+    "prestart": "npm run build:console",
+    "pretest": "npm run build:console",
     "dist": "node tools/build-host.js",
     "dist:mac": "node tools/stamp-build.js && APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64 --x64",
     "dist:local": "node tools/stamp-build.js && electron-builder --mac --dir --arm64 -c.mac.identity=\"BigKiji Universe Dev Signer\" -c.mac.notarize=false -c.mac.forceCodeSigning=false",
@@ -50,7 +54,7 @@
     "test:conversation": "node tools/conversation-selftest.js",
     "test:audio-wave": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tools/audio-wave-selftest.js",
     "test:tools": "node tools/tool-registry-selftest.js",
-    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:malformed && npm run test:paste && npm run test:gpu-residency && npm run test:build-identity && npm run test:routing-assignment && npm run test:credentials && npm run test:claude-key && npm run test:approval-flood && npm run test:env-file && npm run test:run-budget && npm run test:critique && npm run test:symbol-slice && npm run test:pi-rpc && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:markdown && npm run test:embeddings && npm run test:gpu-scheduler && npm run test:app-menu && npm run test:text-index && npm run test:console && npm run test:skills && npm run test:tools && npm run test:provider-readiness && npm run test:circuit-breaker && npm run test:cli-render && npm run test:cli-theme",
+    "test": "npm run check:imports && npm run test:architecture && npm run test:runtime-policy && npm run test:voice-engine && npm run test:cmux && npm run test:context && npm run test:security && npm run test:routing && npm run test:deliberation && npm run test:conversation && npm run test:malformed && npm run test:paste && npm run test:gpu-residency && npm run test:build-identity && npm run test:routing-assignment && npm run test:credentials && npm run test:claude-key && npm run test:approval-flood && npm run test:env-file && npm run test:run-budget && npm run test:critique && npm run test:symbol-slice && npm run test:pi-rpc && npm run test:gate-eval && npm run test:pi-core && npm run test:preview && npm run test:daemon && npm run test:assets && npm run test:governance && npm run test:cost-policy && npm run test:fast-router && npm run test:particle-cluster && npm run test:ui-3d && npm run test:interaction && npm run test:terminal-resizer && npm run test:radial-spark && npm run test:audio-wave && npm run test:comfy && npm run test:telemetry && npm run test:workspaces && npm run test:watch-queue && npm run test:markdown && npm run test:embeddings && npm run test:gpu-scheduler && npm run test:app-menu && npm run test:text-index && npm run test:console && npm run test:skills && npm run test:tools && npm run test:provider-readiness && npm run test:circuit-breaker && npm run test:cli-render && npm run test:cli-theme",
     "audit:delegations": "node tools/delegation-audit.js",
     "index:memory": "node tools/index-system-memory.js",
     "postinstall": "node tools/postinstall.js",
@@ -81,7 +85,9 @@
     "test:run-budget": "node tools/run-budget-selftest.js",
     "test:critique": "node tools/critique-selftest.js",
     "test:symbol-slice": "node tools/symbol-slice-selftest.js",
-    "test:pi-rpc": "node tools/pi-rpc-selftest.js"
+    "test:pi-rpc": "node tools/pi-rpc-selftest.js",
+    "test:gate-eval": "node tools/gate-eval-selftest.js",
+    "eval:gate": "node tools/gate-eval-run.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",
@@ -99,7 +105,8 @@
       "!**/*.bak-*",
       "!**/*.bak",
       "!fixtures/**",
-      "!tools/__pycache__/**"
+      "!tools/__pycache__/**",
+      "!src/components/UI/console-app/**"
     ],
     "extraResources": [
       {
@@ -151,7 +158,11 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "electron": "^43.2.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "vite": "^6.0.7"
   }
 }
