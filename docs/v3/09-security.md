@@ -252,3 +252,31 @@ exact call by name.
    treated as incidents (one open: §3).
 5. Unknown means denied — tools (`tool-interceptor.js:40`), paths
    (`security-policy.js:75`), and policies alike.
+
+## 9. The Pi sandbox is a separate boundary, and its reference is org canon
+
+Two different files are named `sandbox.json` and they have different readers:
+
+| File | Read by | What it decides |
+|---|---|---|
+| `~/.pi/agent/sandbox.json` + each department's `.pi/sandbox.json` | the `pi-sandbox@0.6.1` package, via macOS `sandbox-exec` | what any Pi process on this machine may read, write and reach over the network |
+| `app/.pi/sandbox.json` | this app's `SandboxPolicyResolver` | which vault paths a run may touch and which paid providers may be offered |
+
+The Pi one governs every department, not just this app, so its reference lives in the
+vault where all five department configs already grant read access — not here:
+
+**`~/Documents/CEOBigKiji/Executive_Office/knowledge/pi-sandbox-リファレンス.md`**
+
+Two facts from it that change how policy must be written, both verified against
+`pi-sandbox`'s own `README.md` and `src/config.ts:78`:
+
+- Arrays merge as a **union**, so a project config can only ever *add* permissions —
+  except `enabled`, which is a **scalar**, and scalars are won by the local file. One
+  line in any project turns the sandbox off for that whole tree.
+- `denyRead` is **promptable** and `allowRead` overrides it; `denyWrite` is **absolute
+  and never prompted**. Read and write run in opposite directions, so anything that must
+  not be touched belongs in `denyWrite`.
+
+`npm run test:sandbox-boundary` (`tools/sandbox-boundary-selftest.js`) enforces both, plus
+that the reference stays reachable from every department. It skips, rather than fails, on
+a machine with no `~/.pi`.
