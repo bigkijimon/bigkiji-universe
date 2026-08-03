@@ -295,7 +295,12 @@ class DaemonEngine extends EventEmitter {
     if (!draftHash || draftHash !== draft.draftHash) throw new Error('STALE_IDEA_DRAFT');
     const taskId = `idea-enhance-${Date.now().toString(36)}-${id}`;
     const prompt = `Improve this private BigKiji idea draft. Do not use tools, web search, files, or outside context. Preserve owner decisions and do not invent requirements. Return JSON only with keys title, summary, ideas, requirements, decisions, openQuestions, todos.\n\n${draft.markdown}`;
-    const task = this.runner.plan({ id: taskId, provider: 'gemini', prompt, cwd: this.workspace,
+    // The provider used to be the literal 'gemini'. It went round the readiness gate,
+    // the circuit breaker and the capability registry, so when Gemini's quota hit
+    // `limit: 0` this one path kept dispatching to it and kept failing. Ask the same
+    // router everything else asks.
+    const provider = this.coordinator.pickProvider('facilitator', ['gemini', 'glm', 'claude-code', 'qwen']);
+    const task = this.runner.plan({ id: taskId, provider, prompt, cwd: this.workspace,
       metadata: { kind: 'idea-enhancement', ideaId: draft.id, draftHash: draft.draftHash, promptOnly: true,
         title: `Gemini improvement for ${draft.title}`, write: false } });
     this.ideaEnhancements.set(task.id, { ideaId: draft.id, draftHash: draft.draftHash });
@@ -316,7 +321,10 @@ class DaemonEngine extends EventEmitter {
     try {
       const raw = String(task.output || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
       const start = raw.indexOf('{'); const end = raw.lastIndexOf('}'); const parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
-      const draft = this.ideas.revise(pending.ideaId, { ...parsed, provider: 'gemini', status: 'enhanced' }, { expectedHash: pending.draftHash });
+      // Record who actually improved the draft. This said 'gemini' whatever ran,
+      // so the draft history credited a provider that in practice never completed
+      // anything — and the router now picks whoever can start.
+      const draft = this.ideas.revise(pending.ideaId, { ...parsed, provider: task.provider || 'unknown', status: 'enhanced' }, { expectedHash: pending.draftHash });
       this.knowledge.rememberIdea?.(draft, 'enhanced');
       this.publish('idea', { action: 'enhanced', draft }); this.publish('knowledge', { status: 'ENHANCED', ideaId: draft.id, draftHash: draft.draftHash });
     } catch (error) { this.publish('idea', { action: 'enhancement-failed', ideaId: pending.ideaId, error: String(error.message).slice(0, 240), task }); }

@@ -279,9 +279,13 @@ ok('_fallback walks past providers in cooldown and stops at the first available 
 });
 ok('a cooldown postpones a fallback; it does not burn the chain position', () => {
   // A cooldown is temporary and `fallbackIndex` is permanent, so advancing it
-  // past a provider that was merely cooling retired that provider for good. With
-  // the one-entry chain qwen -> glm, a sixty second rate limit meant the
-  // assignment could never be repaired again, even an hour later.
+  // past a provider that was merely cooling retired that provider for good: a
+  // sixty second rate limit meant the assignment could never be repaired again,
+  // even an hour later.
+  //
+  // This used to walk qwen -> glm. It no longer can: a local failure is the floor,
+  // and escalating it to a paid provider was the wrong direction (2026-08-03,
+  // owner). It walks glm's chain instead, which tests the same thing.
   const time = clock();
   const breaker = breakerWith(time, { threshold: 1, cooldownMs: 60000 });
   const taskRunner = Object.assign(new (require('events').EventEmitter)(), {
@@ -290,16 +294,17 @@ ok('a cooldown postpones a fallback; it does not burn the chain position', () =>
   });
   const coordinator = new CoreExecutionCoordinator({ taskRunner, breaker,
     registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'f-')) }) });
-  assert.deepEqual(FALLBACKS.qwen, ['glm'], 'this test relies on the single-entry chain');
-  breaker.record('glm', { ok: false, reason: 'rate-limit' });
+  assert.deepEqual(FALLBACKS.glm, ['codex', 'qwen'], 'this test walks glm\'s chain');
+  breaker.record('codex', { ok: false, reason: 'rate-limit' });
+  breaker.record('qwen', { ok: false, reason: 'rate-limit' });
 
   const run = { id: 'run-3', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
-  const assignment = { taskId: 't1', provider: 'qwen', role: 'context', title: 'work', fallbackIndex: 0 };
+  const assignment = { taskId: 't1', provider: 'glm', role: 'debug', title: 'work', fallbackIndex: 0 };
   assert.equal(coordinator._fallback(run, assignment), false, 'nothing available right now');
   assert.equal(assignment.fallbackIndex, 0, 'so the position must not move');
   time.advance(600000);
   assert.equal(coordinator._fallback(run, assignment), true, 'and once the cooldown is over it recovers');
-  assert.equal(assignment.provider, 'glm');
+  assert.equal(assignment.provider, 'codex');
   assert.equal(assignment.fallbackIndex, 1, 'now it moves, because a provider was actually taken');
 });
 ok('when every fallback is in cooldown the run fails instead of looping', () => {

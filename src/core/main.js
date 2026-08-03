@@ -48,6 +48,7 @@ const { SettingsStore } = require('./settings-store');
 const { NaturalTTSService } = require('./natural-tts-service');
 const { CmuxBridge } = require('./cmux-bridge');
 const { PreviewServer } = require('./preview-server');
+const { readiness: providerReadiness } = require('../domain/pi-agent/provider-readiness');
 const { DaemonClient } = require('../domain/server/daemon-client');
 const { TailscaleRemoteAccess } = require('./tailscale-remote-access');
 const { TaskReportBuilder } = require('./task-report-builder');
@@ -1554,7 +1555,11 @@ app.whenReady().then(async () => {
   previewServer.on('status', (status) => broadcast('preview:status', status));
   previewServer.on('reload', (status) => broadcast('preview:reload', status));
   previewServer.on('error', (error) => broadcast('preview:error', { message: String(error.message || error) }));
-  coordinator = new CoreExecutionCoordinator({ taskRunner, settingsProvider: () => settingsStore.get(), preview: previewServer });
+  // The same readiness gate the daemon uses. Without it this coordinator defaulted
+  // to `() => true` and assigned work to providers that could not start — a second
+  // dispatch path with none of the first one's checks. See provider-readiness.js.
+  coordinator = new CoreExecutionCoordinator({ taskRunner, settingsProvider: () => settingsStore.get(), preview: previewServer,
+    available: (provider) => providerReadiness(provider, { secret: (id) => settingsStore.getSecret(id === 'claude-code' ? 'claude' : id) || '' }).ready });
   coordinator.on('run', (event) => { fleetMetrics.ingestRun(event); piFleet.ingestRun(event); broadcast('run:event', event); });
   fastRouter.detect().then((availability) => fleetMetrics.setAvailability(availability)).catch(() => {});
   if (settingsStore.get().preview.enabled) previewServer.start()

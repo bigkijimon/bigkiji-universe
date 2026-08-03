@@ -22,13 +22,24 @@ const ROLE_BLUEPRINT = Object.freeze([
 // cheaper run — it is an unverified one.
 const ROLE_PRIORITY = Object.freeze(['leader', 'debug', 'ui', 'facilitator', 'context']);
 
+// Every chain ends local, and only local. The owner's rule: when billing limits a
+// provider another paid one takes over, and only when none of them work does the
+// work fall to Pi and Ollama.
+//
+// Two chains used to run the other way. `qwen: ['glm']` escalated a failure of the
+// free local model to a paid one — a local failure is the floor, not a reason to
+// spend. And `gemini: ['qwen', 'glm', 'codex']` tried local first and then climbed
+// back up to paid, so an exhausted Gemini quota ended on Codex.
 const FALLBACKS = Object.freeze({
   'claude-code': ['glm', 'codex', 'qwen'],
-  codex: ['gemini', 'claude-code', 'glm', 'qwen'],
-  gemini: ['qwen', 'glm', 'codex'],
+  codex: ['claude-code', 'glm', 'qwen'],
+  gemini: ['glm', 'codex', 'qwen'],
   glm: ['codex', 'qwen'],
-  qwen: ['glm'],
+  qwen: [], // the floor: there is nothing cheaper or more available to climb to
 });
+
+// The provider that needs no key, no quota and no network.
+const LOCAL_PROVIDER = 'qwen';
 
 function selectRoles(prompt, routing = {}) {
   const text = String(prompt || '').toLowerCase();
@@ -130,7 +141,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       const candidates = [lens.provider, ...(FALLBACKS[lens.provider] || [])].filter((item) => !used.has(item));
       const provider = this._pick(lens.role, candidates.length ? candidates : [lens.provider]);
       used.add(provider);
-      return { ...lens, provider, model: resolveModel(provider, `${run.prompt} ${lens.title}`, lens.role) };
+      return { ...lens, provider, model: resolveModel(provider, run.prompt, lens.role) };
     });
     run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, stage: 'deliberation',
       lenses: chosen.map(({ id, provider, model }) => ({ id, provider, model })) }));
@@ -142,7 +153,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       });
       this.taskToRun.set(task.id, run.id);
       return { taskId: task.id, role: lens.role, agent: `${lens.id}-lens`, provider: lens.provider, model: lens.model,
-        title: lens.title, write: false, lens: lens.id, status: task.status, fallbackIndex: 0,
+        title: lens.title, write: false, lens: lens.id, status: task.status, fallbackIndex: 0, homeProvider: lens.provider,
         disclosureHash: task.disclosure?.disclosureHash || '' };
     });
     this._seal(run);
@@ -161,7 +172,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
       const provider = this._pick(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]);
-      return { ...item, provider, model: resolveModel(provider, `${run.prompt} ${item.title}`, item.role) };
+      return { ...item, provider, model: resolveModel(provider, run.prompt, item.role) };
     });
     run.planHash = (run.explicitPlanHash && run.revision === 1) ? run.explicitPlanHash
       : knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, deliberation: run.deliberation?.steps || [],
@@ -178,7 +189,8 @@ class CoreExecutionCoordinator extends EventEmitter {
       });
       this.taskToRun.set(task.id, run.id);
       return { taskId: task.id, role: item.role, agent: item.agent, provider: item.provider, model: item.model, title: item.title,
-        write: item.write, status: task.status, fallbackIndex: 0, disclosureHash: task.disclosure?.disclosureHash || '' };
+        write: item.write, status: task.status, fallbackIndex: 0, homeProvider: item.provider,
+        disclosureHash: task.disclosure?.disclosureHash || '' };
     });
     this._seal(run);
   }
@@ -186,9 +198,27 @@ class CoreExecutionCoordinator extends EventEmitter {
   // Prefer a provider that can actually start. If none of the candidates can, fall back
   // to scoring alone rather than refusing to plan — an unstartable assignment that
   // fails loudly is more useful than a run that never appears.
+  /**
+   * The routing decision, for callers outside the run pipeline.
+   *
+   * Anything that dispatches to a hardcoded provider is a path that cannot be
+   * throttled, cannot fall back and cannot be turned off.
+   * @returns {string}
+   */
+  pickProvider(role, candidates) { return this._pick(role, candidates); }
+
+  // Readiness is an exclusion, not a preference.
+  //
+  // This used to read `startable.length ? startable : candidates`, which threw the
+  // gate away the moment nothing passed it: with every paid provider unauthenticated,
+  // work was assigned to the provider that had just proved it could not run. When
+  // nothing is startable the answer is the local model — no key, no quota, no
+  // network — which is the owner's stated last resort.
   _pick(role, candidates) {
-    const startable = candidates.filter((provider) => this.isAvailable(provider));
-    return this.registry.choose(role, startable.length ? startable : candidates) || candidates[0];
+    const startable = candidates.filter((provider) => this.isAvailable(provider) && this.breaker.allow(provider));
+    if (startable.length) return this.registry.choose(role, startable) || startable[0];
+    if (this.isAvailable(LOCAL_PROVIDER)) return LOCAL_PROVIDER;
+    return candidates[0];
   }
 
   _seal(run) {
@@ -357,7 +387,25 @@ class CoreExecutionCoordinator extends EventEmitter {
   }
 
   _fallback(run, assignment) {
-    const candidates = FALLBACKS[assignment.provider] || [];
+    // A stand-in is temporary.
+    //
+    // The owner's rule: when billing limits a provider another AI covers for it, and
+    // the one covering does not keep the role — it goes back to whoever it belongs
+    // to. `fallbackIndex` only ever moved forward, so the first quota outage of the
+    // day reassigned the role for the rest of the run and nothing ever undid it.
+    const home = assignment.homeProvider;
+    if (home && assignment.provider !== home && this.breaker.allow(home) && this.isAvailable(home)) {
+      assignment.fallbackIndex = 0;
+      knowledge.recordEvent(run.id, { type: 'provider-restored', status: run.status, provider: home,
+        evidence: `${assignment.role}: ${assignment.provider} was standing in, ${home} is available again` });
+      this.emit('restored', { runId: run.id, role: assignment.role, from: assignment.provider, to: home });
+      return this._reassign(run, assignment, home);
+    }
+    // The chain belongs to the role's own provider, not to whoever is currently
+    // standing in. Reading it from the stand-in meant `fallbackIndex` indexed into a
+    // different list after every hop — position 2 of claude-code's chain became
+    // position 2 of glm's.
+    const candidates = FALLBACKS[home || assignment.provider] || [];
     // Walk past anyone in cooldown. Without this, three assignments failing on
     // the same exhausted quota each propose the same next provider, the owner
     // approves three repairs, and all three hit the same wall — which is what
@@ -381,8 +429,16 @@ class CoreExecutionCoordinator extends EventEmitter {
         evidence: `in cooldown: ${skipped.join(', ')}` });
     }
     if (!next) return false;
+    return this._reassign(run, assignment, next);
+  }
+
+  /**
+   * Move an assignment to another provider and plan the replacement task.
+   * @returns {boolean}
+   */
+  _reassign(run, assignment, next) {
     const oldTask = this.taskRunner.get(assignment.taskId);
-    const model = resolveModel(next, `${run.prompt} ${assignment.title}`, assignment.role);
+    const model = resolveModel(next, run.prompt, assignment.role);
     const task = this.taskRunner.plan({
       id: `${assignment.taskId}-repair-${run.repairCycle}`,
       provider: next, model, cwd: run.cwd, planHash: run.planHash,

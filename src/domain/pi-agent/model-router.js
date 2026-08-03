@@ -35,9 +35,27 @@ const COMPLEX_SIGNALS = /(?:architect|refactor|migrat|redesign|rebuild|overhaul|
 // Which brain, not which vendor. Provider selection happens first (capability
 // registry); this only decides the tier once the provider is already Claude, so a
 // fallback to GLM cannot silently discard the decision.
+// Role to tier, in one place, decided before any text is read.
+//
+// The tier used to be inferred from a string that included the role's own title,
+// and `leader`'s title is "Architecture, system implementation and integration".
+// COMPLEX_SIGNALS matches /architect/, so every leader assignment resolved to the
+// design tier whatever the owner had asked for: measured 2026-08-03, 9 of 9
+// claude-code assignments went to claude-fable-5 at $10/$50 instead of Opus 5 at
+// $5/$25. The signals still decide for anything not pinned here, but they are only
+// ever shown the owner's own words.
+// Only `ui` is pinned: it is design work whatever the owner typed. Every other role
+// is decided by the owner's own words, because the standing rule is that prose,
+// design and large redesigns go to Fable regardless of which role carries them —
+// pinning leader to Opus would quietly cancel that rule for the role most likely to
+// be handed a redesign.
+const ROLE_TIER = Object.freeze({ ui: 'design' });
+
 function pickModelTier(text, role = '') {
+  const pinned = ROLE_TIER[String(role || '')];
+  if (pinned) return pinned;
   const value = String(text || '');
-  if (role === 'ui' || DESIGN_SIGNALS.test(value) || COMPLEX_SIGNALS.test(value) || value.length > 6000) return 'design';
+  if (DESIGN_SIGNALS.test(value) || COMPLEX_SIGNALS.test(value) || value.length > 6000) return 'design';
   return 'general';
 }
 
@@ -255,6 +273,7 @@ function ollamaKickstart() { // 不応時の再起動（GUIアプリのlaunchd�
 }
 
 module.exports = {
+  ROLE_TIER,
   GLM_MODELS, CLAUDE_MODELS, pickModelTier, resolveModel, TIERS, loadProviders, buildChain, tierOf, pickStart,
   ERROR_PATTERN, MODEL_UNAVAILABLE_PATTERN, FALLBACK_ERROR_PATTERN, RATE_LIMIT_PATTERN, QUOTA_PATTERN,
   classifyFailure, retryAfterMs,
