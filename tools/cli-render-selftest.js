@@ -314,7 +314,11 @@ ok('the header carries exactly one box, and it is the model panel', () => {
     const facts = boxed.slice(1, -1).join(' ');
     assert.ok(facts.includes('qwen2.5:0.5b'), `the panel states the real model: ${facts}`);
     assert.ok(facts.includes('4k ctx'), `and the real context window: ${facts}`);
-    assert.ok(facts.includes('1/2 online'), `and counts what is actually connected: ${facts}`);
+    // This said "1/2 online" and counted `connected`, which means "has a task
+    // running right now". With every provider authenticated and idle it read 1/6 on
+    // the owner's screen, who reasonably took that to mean five were broken. The
+    // header's question is how many could work.
+    assert.ok(facts.includes('1/2 ready'), `and counts what could actually work: ${facts}`);
   }
 });
 ok('nothing overflows between 24 and 200 columns, including the phase chips', () => {

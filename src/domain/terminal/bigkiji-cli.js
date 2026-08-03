@@ -207,11 +207,13 @@ async function repl(client) {
     // The footer's comment slot still shows every event, so the transcript can
     // afford to stay quiet: phase ticks and the daemon echoing back the prompt
     // the owner just typed are dropped by renderEvent rather than printed.
-    // The footer says what is happening. It used to reach for `data.reply` first,
-    // so it re-printed the answer that was already sitting in the transcript two
-    // lines above — in Japanese, clipped mid-word, next to an English status word.
-    // A status line that repeats the content is one line of screen doing no work.
-    const text = data.phase || data.status || data.action || data.draft?.title || data.text || '';
+    // The footer says what is happening. It reached for `data.reply` first, so it
+    // re-printed the answer already sitting in the transcript two lines above; then
+    // it reached for `data.text`, which on a conversation event is the owner's own
+    // prompt, so it echoed the line they had just typed. Both are already on screen.
+    // Free text is only taken from the two channels whose text *is* the status.
+    const narrates = event === 'commentary' || event === 'checkpoint';
+    const text = data.phase || data.status || data.action || data.draft?.title || (narrates ? data.text : '') || '';
     if (text) comment = String(text).replace(/\s+/g, ' ').trim();
     if (event === 'run') { emitRun(data); paintFooter(); refreshPrompt(); return; }
     const lines = renderEvent(event, data, { ...view(), resultLines: 4 });

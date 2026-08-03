@@ -82,7 +82,10 @@ function modelPanel(state = {}, options = {}) {
   const bits = [lower(conversation.model) || DASH];
   const ctx = Number(conversation.maxContextTokens);
   if (Number.isFinite(ctx) && ctx > 0) bits.push(`${ctx >= 1000 ? `${Math.round(ctx / 1000)}k` : ctx} ctx`);
-  if (fleet.length) bits.push(`${fleet.filter((model) => model.connected).length}/${fleet.length} online`);
+  // `connected` means "has a task running right now", so this read 1/6 with every
+  // provider authenticated and ready — which the owner reasonably took to mean five
+  // of them were broken. What the header is answering is "how many could work".
+  if (fleet.length) bits.push(`${fleet.filter((model) => model.available ?? model.connected).length}/${fleet.length} ready`);
 
   // The cat is pixels, and pixels are colour. `truncateToWidth` returns plain
   // text — it strips ANSI even when it has nothing to trim — so the mark is
