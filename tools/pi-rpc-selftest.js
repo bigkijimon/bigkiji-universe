@@ -131,5 +131,22 @@ ok('garbage on the pipe is skipped, not fatal', () => {
     'one unparseable line must not take the session down with it');
 });
 
+ok('a key the owner just entered takes effect without a restart', () => {
+  // pi-bridge has had refreshChain() since V13 and nothing ever called it, so
+  // entering a GLM key left Pi on the tier it had picked when the key was missing —
+  // the owner pasted a key, nothing changed, and the only fix was a restart.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'main.js'), 'utf8');
+  const handler = main.slice(main.indexOf("ipcMain.handle('settings:secret'"), main.indexOf("ipcMain.handle('settings:secret-status'"));
+  assert.match(handler, /pi\?\.refreshChain\?\.\(\)/, 'Pi re-picks its tier');
+  assert.match(handler, /refreshFleetAvailability/, 'and the fleet display re-asks readiness');
+  assert.match(handler, /syncCredentials/, 'and the daemon is told, which it already was');
+  // refreshChain itself has to be reachable and honest about what it returns.
+  const bridge = new PiBridge({ cwd: process.cwd() });
+  const chain = bridge.refreshChain();
+  assert.ok(Array.isArray(chain) && chain.length, 'it returns the chain it rebuilt');
+  assert.ok(chain.every((tier) => tier && tier.id), `every tier is a real model id: ${JSON.stringify(chain)}`);
+  assert.ok(chain.some((tier) => tier.need === 'ollama'), 'and the local tier is always in it');
+});
+
 if (failures) { console.error(`pi rpc selftest: ${failures} FAILED`); process.exit(1); }
 console.log('pi rpc selftest: PASS · multibyte survives a chunk split · LF-terminated · steer/follow-up/set_model/abort · extensions off (CVE-2026-54325) · garbage is skipped');

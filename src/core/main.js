@@ -679,6 +679,8 @@ ipcMain.handle('save-recording', (_e, buf) => {
 
 // ---------- Pi RPC（Core=Pi・計画はローカルQwen。確定実行のみClaude Code/GLM） ----------
 const pi = new PiBridge({ cwd: PATHS.vaultRoot, piBin: PATHS.piBin });
+// Assigned during the boot sequence; the settings handler calls it when a key lands.
+let refreshFleetAvailability = null;
 let piTurnOpen = false;
 let piTouched = new Set();
 let piIdleTimer = null;
@@ -1374,6 +1376,12 @@ ipcMain.handle('settings:secret', async (_event, id, value) => {
     await daemonClient.syncCredentials({ [provider]: secret });
     daemonState = await daemonClient.state();
   }
+  // A key the owner just typed has to change what the fleet shows and what Pi can
+  // borrow, now — not after a restart. pi-bridge has had refreshChain() for exactly
+  // this since V13 and nothing has ever called it, so entering a GLM key left Pi on
+  // the tier it had chosen when the key was still missing.
+  try { pi?.refreshChain?.(); } catch (_) { /* the key is saved either way */ }
+  refreshFleetAvailability?.().catch?.(() => {});
   return status;
 });
 ipcMain.handle('settings:secret-status', () => settingsStore.secretStatus());
@@ -1576,7 +1584,7 @@ app.whenReady().then(async () => {
   // display — every paid provider read OFFLINE / "Not available" on screen while
   // GLM and Codex were completing real work. Readiness is the same question the
   // daemon and the coordinator ask.
-  const refreshFleetAvailability = async () => {
+  refreshFleetAvailability = async () => {
     const rows = providerSurvey({ secret: (id) => settingsStore.getSecret(id === 'claude-code' ? 'claude' : id) || '' });
     const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
     fleetMetrics.setAvailability({ claude: byId['claude-code']?.ready, codex: byId.codex?.ready,
