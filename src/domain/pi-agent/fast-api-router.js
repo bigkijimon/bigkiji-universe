@@ -2,6 +2,8 @@
 
 const knowledge = require('./pi-knowledge-orchestrator');
 const { GLM_MODELS } = require('./model-router');
+// One residency window for every local model BigKiji loads. See conversation-engine.
+const { DEFAULT_KEEP_ALIVE: KEEP_ALIVE } = require('../pi-core/conversation-engine');
 
 // Front desk is deliberately local-only. External providers receive no owner
 // text until a disclosure manifest has been reviewed and approved.
@@ -34,7 +36,7 @@ function facilitatorPrompt(ownerText, prior = '') {
 async function runOllama(prompt) {
   const response = await fetch('http://127.0.0.1:11434/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: MODELS.ollama, prompt, stream: false, format: 'json', keep_alive: '30m', options: { temperature: 0.1, num_predict: 700 } }),
+    body: JSON.stringify({ model: MODELS.ollama, prompt, stream: false, format: 'json', keep_alive: KEEP_ALIVE, options: { temperature: 0.1, num_predict: 700 } }),
   });
   const body = await response.json(); if (!response.ok || body.error) throw new Error(body.error || `ollama ${response.status}`);
   return String(body.response || '');

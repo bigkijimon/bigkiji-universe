@@ -129,7 +129,12 @@ function ollama(value) {
   const asking = new ConversationEngine({ fetchImpl: capture, model: 'qwen3.5:latest' });
   await asking.turn({ text: 'anything', sessionId: 'think-off' });
   assert.strictEqual(sent.think, false, 'the request must switch reasoning off, or the answer budget goes to thinking');
-  assert.strictEqual(sent.keep_alive, -1, 'and the model stays resident between turns');
+  // This asserted -1 — resident forever — until the owner asked for the opposite by
+  // name on 2026-08-03: standby at nearly zero, the whole card when spoken to, back
+  // to zero afterwards. Sixty seconds keeps a back-and-forth instant because every
+  // turn restarts the window; it is the pause between conversations that frees the
+  // GPU for ComfyUI, LTX-2 and ACE-Step. See tools/gpu-residency-selftest.js.
+  assert.strictEqual(sent.keep_alive, '60s', 'the model stays resident for a minute after the owner stops, then leaves');
   assert.strictEqual(sent.options.num_ctx, 4096);
 
   // Asked "残ってるタスクおしえて", BigKiji answered "タスクはまだ登録されていま

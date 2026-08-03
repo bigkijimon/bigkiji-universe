@@ -124,6 +124,26 @@ async function drainOllamaStream(response, onText) {
   }
 }
 
+// How long the conversation model stays in VRAM after the owner stops talking.
+//
+// It was `-1`, which is Ollama for "forever": measured, qwen3.5 held 5.6GB and
+// bge-m3 another 664MB with `ollama ps` reading `UNTIL Forever`, on a machine
+// that also has to run ComfyUI, LTX-2 and ACE-Step on the same card. Sixty
+// seconds keeps a back-and-forth conversation instant — every turn restarts the
+// window — and hands the whole card back one minute after the owner stops.
+//
+// Note this has to be sent on every request. The machine has OLLAMA_KEEP_ALIVE=-1
+// in its launchd environment, so anything that omits the field inherits forever.
+const DEFAULT_KEEP_ALIVE = '60s';
+
+/** Accept a number of seconds or an Ollama duration string; `0` means unload immediately. */
+function normalizeKeepAlive(value) {
+  if (value === 0 || value === '0') return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 0 ? DEFAULT_KEEP_ALIVE : `${Math.round(value)}s`;
+  const text = String(value || '').trim();
+  return /^\d+(\.\d+)?(ms|s|m|h)$/.test(text) ? text : DEFAULT_KEEP_ALIVE;
+}
+
 class ConversationEngine extends EventEmitter {
   // The conversation model is qwen3.5:latest. qwen2.5:0.5b was the default and it
   // could not hold a conversation — asked "機能してる？" it answered "はい、機能が
@@ -137,11 +157,33 @@ class ConversationEngine extends EventEmitter {
   // which keeps emitting forever.
   constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen3.5:latest',
     endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000, maxTurnMs = 90000,
-    maxContextTokens = 4096, maxTurns = 8 } = {}) {
+    maxContextTokens = 4096, maxTurns = 8, keepAlive = DEFAULT_KEEP_ALIVE } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;
     this.maxTurnMs = Math.max(timeoutMs, maxTurnMs);
     this.maxContextTokens = Math.min(8192, Math.max(1024, maxContextTokens)); this.maxTurns = Math.max(2, Math.min(16, maxTurns));
+    this.keepAlive = normalizeKeepAlive(keepAlive);
     this.histories = new Map(); this.active = 0;
+  }
+
+  /**
+   * Hand the GPU back now.
+   *
+   * `keep_alive: 0` with an empty prompt is Ollama's unload: the weights leave
+   * VRAM on the next tick rather than at the end of the idle window. This is what
+   * the owner needs before a render or a video job takes the same card, and it is
+   * the only way to reach zero without waiting.
+   * @returns {Promise<{released: boolean, model: string, error?: string}>}
+   */
+  async release() {
+    if (!this.fetchImpl) return { released: false, model: this.model, error: 'no fetch implementation' };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000); timer.unref?.();
+    try {
+      const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: '', keep_alive: 0 }) });
+      return { released: response.ok, model: this.model, ...(response.ok ? {} : { error: `Ollama HTTP ${response.status}` }) };
+    } catch (error) { return { released: false, model: this.model, error: clean(error.message, 120) }; }
+    finally { clearTimeout(timer); }
   }
 
   history(sessionId, seed = []) {
@@ -206,7 +248,7 @@ class ConversationEngine extends EventEmitter {
       if (!this.fetchImpl) throw new Error('Local conversation fetch unavailable');
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
-          prompt: this.prompt(ownerText, compacted.turns, facts), stream: true, format: 'json', keep_alive: -1,
+          prompt: this.prompt(ownerText, compacted.turns, facts), stream: true, format: 'json', keep_alive: this.keepAlive,
           // A reasoning model deliberates before it answers, and that deliberation
           // comes out of the same num_predict budget as the answer: qwen3.5 spent
           // the whole 650 thinking and returned nothing. Ollama 0.30.8 takes
@@ -243,7 +285,8 @@ class ConversationEngine extends EventEmitter {
   }
 
   snapshot() { return { model: this.model, endpoint: this.endpoint, active: this.active, sessions: this.histories.size,
-    maxContextTokens: this.maxContextTokens, keepAlive: -1 }; }
+    maxContextTokens: this.maxContextTokens, keepAlive: this.keepAlive }; }
 }
 
-module.exports = { ConversationEngine, heuristicKind, guardedKind, fallback, normalize, clean, deriveTitle, usableTitle };
+module.exports = { ConversationEngine, heuristicKind, guardedKind, fallback, normalize, clean, deriveTitle, usableTitle,
+  normalizeKeepAlive, DEFAULT_KEEP_ALIVE };

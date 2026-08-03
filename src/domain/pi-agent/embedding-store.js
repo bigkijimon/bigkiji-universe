@@ -29,6 +29,7 @@ const crypto = require('crypto');
 // and English identifiers in the same sentence, which single-language models handle badly.
 const DEFAULT_MODEL = process.env.BIGKIJI_EMBEDDING_MODEL || 'bge-m3';
 const DEFAULT_ENDPOINT = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434';
+const { DEFAULT_KEEP_ALIVE, normalizeKeepAlive } = require('../pi-core/conversation-engine');
 
 const hashOf = (text) => crypto.createHash('sha256').update(String(text)).digest('hex').slice(0, 16);
 
@@ -51,13 +52,14 @@ function normalise(values) {
 
 class EmbeddingStore {
   constructor({ root, model = DEFAULT_MODEL, endpoint = DEFAULT_ENDPOINT, fetchImpl = global.fetch,
-    timeoutMs = 120000 } = {}) {
+    timeoutMs = 120000, keepAlive = DEFAULT_KEEP_ALIVE } = {}) {
     if (!root) throw new Error('EmbeddingStore requires a root');
     this.root = path.join(root, 'vectors');
     this.model = model;
     this.endpoint = String(endpoint).replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.keepAlive = normalizeKeepAlive(keepAlive);
     this.available = null; // null = not probed yet; the tri-state is deliberate
     this.dims = 0;
     this.cache = new Map();
@@ -84,7 +86,10 @@ class EmbeddingStore {
     try {
       const response = await this.fetchImpl(`${this.endpoint}/api/embed`, {
         method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.model, input: list }),
+        // Without an explicit value this inherits OLLAMA_KEEP_ALIVE=-1 from the
+        // machine's launchd environment, which is why bge-m3 sat in VRAM forever
+        // after a single search.
+        body: JSON.stringify({ model: this.model, input: list, keep_alive: this.keepAlive }),
       });
       const body = await response.json();
       if (!response.ok || body?.error) throw new Error(body?.error || `Ollama HTTP ${response.status}`);

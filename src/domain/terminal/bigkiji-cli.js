@@ -69,7 +69,7 @@ function header(state = {}, width = screenWidth()) {
   return [...panel, `${A.muted}${facts}${A.reset}`].join('\n');
 }
 
-const HINTS = '/help commands · /status fleet · /approve start waiting run · /mode ask|auto-edit|plan · /exit';
+const HINTS = '/help commands · /status fleet · /approve start waiting run · /gpu off free vram · /mode ask|auto-edit|plan · /exit';
 function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HINTS, width)}${A.reset}`; }
 
 async function ensureClient() {
@@ -277,6 +277,15 @@ async function repl(client) {
           emit([...renderToolCall('approve', `${lower(run.id)} · ${phrase(result.status || 'started')}`, view()),
             ...renderToolResult(`${run.assignments?.length || 0} assignments released`, { ...view(), maxLines: 2 })]);
         }
+      }
+      // The owner's card also runs ComfyUI, LTX-2 and ACE-Step. `/gpu off` unloads
+      // the local weights now instead of waiting out the 60s idle window, which is
+      // the difference between starting a render and waiting a minute to start one.
+      else if (text === '/gpu' || text.startsWith('/gpu ')) {
+        const action = text.slice(4).trim() || 'off';
+        if (action !== 'off') throw new Error('usage: /gpu off');
+        const released = await client.post('/api/gpu/release');
+        emit(renderToolCall('gpu', released.released ? `released ${lower(released.model)}` : `hold ${lower(released.error || 'failed')}`, view()));
       }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }

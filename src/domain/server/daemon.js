@@ -26,7 +26,7 @@ const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
-const { ConversationEngine } = require('../pi-core/conversation-engine');
+const { ConversationEngine, normalizeKeepAlive } = require('../pi-core/conversation-engine');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 const stt = require('./speech-to-text');
 
@@ -378,9 +378,26 @@ class DaemonEngine extends EventEmitter {
     return { ok: true, credentials: this.securityState.credentials };
   }
 
+  /**
+   * Hand the GPU back now instead of waiting out the idle window.
+   *
+   * The owner runs ComfyUI, LTX-2 and ACE-Step on the same card, and a render that
+   * starts while 6.3GB of chat weights are still resident is the OOM the whole
+   * gpu-signal arrangement exists to avoid. Unloading also clears the warm marker,
+   * so the next conversation reloads rather than assuming weights that are gone.
+   * @returns {Promise<{released: boolean, model: string, error?: string}>}
+   */
+  async releaseGpu() {
+    this.warmedModel = null;
+    const result = await this.conversation.release();
+    this.publish('knowledge', { status: result.released ? 'GPU_RELEASED' : 'GPU_RELEASE_FAILED', conversation: result });
+    return result;
+  }
+
   configureConversation(config = {}) {
     if (config.model) this.conversation.model = String(config.model).slice(0, 120);
     if (config.contextTokens) this.conversation.maxContextTokens = Math.max(1024, Math.min(8192, Number(config.contextTokens) || 4096));
+    if (config.keepAlive !== undefined) this.conversation.keepAlive = normalizeKeepAlive(config.keepAlive);
     this.conversationConfig.autoIdeas = config.autoIdeas !== false;
     this.conversationConfig.cloudEnhancementApproval = 'always';
     const snapshot = { ...this.conversation.snapshot(), ...this.conversationConfig };
@@ -407,7 +424,7 @@ class DaemonEngine extends EventEmitter {
     const key = `${model}::${numCtx}`;
     if (!model || this.warmedModel === key || this.warming) return null;
     this.warming = true;
-    const promise = warmModel(model, { keepAlive: -1, options: { num_ctx: numCtx } })
+    const promise = warmModel(model, { keepAlive: this.conversation.keepAlive, options: { num_ctx: numCtx } })
       .then((result) => {
         this.warming = false;
         if (result.ok) this.warmedModel = key;
@@ -629,6 +646,12 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       if (req.method === 'POST' && url.pathname === '/api/conversation/config') {
         if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
         return json(res, 200, engine.configureConversation(await readJson(req)));
+      }
+      // Free the card on demand. The owner asked for standby at zero, and a render
+      // that has to wait sixty seconds for chat weights to time out is not zero.
+      if (req.method === 'POST' && url.pathname === '/api/gpu/release') {
+        if (!isMaster) return json(res, 403, { error: 'desktop owner authorization required' });
+        return json(res, 200, await engine.releaseGpu());
       }
       if (req.method === 'GET' && url.pathname === '/api/mobile/devices') return json(res, 200, { devices: mobileDevices.list() });
       if (req.method === 'GET' && url.pathname === '/api/mobile/me') return json(res, 200, { device: mobileDevice ? mobileDevices.public(mobileDevice) : null, master: isMaster });

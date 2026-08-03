@@ -8,6 +8,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const textIndex = require('./text-index');
+// One residency window for every local model BigKiji loads. '30m' meant a 21GB
+// deliberation model sat on the card for half an hour after one task.
+const { DEFAULT_KEEP_ALIVE: KEEP_ALIVE } = require('../pi-core/conversation-engine');
 
 // The stop-word list moved to text-index.js as CACHE_STOP when the three bigram
 // implementations were unified; nothing here reads it any more.
@@ -92,7 +95,7 @@ async function llmJson(prompt) {
         stream: false,
         format: 'json',
         options: { temperature: 0.2, num_predict: 500 },
-        keep_alive: '30m',
+        keep_alive: KEEP_ALIVE,
       }),
     },
   );
