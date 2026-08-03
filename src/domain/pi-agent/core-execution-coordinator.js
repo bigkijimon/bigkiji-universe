@@ -75,6 +75,12 @@ function selectRoles(prompt, routing = {}) {
   return roles;
 }
 
+/** The first line a provider wrote, for a report that has to fit on a screen. */
+function firstLine(output) {
+  const text = String(output || '').split('\n').map((line) => line.trim()).find((line) => line && !line.startsWith('{'));
+  return text ? text.slice(0, 100) : '';
+}
+
 function runId(prompt) { return `run-${Date.now().toString(36)}-${knowledge.hash(prompt)}`; }
 function publicRun(run) {
   // deadlineTimer is a live Timeout. Spreading it into a response body serialises a
@@ -423,8 +429,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     const verified = run.quality.checks.every((check) => check.pass);
     clearTimeout(run.deadlineTimer); run.deadlineTimer = null;
     run.status = verified ? 'COMPLETED' : 'FAILED'; run.finishedAt = new Date().toISOString();
+    run.report = this.buildReport(run);
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
+    this.emit('report', run.report);
     this._emit(run, 'finish');
   }
 
@@ -529,6 +537,52 @@ class CoreExecutionCoordinator extends EventEmitter {
     // Keep reporting rather than going quiet again.
     run.deadlineTimer = setTimeout(() => this._reportProgress(run), CHECKPOINT_MS);
     run.deadlineTimer.unref?.();
+  }
+
+  /**
+   * One report for a finished run — step ⑥ of the owner's workflow.
+   *
+   * Until now a finished run produced N separate outputs and no summary: the owner
+   * read each provider's answer in turn and worked out for themselves whether the
+   * thing they asked for had happened. What is here is only what was measured — who
+   * ran, whether they finished, how long they took, what they actually consumed, and
+   * the first line each of them wrote. Nothing is inferred and nothing is combined:
+   * merging several providers' edits automatically has no working precedent, and
+   * pretending otherwise would be the most expensive kind of wrong.
+   * @returns {object}
+   */
+  buildReport(run) {
+    const started = run.startedAt ? new Date(run.startedAt).getTime() : 0;
+    const finished = run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now();
+    const rows = run.assignments.map((assignment) => {
+      const task = this.taskRunner.get(assignment.taskId) || {};
+      const tokens = task.tokens || {};
+      const measured = Number(tokens.input || 0) + Number(tokens.output || 0);
+      const ranMs = task.startedAt ? Math.max(0, new Date(task.finishedAt || task.updatedAt || Date.now()).getTime() - new Date(task.startedAt).getTime()) : null;
+      return {
+        role: assignment.role, provider: assignment.provider, model: assignment.model || '',
+        status: assignment.status, wrote: !!assignment.write,
+        // '' rather than 0: a provider whose usage was never reported did not use
+        // zero tokens, and this project has already shipped that mistake once.
+        tokens: measured || null,
+        ms: ranMs,
+        headline: firstLine(task.output),
+        error: assignment.status === 'completed' ? '' : String(task.failureReason || task.error || '').split('\n')[0].slice(0, 120),
+        findings: (assignment.review?.findings || []).map((finding) => finding.id),
+        standInFor: assignment.homeProvider && assignment.homeProvider !== assignment.provider ? assignment.homeProvider : '',
+      };
+    });
+    const done = rows.filter((row) => row.status === 'completed');
+    const totalTokens = rows.reduce((sum, row) => sum + (row.tokens || 0), 0);
+    return {
+      runId: run.id, status: run.status, goal: run.promptSpec?.goal || run.promptPreview || '',
+      completed: done.length, total: rows.length,
+      ms: started ? finished - started : null,
+      tokens: totalTokens || null,
+      checks: run.quality.checks.map((check) => ({ id: check.id, pass: check.pass })),
+      repairs: run.repairCycle || 0,
+      rows,
+    };
   }
 
   _fallback(run, assignment) {

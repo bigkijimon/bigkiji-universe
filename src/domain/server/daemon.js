@@ -57,10 +57,10 @@ const { createPathConfig } = require('../../core/path-config');
 const PATHS = createPathConfig({ appRoot: APP_ROOT });
 
 const EVENT_CHANNEL = Object.freeze({
-  task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
+  task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
-  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint', tools: 'tools:status',
+  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint', report: 'run:report', tools: 'tools:status',
   review: 'run:review', reflection: 'run:reflection',
 });
 
@@ -194,6 +194,14 @@ class DaemonEngine extends EventEmitter {
       const task = this.runner.get(entry.taskId); const sessionId = task?.metadata?.runId && this.runSessions.get(task.metadata.runId);
       if (sessionId) this.sessions.append(sessionId, { type: 'log', provider: entry.provider, text: String(entry.text || '').slice(0, 8000) });
     });
+    // Structured work steps, alongside the raw log rather than instead of it. Appending
+    // them to the session JSONL as well is what lets a past session be reopened later with
+    // its timeline intact, instead of only the flattened log text.
+    this.runner.on('step', (step) => {
+      this.publish('step', step);
+      const task = this.runner.get(step.taskId); const sessionId = task?.metadata?.runId && this.runSessions.get(task.metadata.runId);
+      if (sessionId) this.sessions.append(sessionId, { type: 'step', ...step });
+    });
     this.runner.on('security', (event) => {
       if (event.decision === 'DENY') this.securityState.blocked += 1;
       if (event.decision === 'MANIFEST') { this.securityState.manifests += 1; this.securityState.policyHash = event.disclosure?.policyHash || this.securityState.policyHash; }
@@ -213,6 +221,15 @@ class DaemonEngine extends EventEmitter {
       this.publish('review', review);
       if (review.quiet) return;
       this.reflect(review).catch(() => {});
+    });
+    // Step ⑥: one report when the work is finished, rather than N answers the owner
+    // has to reconcile themselves.
+    this.coordinator.on('report', (report) => {
+      this.publish('report', report);
+      const sessionId = this.runSessions.get(report.runId);
+      if (sessionId) this.sessions.append(sessionId, { type: 'report', ...report });
+      knowledge.recordEvent(report.runId, { type: 'run-report', status: report.status, provider: 'bigkiji',
+        evidence: `${report.completed}/${report.total} completed${report.tokens ? ` · ${report.tokens} tok` : ''}` });
     });
     this.coordinator.on('checkpoint', (report) => {
       const sessionId = this.runSessions.get(report.runId);

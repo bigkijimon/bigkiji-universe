@@ -526,6 +526,29 @@ function renderEvent(event, data = {}, options = {}) {
       const model = data.message.model ? ` ${mark.note} ${lower(data.message.model)}` : '';
       return [...renderToolCall('pi', `answered${model}`, base), ...renderAssistantText(said, { ...base, maxLines: resultLines + 4 })];
     }
+    // Step ⑥ of the owner's workflow: what happened, in one block.
+    //
+    // Only measurements. A provider whose usage was never reported shows '—' and not
+    // a zero, and nothing here is combined or inferred — merging several providers'
+    // edits automatically has no working precedent, and a report that implied
+    // otherwise would be the most expensive kind of wrong.
+    case 'report': {
+      const ok = data.status === 'COMPLETED';
+      const took = data.ms ? ` ${mark.note} ${Math.round(data.ms / 1000)}s` : '';
+      const tok = data.tokens ? ` ${mark.note} ${data.tokens} tok` : '';
+      const head = renderToolCall('report', `${data.completed}/${data.total} done ${mark.note} ${phrase(data.status)}${took}${tok}`, base);
+      const rows = (data.rows || []).map((row) => {
+        const glyph = row.status === 'completed' ? mark.done : mark.pending;
+        const cost = [row.ms ? `${Math.round(row.ms / 1000)}s` : DASH, row.tokens ? `${row.tokens} tok` : DASH].join(' ');
+        const stood = row.standInFor ? ` (for ${lower(row.standInFor)})` : '';
+        const note = row.error || row.headline || '';
+        return `${glyph} ${lower(row.role)} ${mark.note} ${lower(row.provider)}${stood} ${mark.note} ${cost}${note ? `\n   ${note}` : ''}`;
+      }).join('\n');
+      const failed = (data.checks || []).filter((check) => !check.pass).map((check) => check.id);
+      const tail = failed.length ? `\nnot verified: ${failed.join(', ')}` : '';
+      const repairs = data.repairs ? `\nrepair cycles: ${data.repairs}` : '';
+      return [...head, ...renderToolResult(`${rows}${tail}${repairs}`, { ...base, maxLines: 14, isError: !ok })];
+    }
     case 'checkpoint': {
       // Thirty minutes in, the owner is told where the run is rather than left to
       // guess or find it finished an hour later.
