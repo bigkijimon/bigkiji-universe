@@ -110,7 +110,11 @@ class TaskReportBuilder {
   }
 
   toMarkdown(report) {
-    const modelRow = (m) => `| ${m.label} | ${m.tokensUsed} | ${m.tokensSaved} | ${m.savedPct == null ? '実測なし' : `${m.savedPct}%`} |`;
+    // A model that consumed nothing did not save anything either — it did not run.
+    // Printing a saved figure next to used=0 is the same fabrication as the 5.7M
+    // "saving" from typing hello, wearing a table cell.
+    const cell = (m, value) => (m.tokensUsed ? value : '実測なし');
+    const modelRow = (m) => `| ${m.label} | ${m.tokensUsed} | ${cell(m, m.tokensSaved)} | ${m.savedPct == null ? '実測なし' : `${m.savedPct}%`} |`;
     return [
       `# タスク完了レポート — ${report.goal}`,
       '',
@@ -124,7 +128,7 @@ class TaskReportBuilder {
       '',
       '## ② かかった時間とトークン消費',
       `- 所要時間: ${report.durationLabel || '実測なし'}`,
-      `- 総トークン: used ${report.totals.tokensUsed} / saved ${report.totals.tokensSaved}`,
+      `- 総トークン: used ${report.totals.tokensUsed} / saved ${report.totals.tokensUsed ? report.totals.tokensSaved : '実測なし'}`,
       `- 総節約%: ${report.totals.savedPct == null ? '実測なし' : `${report.totals.savedPct}%`}`,
       '',
       '## ③ モデル別ユーセージと節約（saved/(saved+used)・used=0は実測なし）',

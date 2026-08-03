@@ -58,8 +58,16 @@ class ModelStatusStore extends EventEmitter {
   ingestTask(task = {}) {
     const id = providerId(task.provider || task.metadata?.provider || 'pi-agent-core');
     const terminal = ['completed', 'failed', 'blocked'].includes(task.status);
+    // A plan is not a measurement.
+    //
+    // Two assignments awaiting approval each scanned the same vault and each booked
+    // its estimate as a saving, so the fleet reported 11.56M tokens saved by work
+    // that had not started and might never be approved. Only what actually ran, and
+    // only what was actually measured, is counted: `measurement:'actual'` is set by
+    // captureUsage from the provider's own usage report.
+    const measured = task.context?.measurement === 'actual';
     if (task.id) this.taskRecords.set(task.id, { modelId: id, input: Number(task.tokens?.input || 0), output: Number(task.tokens?.output || 0),
-      saved: Number(task.context?.tokensSaved || 0), files: Number(task.context?.includedFiles?.length || 0), command: task.startedAt ? 1 : 0,
+      saved: measured ? Number(task.context?.tokensSaved || 0) : 0, files: Number(task.context?.includedFiles?.length || 0), command: task.startedAt ? 1 : 0,
       status: task.status, activeTask: task.promptPreview || task.id,
       piAgent: task.metadata?.agent || '', instruction: String(task.promptPreview || '').slice(0, 80), updatedAt: task.updatedAt });
     const records = [...this.taskRecords.values()].filter((row) => row.modelId === id);

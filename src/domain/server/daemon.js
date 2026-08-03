@@ -457,7 +457,11 @@ class DaemonEngine extends EventEmitter {
     }
     const phase = ['PLANNING', 'AWAITING_APPROVAL'].includes(run.status) ? (run.status === 'AWAITING_APPROVAL' ? 'AWAITING_OWNER_DIRECTIVE' : 'PREFLIGHT')
       : ['EXECUTING', 'DISPATCHING', 'REPAIRING'].includes(run.status) ? 'EXECUTE' : 'VERIFY';
-    this.publish('phase', { sessionId, runId: run.id, phase, status: run.status, progress: phase === 'PREFLIGHT' ? 20 : phase === 'EXECUTE' ? 62 : 92 });
+    // AWAITING_OWNER_DIRECTIVE used to fall through this chain to the VERIFY arm and
+    // report 92%, so a run that had not started looked nearly finished. It is a
+    // waiting state, not a late one.
+    const PROGRESS = { PREFLIGHT: 20, AWAITING_OWNER_DIRECTIVE: 25, EXECUTE: 62, VERIFY: 92 };
+    this.publish('phase', { sessionId, runId: run.id, phase, status: run.status, progress: PROGRESS[phase] ?? 20 });
     this.publish('run', run);
     if (sessionId) this.publish('session', this.sessions.read(sessionId));
   }

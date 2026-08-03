@@ -81,6 +81,11 @@ class ContextPruner {
       if (score) scored.push({ file, relative, text, score });
     }
     scored.sort((a, b) => b.score - a.score || a.relative.localeCompare(b.relative));
+    // What a caller with no pruner would plausibly have sent: the files that scored
+    // as relevant at all. Everything the scan touched and scored zero was never a
+    // candidate, and counting it as a saving is how `hello` came to save 5.7M tokens.
+    const candidateContextTokens = estimateTokens(prompt)
+      + scored.slice(0, this.maxFiles).reduce((sum, item) => sum + estimateTokens(item.text), 0);
     const included = []; let used = 0; let usedTokens = estimateTokens(prompt) + 32;
     for (const item of scored.slice(0, this.maxFiles)) {
       const lines = item.text.split('\n'); const indexes = [];
@@ -102,7 +107,15 @@ class ContextPruner {
     const prunedContextTokens = estimateTokens(prunedPrompt);
     return { prompt: prunedPrompt, slices: included.map(({ path, ranges }) => ({ path, ranges })), redactions: redacted.findings,
       metrics: { fullContextTokens, prunedContextTokens,
-      tokensSaved: Math.max(0, fullContextTokens - prunedContextTokens), measurement: 'estimated',
+      // What pruning actually saved, not what a hypothetical never would have sent.
+      //
+      // This was `fullContextTokens - prunedContextTokens`, where fullContextTokens
+      // is every file in the vault — 1800 of them. Typing `hello` therefore "saved"
+      // 5.7 million tokens, because nothing was ever going to send the vault. The
+      // saving is the part that was scored as relevant and then left out: real
+      // work, honestly measured. `candidateContextTokens` is that denominator.
+      tokensSaved: Math.max(0, candidateContextTokens - prunedContextTokens), measurement: 'estimated',
+      candidateContextTokens,
       includedFiles: included.map((item) => item.path), excludedFiles: Math.max(0, allFiles.length - included.length),
       sandboxPath: policy.sandboxPath, scannedFiles: allFiles.length, contextTokenLimit: maxTokens,
       redactionCount: redacted.redactionCount } };

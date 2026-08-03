@@ -28,7 +28,20 @@ assert(resolver.resolve(os.homedir()).localOnly);
 const pruned = new ContextPruner().prepare({ prompt: 'Fix tokenSavings in target.js', policy });
 assert(pruned.metrics.includedFiles.includes('project/target.js'));
 assert(!pruned.prompt.includes('never-send'));
-assert.strictEqual(pruned.metrics.tokensSaved, Math.max(0, pruned.metrics.fullContextTokens - pruned.metrics.prunedContextTokens));
+// This asserted full - pruned, which is what produced `saved 5,774,005` from the
+// owner typing hello: fullContextTokens is every file the scan touched, and nothing
+// was ever going to send the vault. The saving is what was scored as relevant and
+// then left out — real work, honestly measured (2026-08-03).
+assert.strictEqual(pruned.metrics.tokensSaved,
+  Math.max(0, pruned.metrics.candidateContextTokens - pruned.metrics.prunedContextTokens));
+assert(pruned.metrics.candidateContextTokens <= pruned.metrics.fullContextTokens,
+  'the candidates are a subset of what was scanned');
+{
+  // A prompt that matches nothing saves nothing, however large the vault is.
+  const idle = new ContextPruner().prepare({ prompt: 'hello', policy });
+  assert.strictEqual(idle.metrics.tokensSaved, 0, 'scanning is not saving');
+  assert(idle.metrics.fullContextTokens > 100, 'even though the scan really did walk the whole sandbox');
+}
 assert(estimateTokens('hello') > 0);
 const localPruned = new ContextPruner({ maxTokens: 8192 }).prepare({ prompt: 'Fix tokenSavings in target.js', policy, maxTokens: 4096 });
 assert(localPruned.metrics.prunedContextTokens <= 4096); assert.strictEqual(localPruned.metrics.contextTokenLimit, 4096);
