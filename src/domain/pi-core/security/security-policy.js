@@ -30,8 +30,15 @@ const CREDENTIAL_FILES = Object.freeze({
   // Pi, so every model BigKiji asked for came back `Model "..." not found` and the
   // process exited. The same shape as Claude Code and the login keychain — the
   // sandbox was hiding the store, not the secret.
-  glm: ['.pi/agent/models.json', '.pi/agent/settings.json'],
-  pi: ['.pi/agent/models.json', '.pi/agent/settings.json'],
+  //
+  // sandbox.json is here for the opposite reason to everything else in this map: it
+  // does not grant Pi anything, it restricts it. The owner's global policy denies
+  // ~/.ssh, .env, *.pem and *.key and allow-lists the domains Pi may reach, and a
+  // sandboxed HOME hid that from Pi along with the rest — so the Pi BigKiji starts
+  // was the one Pi instance on this machine running with no policy at all. Lending
+  // it is strictly narrowing.
+  glm: ['.pi/agent/models.json', '.pi/agent/settings.json', '.pi/agent/sandbox.json'],
+  pi: ['.pi/agent/models.json', '.pi/agent/settings.json', '.pi/agent/sandbox.json'],
 });
 
 // Some logins are not a file you can lend — they are a few named fields inside a

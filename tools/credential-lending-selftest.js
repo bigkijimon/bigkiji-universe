@@ -167,6 +167,29 @@ ok('a redirect in the parent environment cannot reach a provider', () => {
   assert.ok(!('ZAI_API_KEY' in env) && !('OPENAI_API_KEY' in env), 'one provider’s key is not another provider’s business');
 });
 
+ok('Pi is lent the policy that restricts it, not only the config that enables it', () => {
+  // CVE-2026-54325 is one half of this; the other half is that the owner's own
+  // sandbox.json — denying ~/.ssh, .env, *.pem, *.key and allow-listing the domains
+  // Pi may reach — lives under HOME, so a sandboxed HOME hid it from Pi along with
+  // everything else. The Pi that BigKiji started was the one instance on this
+  // machine running with no policy at all. Lending it is strictly narrowing.
+  for (const provider of ['pi', 'glm']) {
+    assert.ok(CREDENTIAL_FILES[provider].includes('.pi/agent/sandbox.json'),
+      `${provider} must be handed the restriction, not just the capability`);
+  }
+  const runtime = runtimeFor('pi');
+  const file = path.join(runtime.home, '.pi/agent/sandbox.json');
+  if (!fs.existsSync(path.join(os.homedir(), '.pi/agent/sandbox.json'))) return; // not configured on this machine
+  const policy = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(policy.enabled, true, 'a policy that is off is not a policy');
+  for (const denied of ['~/.ssh', '.env']) {
+    assert.ok((policy.filesystem?.denyRead || []).includes(denied), `${denied} must still be denied inside the sandbox`);
+  }
+  // And it is lent read-only, like everything else here — a model must not be able
+  // to widen the policy that constrains it.
+  assert.equal(fs.statSync(file).mode & 0o777, 0o400);
+});
+
 ok('the runner asks for the right provider’s login', () => {
   const runner = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'task-runner.js'), 'utf8');
   assert.match(runner, /createRuntime\(task\.id, task\.provider\)/,
