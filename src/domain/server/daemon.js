@@ -230,6 +230,9 @@ class DaemonEngine extends EventEmitter {
     // has to reconcile themselves.
     this.coordinator.on('report', (report) => {
       this.publish('report', report);
+      // The run is finished; the index entry that mapped it to a session is not
+      // needed after the report has been filed. runSessions had no delete at all.
+      setTimeout(() => this.runSessions.delete(report.runId), 60000).unref?.();
       const sessionId = this.runSessions.get(report.runId);
       if (sessionId) this.sessions.append(sessionId, { type: 'report', ...report });
       knowledge.recordEvent(report.runId, { type: 'run-report', status: report.status, provider: 'bigkiji',

@@ -434,6 +434,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
     this.emit('report', run.report);
     this._emit(run, 'finish');
+    this.forgetOldRuns();
   }
 
   // Merge the proposals and move to the real work. A discussion that produced nothing
@@ -495,7 +496,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     for (const run of expired) {
       knowledge.recordEvent(run.id, { type: 'run-expired', status: run.status, provider: run.leader, evidence: run.error });
       this._emit(run, 'expired');
-      this.runs.delete(run.id);
+      this.forgetRun(run);
     }
     return expired.length;
   }
@@ -551,6 +552,31 @@ class CoreExecutionCoordinator extends EventEmitter {
    * pretending otherwise would be the most expensive kind of wrong.
    * @returns {object}
    */
+  /**
+   * Drop a run and the task index entries that pointed at it.
+   *
+   * `taskToRun` had no delete at all, so every task id this coordinator ever saw
+   * stayed in it — including the ones whose run had already been removed, which is a
+   * map of dangling pointers that only grows.
+   */
+  forgetRun(run) {
+    for (const assignment of run.assignments || []) this.taskToRun.delete(assignment.taskId);
+    this.runs.delete(run.id);
+  }
+
+  /**
+   * Keep the finished runs the owner might still ask about, and no more.
+   *
+   * A finished run stayed in memory for the life of the process together with every
+   * assignment, disclosure and report it carried.
+   */
+  forgetOldRuns(keep = 50) {
+    const done = [...this.runs.values()]
+      .filter((run) => ['COMPLETED', 'FAILED'].includes(run.status))
+      .sort((a, b) => String(a.finishedAt || a.updatedAt || '').localeCompare(String(b.finishedAt || b.updatedAt || '')));
+    for (const run of done.slice(0, Math.max(0, done.length - keep))) this.forgetRun(run);
+  }
+
   buildReport(run) {
     const started = run.startedAt ? new Date(run.startedAt).getTime() : 0;
     const finished = run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now();

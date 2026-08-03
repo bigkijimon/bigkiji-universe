@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, shell, globalShortcut, systemPreferences, safeStorage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, ipcMain, screen, shell, globalShortcut, systemPreferences, safeStorage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -141,6 +141,27 @@ function spawnShell() {
   bus.push({ source: 'system', type: 'info', text: `shell ready (${ptyMode} mode, ${shell})` });
 }
 
+// Light / dark / auto, decided once in the main process.
+//
+// This is nativeTheme rather than a data-theme attribute pushed to each renderer, because
+// two of the three things that need to change are not in anyone's stylesheet:
+//
+//   - BrowserWindow backgroundColor is fixed when the window is constructed, before any
+//     renderer runs. Without it, opening the console in dark mode flashes white.
+//   - The hiddenInset traffic-light buttons are drawn by AppKit. themeSource is the only
+//     thing that moves them.
+//
+// Setting themeSource also overrides prefers-color-scheme in every renderer, so the
+// stylesheets keep their ordinary media queries and there is one source of truth instead
+// of two that can disagree. It is app-wide by design: choosing 'dark' while the OS is
+// light also darkens native menus and dialogs, which is what the owner asked for.
+function applyColorScheme(scheme) {
+  nativeTheme.themeSource = scheme === 'light' || scheme === 'dark' ? scheme : 'system';
+}
+function windowBackground(dark, light) {
+  return nativeTheme.shouldUseDarkColors ? dark : light;
+}
+
 function broadcast(channel, payload) {
   if (channel === 'pi:stats') { fleetMetrics.ingestStats(payload); piFleet.ingestStats(payload); }
   else if (channel === 'bk:swarm') { fleetMetrics.ingestSwarm(payload); piFleet.ingestSwarm(payload); }
@@ -158,6 +179,7 @@ taskRunner.on('task', (task) => {
   }
 });
 taskRunner.on('log', (log) => broadcast('task:log', log));
+taskRunner.on('step', (step) => broadcast('task:step', step));
 fleetMetrics.on('update', (snapshot) => broadcast('model:status:update', snapshot));
 piFleet.on('update', (snapshot) => broadcast('pi:fleet', snapshot));
 relationshipService.on('update', (snapshot) => {
@@ -440,11 +462,20 @@ function createConsoleWindow() {
   if (consoleWin && !consoleWin.isDestroyed()) { consoleWin.show(); consoleWin.focus(); return consoleWin; }
   consoleWin = new BrowserWindow({
     width: 1080, height: 760, minWidth: 720, minHeight: 520,
-    show: false, backgroundColor: '#f5f5f7',
+    // Decided at construction from the resolved theme, so the window never flashes the
+    // wrong colour before its stylesheet loads.
+    show: false, backgroundColor: windowBackground('#262624', '#faf9f5'),
     titleBarStyle: 'hiddenInset', title: 'BigKiji Console',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
-  consoleWin.loadFile(path.join(UI_ROOT, 'console.html'));
+  // The console renderer is the one window built by Vite (vite.console.config.js); the
+  // tray, the Synapse Canvas and the setup wizard stay plain scripts. In a build it is
+  // ordinary files on disk and is loaded the same way as every other window — the config
+  // sets base:'./' precisely so that works under file://. Pointing BKU_CONSOLE_DEV_URL at
+  // a running `npm run dev:console:web` swaps in the dev server for hot reload; preload
+  // and the whole IPC contract are identical either way.
+  if (process.env.BKU_CONSOLE_DEV_URL) consoleWin.loadURL(process.env.BKU_CONSOLE_DEV_URL);
+  else consoleWin.loadFile(path.join(UI_ROOT, 'console-dist', 'index.html'));
   consoleWin.once('ready-to-show', () => { consoleWin.show(); consoleWin.focus(); });
   consoleWin.on('close', (e) => { if (!quitting) { e.preventDefault(); consoleWin.hide(); } });
   return consoleWin;
@@ -1356,6 +1387,9 @@ ipcMain.handle('settings:update', (_event, patch) => {
   if (ttsService && (before.audio.ttsEndpoint !== next.audio.ttsEndpoint || before.audio.ttsModel !== next.audio.ttsModel)) {
     ttsService.stop();
   }
+  // Switching the voice off has to stop what is already running, not only decline to
+  // start it next time — the model is already in memory by then.
+  ttsService?.applySettings?.();
   if (previewServer && (before.preview.preferredPort !== next.preview.preferredPort || before.preview.enabled !== next.preview.enabled)) {
     const root = previewServer.root; previewServer.close();
     previewServer = new PreviewServer({ root, preferredPort: next.preview.preferredPort });
@@ -1366,6 +1400,7 @@ ipcMain.handle('settings:update', (_event, patch) => {
     if (next.preview.enabled) previewServer.start().catch((error) => broadcast('preview:error', { message: error.message }));
   }
   if (next?.piAgent?.displayName !== before?.piAgent?.displayName) fleetMetrics.setPiAgentName(next?.piAgent?.displayName || '');
+  if (next?.appearance?.colorScheme !== before?.appearance?.colorScheme) applyColorScheme(next.appearance.colorScheme);
   broadcast('settings:changed', next);
   return next;
 });
@@ -1514,6 +1549,14 @@ ipcMain.handle('get-info', () => {
 app.whenReady().then(async () => {
   settingsStore = new SettingsStore({ userData: app.getPath('userData'), safeStorage });
   fleetMetrics.setPiAgentName(settingsStore.get()?.piAgent?.displayName || '');
+  // Before any window is constructed, so every backgroundColor below is already right.
+  applyColorScheme(settingsStore.get()?.appearance?.colorScheme);
+  // On 'auto' the OS can change underneath us. Renderers learn about it through their own
+  // prefers-color-scheme listeners; this tells the rest of the app so anything reading the
+  // settings object (the xterm themes, chiefly) re-resolves at the same moment.
+  nativeTheme.on('updated', () => {
+    if (settingsStore?.get()?.appearance?.colorScheme === 'auto') broadcast('settings:changed', settingsStore.get());
+  });
   remoteAccess = new TailscaleRemoteAccess({ port: 8777, configFile: PATHS.remoteConfigFile });
   if (!SMOKE) {
     try {
@@ -1523,7 +1566,7 @@ app.whenReady().then(async () => {
         .map((provider) => [provider, settingsStore.getSecret(provider)]).filter(([, value]) => value)));
       await daemonClient.configureConversation(settingsStore.get().conversation);
       daemonState = await daemonClient.state();
-      const channelMap = { task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
+      const channelMap = { task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
         fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status',
         conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status' };
       daemonClient.on('event', ({ event, data }) => {
@@ -1719,14 +1762,62 @@ app.whenReady().then(async () => {
       const page = String(process.env.SNAP_SETTINGS || 'audio').replace(/[^a-z-]/g, '');
       setTimeout(() => mainWin?.webContents.executeJavaScript(`window.BKSettings?.open();document.querySelector('[data-page="${page}"]')?.click()`).catch(() => {}), 3200);
     }
+    // SNAP_STEPS=1 pushes a short synthetic run down the real task:step channel so the work
+    // timeline can be photographed without waiting on a live provider. Same pattern as
+    // SNAP_SETTINGS and SNAP_WAKE above: nothing is stubbed in the renderer, the events
+    // take the ordinary broadcast path, and the text says plainly that it is a test.
+    if (process.env.SNAP_STEPS) {
+      const run = { id: 'snap-run', revision: 1, status: 'EXECUTING', planHash: 'snap', disclosureHash: 'snap',
+        assignments: [{ taskId: 'snap-1', role: 'leader', provider: 'claude-code', model: 'claude-opus-5', status: 'running' }] };
+      const step = (extra) => broadcast('task:step', Object.assign({ taskId: 'snap-1', provider: 'claude-code' }, extra));
+      setTimeout(() => {
+        broadcast('run:event', run);
+        step({ phase: 'start', toolUseId: 's1', tool: 'Read', target: 'src/core/main.js', at: new Date().toISOString() });
+        step({ phase: 'end', toolUseId: 's1', ok: true, at: new Date().toISOString() });
+        step({ phase: 'start', toolUseId: 's2', tool: 'Edit', target: 'src/components/UI/console-app/src/App.jsx', added: 24, removed: 6, at: new Date().toISOString() });
+        step({ phase: 'end', toolUseId: 's2', ok: true, at: new Date().toISOString() });
+        step({ phase: 'start', toolUseId: 's3', tool: 'Bash', target: 'npm test — SNAP visual test', at: new Date().toISOString() });
+      }, 2400);
+      // Rendered and visible are different questions, and a screenshot only answers the
+      // second. This reports the first, so "the timeline is missing" can be told apart
+      // from "the timeline is behind a layout bug".
+      setTimeout(() => {
+        // Bring it forward first: Chromium throttles animations in an occluded window, and
+        // a paused entry animation reads exactly like a styling bug.
+        consoleWin?.show(); consoleWin?.focus();
+        consoleWin?.webContents.executeJavaScript(`(() => {
+          // Nothing else in a headless run would click this, and a panel that only opens
+          // under a real cursor is a panel nobody has actually seen open.
+          document.querySelector('[aria-label="Results"]')?.click();
+          const box = document.querySelector('.worklog');
+          const step = document.querySelector('.worklog .step');
+          const pick = (el) => { if (!el) return null; const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+            return { opacity: s.opacity, visibility: s.visibility, display: s.display, color: s.color,
+                     background: s.backgroundColor, h: Math.round(r.height), w: Math.round(r.width), top: Math.round(r.top) }; };
+          const s = box ? getComputedStyle(box) : null;
+          const anims = box && box.getAnimations ? box.getAnimations().map((a) => ({
+            name: a.animationName, state: a.playState, time: Math.round(a.currentTime || 0) })) : [];
+          return JSON.stringify({ steps: document.querySelectorAll('.worklog .step').length,
+            worklog: pick(box), stepText: step ? step.textContent.trim().slice(0,40) : null,
+            anim: s ? { name: s.animationName, dur: s.animationDuration, fill: s.animationFillMode,
+              play: s.animationPlayState, count: s.animationIterationCount } : null,
+            running: anims,
+            reduce: matchMedia('(prefers-reduced-motion: reduce)').matches });
+        })()`).then((r) => console.log('SNAP_STEPS', r)).catch((e) => console.log('SNAP_STEPS FAIL', e.message));
+      }, 4200);
+    }
     if (process.env.SNAP_WAKE) {
       setTimeout(() => {
         for (const window of [trayWin, mainWin]) window?.webContents.executeJavaScript("window.dispatchEvent(new CustomEvent('bk:wake-core'))").catch(() => {});
       }, 2600);
     }
+    // The console is where work actually happens, so it is captured too. Without it a
+    // visual change to the working surface could only be checked by opening the app by
+    // hand, which is how "it builds" gets mistaken for "it reads".
+    createConsoleWindow();
     setTimeout(async () => {
       try {
-        for (const [name, w] of [['tray', trayWin], ['main', mainWin]]) {
+        for (const [name, w] of [['tray', trayWin], ['main', mainWin], ['console', consoleWin]]) {
           const img = await w.webContents.capturePage();
           fs.writeFileSync(path.join(SNAP, `snap-${name}.png`), img.toPNG());
         }

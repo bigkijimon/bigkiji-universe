@@ -50,6 +50,16 @@ class NaturalTTSService extends EventEmitter {
   }
   async _start() {
     const cfg = this.settingsStore.get().audio;
+    // Off means off.
+    //
+    // `audio.enabled` has existed as a setting and this service never read it, so
+    // turning the voice off still started a Python process that loads a TTS model —
+    // 1.4GB of venv on disk and a model in memory, for a feature the owner had
+    // switched off. The only way to actually stop it was to not run BigKiji.
+    if (cfg.enabled === false) {
+      this._setStatus({ state: 'off', ready: false, engine: 'system-neural', detail: 'Voice is switched off in settings' });
+      return;
+    }
     if (!/^http:\/\/127\.0\.0\.1(?::\d+)?\//.test(`${cfg.ttsEndpoint}/`)) return;
     if (this.proc) return;
     // Reuse a healthy owner-started service. This avoids a duplicate model
@@ -82,6 +92,11 @@ class NaturalTTSService extends EventEmitter {
     this.starting = null;
     this._setStatus({ state: 'sleeping', ready: false, engine: 'system-neural', detail: 'Stopped after idle timeout' });
   }
+  /** Switching the voice off stops what is already running, not only what starts next. */
+  applySettings() {
+    if (this.settingsStore.get().audio?.enabled === false && this.proc) this.stop();
+  }
+
   async ensureReady(timeoutMs = 9000) {
     const existing = await this.health(500).catch(() => null);
     if (existing?.ready) return true;

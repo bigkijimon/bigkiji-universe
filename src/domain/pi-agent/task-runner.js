@@ -194,6 +194,27 @@ class TaskRunner extends EventEmitter {
     this.emit('log', { taskId: task.id, provider: task.provider, stream: isError ? 'stderr' : 'stdout', text });
   }
 
+  /**
+   * Forget finished work, oldest first, once there is enough of it.
+   *
+   * `this.tasks` had no delete anywhere: it held every task for the life of the
+   * process, and the daemon runs for days. Nothing that is still queued, running or
+   * waiting for the owner is ever dropped — the cap applies only to work that has
+   * already ended, and the most recent 200 of those are kept because /status and the
+   * report read them.
+   */
+  forgetOldTasks(keep = 200) {
+    const terminal = [...this.tasks.values()]
+      .filter((task) => ['completed', 'failed', 'blocked'].includes(task.status))
+      .sort((a, b) => String(a.finishedAt || a.updatedAt || '').localeCompare(String(b.finishedAt || b.updatedAt || '')));
+    for (const task of terminal.slice(0, Math.max(0, terminal.length - keep))) {
+      this.tasks.delete(task.id);
+      this.stepReaders?.delete?.(task.id);
+      this.completions?.delete?.(task.id);
+      this.emit('forgotten', { taskId: task.id });
+    }
+  }
+
   finish(task, code, extra = '', error = '') {
     if (task.status !== 'running') return;
     if (extra || error) task.error = `${task.error}\n${extra || error}`.trim();
@@ -210,6 +231,7 @@ class TaskRunner extends EventEmitter {
     this.stepReaders.delete(task.id);
     if (['qwen', 'ollama'].includes(task.provider)) this.qwenGuardrails.leave({
       durationMs: Math.max(0, new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()), timedOut: !!task.timedOut });
+    this.forgetOldTasks();
     knowledge.recordEvent(task.id, { type: 'finish', status: task.status, provider: task.provider,
       evidence: code === 0 ? 'process exited 0' : (error || task.error || `exit ${code}`) });
     this.emit('task', this.public(task));

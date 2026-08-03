@@ -55,6 +55,21 @@ class ModelStatusStore extends EventEmitter {
         metrics: { apiHealth: value ? (active ? 'active' : 'ready · sleeping') : 'offline' } });
     }
   }
+  /**
+   * Keep the task records the fleet numbers are computed from, and no more.
+   *
+   * This map had no delete: it held one row per task for the life of the process,
+   * and every fleet number is a walk of it. Running work is never dropped, because
+   * the numbers it feeds are the live ones.
+   */
+  forgetOldRecords(keep = 400) {
+    if (this.taskRecords.size <= keep) return;
+    const finished = [...this.taskRecords.entries()]
+      .filter(([, row]) => row.status !== 'running')
+      .sort((a, b) => String(a[1].updatedAt || '').localeCompare(String(b[1].updatedAt || '')));
+    for (const [id] of finished.slice(0, Math.max(0, this.taskRecords.size - keep))) this.taskRecords.delete(id);
+  }
+
   ingestTask(task = {}) {
     const id = providerId(task.provider || task.metadata?.provider || 'pi-agent-core');
     const terminal = ['completed', 'failed', 'blocked'].includes(task.status);
@@ -70,27 +85,43 @@ class ModelStatusStore extends EventEmitter {
       saved: measured ? Number(task.context?.tokensSaved || 0) : 0, files: Number(task.context?.includedFiles?.length || 0), command: task.startedAt ? 1 : 0,
       status: task.status, activeTask: task.promptPreview || task.id,
       piAgent: task.metadata?.agent || '', instruction: String(task.promptPreview || '').slice(0, 80), updatedAt: task.updatedAt });
-    const records = [...this.taskRecords.values()].filter((row) => row.modelId === id);
-    const activeRecords = records.filter((row) => row.status === 'running');
-    const active = activeRecords.length > 0;
-    const live = activeRecords.at(-1);
+    // One pass, not five.
+    //
+    // This filtered the whole record map and then reduced over the result four
+    // separate times, on every task event — five walks of a map that never shrinks,
+    // for every state change of every task. Over a long session that is quadratic in
+    // the number of tasks, and this store is touched more often than anything else
+    // in the daemon.
+    let active = false; let live = null; let last = null;
+    let promptTokens = 0; let completionTokens = 0; let filesHandled = 0; let executedCommands = 0;
+    let anyActive = false; let allFiles = 0; let savedForCore = 0; let savedForId = 0;
+    for (const row of this.taskRecords.values()) {
+      if (row.status === 'running') anyActive = true;
+      allFiles += row.files;
+      if (row.modelId === 'pi-agent-core') savedForCore += row.saved;
+      if (row.modelId !== id) continue;
+      last = row;
+      promptTokens += row.input; completionTokens += row.output;
+      filesHandled += row.files; executedCommands += row.command; savedForId += row.saved;
+      if (row.status === 'running') { active = true; live = row; }
+    }
     const status = active ? 'EXECUTING' : (terminal && ['failed', 'blocked'].includes(task.status) ? 'ERROR' : 'IDLE');
-    const promptTokens = records.reduce((sum, row) => sum + row.input, 0), completionTokens = records.reduce((sum, row) => sum + row.output, 0);
+    if (terminal) this.forgetOldRecords();
     const started = task.startedAt ? new Date(task.startedAt).getTime() : 0;
     const latencyMs = started ? Math.max(0, new Date(task.finishedAt || task.updatedAt || Date.now()).getTime() - started) : 0;
     this.touch(id, { available: true, connected: active, status, activeTask: active ? live?.activeTask : '',
-      piAgent: (live || records.at(-1))?.piAgent || this.models[id].piAgent || '',
+      piAgent: (live || last)?.piAgent || this.models[id].piAgent || '',
       instruction: active ? (live?.instruction || '') : '',
-      metrics: { promptTokens, completionTokens, tokensUsed: promptTokens + completionTokens, tokensSaved: this._savedFor(id),
+      metrics: { promptTokens, completionTokens, tokensUsed: promptTokens + completionTokens, tokensSaved: savedForId + (id === 'pi-agent-core' ? this.swarmSaved : 0),
         latencyMs, lastActive: task.updatedAt || new Date().toISOString(), apiHealth: status === 'ERROR' ? 'error' : (active ? 'active' : 'ready · sleeping'),
-        filesHandled: records.reduce((sum, row) => sum + row.files, 0), executedCommands: records.reduce((sum, row) => sum + row.command, 0) } });
+        filesHandled, executedCommands } });
     if (task.context) {
       const full = Number(task.context.fullContextTokens || 0), pruned = Number(task.context.prunedContextTokens || 0);
-      const anyActive = [...this.taskRecords.values()].some((row) => row.status === 'running');
+      // anyActive came from the same single pass above.
       this.touch('pi-agent-core', { connected: true, status: anyActive ? 'PRUNING' : 'IDLE',
-        metrics: { tokensSaved: this._savedFor('pi-agent-core'),
+        metrics: { tokensSaved: savedForCore + this.swarmSaved,
           prunedContextRatio: full ? Math.max(0, Math.min(100, (1 - pruned / full) * 100)) : null,
-          filesHandled: [...this.taskRecords.values()].reduce((sum, row) => sum + row.files, 0), lastActive: task.updatedAt } });
+          filesHandled: allFiles, lastActive: task.updatedAt } });
     }
   }
   ingestStats(stats = {}) {
