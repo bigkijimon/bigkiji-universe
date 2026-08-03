@@ -43,7 +43,7 @@ function guardedKind(modelKind, text) {
   if (proposed === 'TASK' || proposed === 'IDEA') return 'CHAT';
   return ['CHAT', 'CLARIFICATION'].includes(proposed) ? proposed : 'CHAT';
 }
-function fallback(text, kind = heuristicKind(text)) {
+function fallbackReply(text, kind = heuristicKind(text)) {
   const japanese = /[\u3040-\u30ff\u3400-\u9fff]/.test(text);
   if (kind === 'TASK') return { kind, reply: japanese ? `「${deriveTitle(text)}」を実行計画として整理しています。始める前に対象と手順を一緒に確認しましょう。決めておきたい条件はありますか？` : `I am organizing “${deriveTitle(text)}” into an execution plan. Let's review the scope and steps before starting—any constraints you want fixed up front?` };
   if (kind === 'IDEA') return { kind, reply: japanese
@@ -51,9 +51,21 @@ function fallback(text, kind = heuristicKind(text)) {
     : `That is worth keeping, so I saved “${deriveTitle(text)}” as a private local draft. Separating its core idea from decisions that can wait will make it easier to develop without interrupting the conversation.` };
   return { kind, reply: japanese ? `その話、もう少し聞かせてください。特に「${clean(text, 80)}」のどの部分がいちばん気になっていますか？` : `Tell me a little more about that—what part of “${clean(text, 80)}” matters most to you?` };
 }
+// The shape every caller is entitled to assume.
+//
+// This used to return `{kind, reply}` and nothing else, which was correct for
+// the one line that reads `.reply` and a guaranteed TypeError for the one that
+// reads `.ideas.length`. Ollama being slow — a queued request, an 8s stall, a
+// truncated body — put every turn through here, and any prompt containing
+// action language ("修正して", "implement") became `kind: 'TASK'`, which is the
+// branch daemon.js:243 walks. The owner pasted a ten-line spec and got five
+// HTTP 500s. A degraded answer has to be a whole answer.
+function fallback(text, kind = heuristicKind(text)) {
+  return normalize({ kind, reply: fallbackReply(text, kind).reply }, text);
+}
 function normalize(value, text) {
   const kind = guardedKind(value?.kind, text);
-  const base = fallback(text, kind);
+  const base = fallbackReply(text, kind);
   // 小型モデルは配列要素をオブジェクト({question:...}等)で返すことがある。
   // String(obj)="[object Object]" がpromptSpecまで流れていた実バグの修正。
   const asText = (item) => typeof item === 'object' && item !== null

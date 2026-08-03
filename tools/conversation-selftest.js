@@ -163,5 +163,32 @@ function ollama(value) {
   assert.strictEqual(wholeTurn.reply, 'One piece.');
   assert.strictEqual(wholeTurn.ttftMs, null, 'null means not measured, never zero');
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out');
+  // A degraded answer has to be a whole answer.
+  //
+  // `fallback()` returned `{kind, reply}`, which satisfies the line that prints
+  // the reply and crashes the line that reads `result.ideas.length`
+  // (daemon.js:243). Reaching it needs nothing exotic — Ollama queueing a second
+  // request is enough — and any prompt with action language in it lands on the
+  // TASK branch, which is the one that walks into `.ideas`. The owner pasted a
+  // ten-line spec, all ten lines fired as separate turns, nine of them stalled at
+  // the 8s ceiling, and five came back as HTTP 500.
+  const SHAPE = ['kind', 'reply', 'title', 'summary', 'ideas', 'requirements', 'decisions', 'openQuestions', 'todos', 'confidence'];
+  const dead = async () => { throw new Error('Ollama is down'); };
+  for (const text of ['READMEのタイポを修正してください', 'こんにちは', 'こういうアイデアはどうかな']) {
+    const turn = await new ConversationEngine({ fetchImpl: dead, model: 'qwen3.5:latest' })
+      .turn({ text, sessionId: `degraded-${text.slice(0, 4)}` });
+    assert.equal(turn.degraded, true, `${text}: this path must be reached`);
+    for (const key of SHAPE) assert.ok(key in turn, `${text}: a degraded turn dropped "${key}" (kind=${turn.kind})`);
+    for (const key of ['ideas', 'requirements', 'decisions', 'openQuestions', 'todos']) {
+      assert.ok(Array.isArray(turn[key]), `${text}: "${key}" must be an array, not ${typeof turn[key]}`);
+    }
+    // The exact expression daemon.js:243 evaluates. It threw here.
+    assert.doesNotThrow(() => (turn.ideas.length ? turn.ideas : (turn.kind === 'IDEA' ? [turn.summary || text] : [])));
+    assert.ok(turn.reply.length > 6, `${text}: and it still has to say something`);
+  }
+  // The heuristic decides the branch, so prove the crashing one is actually taken.
+  assert.equal((await new ConversationEngine({ fetchImpl: dead, model: 'q' })
+    .turn({ text: 'READMEのタイポを修正してください', sessionId: 'degraded-kind' })).kind, 'TASK');
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field');
 })().catch((error) => { console.error(error); process.exit(1); });

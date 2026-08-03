@@ -47,7 +47,12 @@ function fallbackSpec(ownerText) {
 }
 function specText(spec) {
   const p = spec.promptSpec || {};
-  return [`Goal: ${p.goal || ''}`, `Constraints: ${(p.constraints || []).join('; ')}`, `Steps: ${(p.steps || []).join(' -> ')}`, `Acceptance: ${(p.acceptance || []).join('; ')}`].join('\n');
+  // fallbackSpec always fills these with arrays; a model answering the same schema
+  // does not. `"constraints": "none"` is a reasonable thing for a small model to
+  // emit and used to throw here, which the caller swallowed into a bare
+  // "Fast route unavailable" — the actual cause never reached anyone.
+  const join = (value, sep) => (Array.isArray(value) ? value : [value].filter(Boolean).map(String)).join(sep);
+  return [`Goal: ${p.goal || ''}`, `Constraints: ${join(p.constraints, '; ')}`, `Steps: ${join(p.steps, ' -> ')}`, `Acceptance: ${join(p.acceptance, '; ')}`].join('\n');
 }
 
 class FastFacilitatorRouter {
@@ -91,4 +96,4 @@ class FastFacilitatorRouter {
   reset() { this.pending = null; }
 }
 
-module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt };
+module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText };

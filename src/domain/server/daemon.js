@@ -427,7 +427,12 @@ class DaemonEngine extends EventEmitter {
     const sessionId = this.runSessions.get(run.id); const normalized = String(action || '').toLowerCase();
     const inspected = redactPayload(String(text || ''));
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_DIRECTIVE');
-    this.sessions.append(sessionId, { type: 'directive', action: normalized, text: inspected.text });
+    // A run created before any conversation existed has no session to log against
+    // (planIdea only records the pair when a session is already open). Appending to
+    // an empty id threw "Invalid session id" *before* the approval was evaluated, so
+    // those runs could never be approved or aborted from any surface — the note went
+    // missing, and the owner lost the run with it.
+    if (sessionId) this.sessions.append(sessionId, { type: 'directive', action: normalized, text: inspected.text });
     if (normalized === 'accept') return this.coordinator.approve(run.id, { revision, planHash, disclosureHash, idempotencyKey });
     if (normalized === 'reject' || normalized === 'cancel') return this.coordinator.abort(run.id);
     if (normalized === 'edit' || normalized === 'custom') {
@@ -540,7 +545,10 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       const [relative, type] = staticFiles[url.pathname]; const file = path.join(engine.appRoot, relative);
       if (!fs.existsSync(file)) return json(res, 404, { error: 'asset not found' });
       const headers = { 'content-type': type, 'cache-control': url.pathname === '/' ? 'no-cache' : 'public, max-age=86400' };
-      res.writeHead(200, headers); fs.createReadStream(file).pipe(res); return;
+      // sendFile, not a bare pipe: the comment above it explains why, and this was
+      // the one static route still bypassing it. `npm ci` removing node_modules/three
+      // while a phone is mid-fetch is enough to take the whole daemon down.
+      res.writeHead(200, headers); sendFile(res, file); return;
     }
     try {
       if (req.method === 'POST' && url.pathname === '/api/mobile/pair') {

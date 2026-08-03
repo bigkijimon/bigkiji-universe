@@ -23,6 +23,21 @@ class DaemonClient extends EventEmitter {
     this.dataRoot = dataRoot; this.controller = null; this.connected = false; this.childPid = null;
   }
   get base() { return `http://${this.host}:${this.port}`; }
+  /**
+   * An appendable fd for the daemon's stdout and stderr, or null if the log
+   * directory cannot be opened — losing the log is bad, refusing to start the
+   * daemon over it would be worse.
+   * @returns {number|null}
+   */
+  openLog() {
+    try {
+      const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
+      const data = resolveDataRoot({ userData: defaultUserData() });
+      const logs = dataLayout(data.dataRoot, data.overrides).logsRoot;
+      fs.mkdirSync(logs, { recursive: true });
+      return fs.openSync(path.join(logs, 'daemon.log'), 'a');
+    } catch (_) { return null; }
+  }
   loadToken() {
     const { resolveDataRoot, dataLayout, defaultUserData } = require('../../core/data-root');
     const data = resolveDataRoot({ userData: defaultUserData() });
@@ -46,7 +61,14 @@ class DaemonClient extends EventEmitter {
     // standalone Node binary. ELECTRON_RUN_AS_NODE keeps the daemon headless
     // and prevents an orphaned duplicate Electron application process.
     const childEnv = daemonSpawnEnv(process.env, this.workspace, process.pid, process.versions, this.dataRoot);
-    const child = spawn(process.execPath, [entry], { cwd: this.appRoot, detached: true, stdio: 'ignore', env: childEnv });
+    // The daemon writes its crashes to stderr. With stdio ignored, every one of
+    // them went to /dev/null: five separate crashes shipped, and the only symptom
+    // anywhere was "did not become ready on port 8777". A detached process is
+    // exactly the one that most needs somewhere to write.
+    const log = this.openLog();
+    const child = spawn(process.execPath, [entry], { cwd: this.appRoot, detached: true,
+      stdio: log === null ? 'ignore' : ['ignore', log, log], env: childEnv });
+    if (log !== null) { try { fs.closeSync(log); } catch (_) {} }
     this.childPid = child.pid; child.unref();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {

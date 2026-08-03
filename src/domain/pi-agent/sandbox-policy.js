@@ -59,12 +59,27 @@ class SandboxPolicyResolver {
           allowRead: [], allowWrite: [], providers: [] };
       }
     }
-    const filesystem = raw.filesystem || {};
-    const allowRead = uniqueRoots([taskRoot, ...(filesystem.allowRead || [])])
+    // Hand-edited config, so every field is whatever the owner typed. A scalar where
+    // a list belongs used to throw out of the DaemonEngine constructor, which is not
+    // inside a try — the daemon then failed to start at all, and because it is spawned
+    // with stdio ignored, the only symptom anywhere was "did not become ready on port
+    // 8777". A malformed sandbox must degrade to the safe default, not to silence.
+    // A single value where a list belongs means one entry, not none.
+    //
+    // `{"models": {"allowPaid": "claude"}}` is someone narrowing the allowlist to
+    // one provider. Reading it as "not an array, therefore absent" would fall
+    // through to PAID and hand them all four — the exact opposite of what they
+    // wrote. So: a non-empty string is a one-element list, and only a genuinely
+    // absent field falls back to the default.
+    const list = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim())
+      : (typeof value === 'string' && value.trim() ? [value] : null));
+    if (!raw || typeof raw !== 'object') raw = {};
+    const filesystem = (raw.filesystem && typeof raw.filesystem === 'object') ? raw.filesystem : {};
+    const allowRead = uniqueRoots([taskRoot, ...(list(filesystem.allowRead) || [])])
       .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
-    const allowWrite = uniqueRoots(filesystem.allowWrite?.length ? filesystem.allowWrite : [taskRoot])
+    const allowWrite = uniqueRoots(list(filesystem.allowWrite) || [taskRoot])
       .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
-    const declared = raw.models?.allowPaid || raw.providers?.allow || PAID;
+    const declared = list(raw.models?.allowPaid) || list(raw.providers?.allow) || PAID;
     const providers = [...new Set(declared.map(String))].filter((provider) => this.paidAllowlist.has(provider));
     const resolved = { valid: true, localOnly: false, sandboxPath, allowRead, allowWrite, providers,
       source: sandboxPath ? 'sandbox' : 'safe-default', vaultRoot: this.vaultRoot, taskRoot };
