@@ -30,6 +30,19 @@ const WebSocket = require('ws');
   {
     const facts = engine.facts();
     assert.match(facts, /runs awaiting your approval: 1/, `a waiting run has to be reported: ${facts}`);
+    // "connected" means "has a task running right now". Reported as reachability it
+    // told the model no external provider was available while all four were
+    // authenticated and idle, so it answered questions about its own capability
+    // with the opposite of the truth.
+    assert.match(facts, /providers that can run work:/, `capability is what the model is asked about: ${facts}`);
+    assert.match(facts, /providers busy right now:/, 'and busy is a separate fact from usable');
+    assert.ok(!/models connected right now/.test(facts), 'the conflated line is gone');
+    // Counting sessions must not read them: facts() runs on every conversation turn
+    // and list(999) parses every event of every session file.
+    const daemonSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+    assert.ok(!/this\.sessions\.list\(999\)/.test(daemonSource), 'a count must not cost a full transcript scan');
+    assert.match(daemonSource, /this\.sessions\.count\(\)/);
+    assert.equal(typeof engine.sessions.count(), 'number');
     assert.ok(facts.includes(planned.run.id), 'by id, so the owner can act on it');
     assert.match(facts, /runs in progress: 0/, 'and zero is stated as zero, not omitted');
     assert.match(facts, new RegExp(`tasks: ${engine.runner.snapshot().length}\\b`));

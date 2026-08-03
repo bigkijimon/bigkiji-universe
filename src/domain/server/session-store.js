@@ -44,6 +44,21 @@ class SessionStore {
     return { ...seed, status: latest?.status || latest?.run?.status || seed.status, updatedAt: latest?.ts || seed.updatedAt, events };
   }
 
+  /**
+   * How many conversations are on record, without reading any of them.
+   *
+   * facts() called list(999) on every conversation turn just to print a count, and
+   * list() reads and JSON-parses every event of every session file to build it. The
+   * owner's main interaction paid for a full transcript scan per sentence.
+   * @returns {number}
+   */
+  count() {
+    try {
+      return fs.readdirSync(this.root, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && /^session-[\w-]+\.jsonl$/.test(entry.name)).length;
+    } catch (_) { return 0; }
+  }
+
   list(limit = 40) {
     return fs.readdirSync(this.root, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /^session-[\w-]+\.jsonl$/.test(entry.name))

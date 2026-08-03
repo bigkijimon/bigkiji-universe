@@ -579,7 +579,12 @@ class DaemonEngine extends EventEmitter {
     const tasks = this.runner.snapshot();
     const byStatus = tasks.reduce((acc, task) => ({ ...acc, [task.status]: (acc[task.status] || 0) + 1 }), {});
     const fleet = this.models.snapshot()?.models || [];
-    const connected = fleet.filter((model) => model.connected).map((model) => model.id);
+    // `connected` means "has a task running right now". Reported as reachability it
+    // told the conversation model that no external provider was available while all
+    // four were authenticated and idle — so it answered questions about what it
+    // could do with the opposite of the truth.
+    const usable = fleet.filter((model) => (model.available ?? model.connected)).map((model) => model.id);
+    const busy = fleet.filter((model) => model.connected).map((model) => model.id);
     const ideas = this.ideas.list(6);
     const lines = [
       `- workspace: ${this.workspace}`,
@@ -587,8 +592,9 @@ class DaemonEngine extends EventEmitter {
       `- runs in progress: ${active.length}`,
       `- tasks: ${tasks.length}${tasks.length ? ` (${Object.entries(byStatus).map(([status, count]) => `${count} ${status}`).join(', ')})` : ''}`,
       `- saved ideas: ${ideas.length}${ideas.length ? `; most recent: ${ideas.slice(0, 3).map((idea) => idea.title).join(' / ')}` : ''}`,
-      `- conversation sessions on record: ${this.sessions.list(999).length}`,
-      `- models connected right now: ${connected.length ? connected.join(', ') : 'none — no external provider is reachable, so only local work can run'}`,
+      `- conversation sessions on record: ${this.sessions.count()}`,
+      `- providers that can run work: ${usable.length ? usable.join(', ') : 'none — only local work can run'}`,
+      `- providers busy right now: ${busy.length ? busy.join(', ') : 'none'}`,
       `- to start a waiting run the owner types /approve in the bigkiji CLI`,
     ];
     return lines.join('\n');
