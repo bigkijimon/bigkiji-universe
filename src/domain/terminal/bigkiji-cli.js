@@ -128,7 +128,7 @@ function stateText(state, width = screenWidth()) {
 }
 function printState(state) { console.log(stateText(state)); }
 
-const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea'];
+const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint'];
 
 async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
@@ -207,7 +207,11 @@ async function repl(client) {
     // The footer's comment slot still shows every event, so the transcript can
     // afford to stay quiet: phase ticks and the daemon echoing back the prompt
     // the owner just typed are dropped by renderEvent rather than printed.
-    const text = data.reply || data.draft?.title || data.text || data.phase || data.status || data.action || '';
+    // The footer says what is happening. It used to reach for `data.reply` first,
+    // so it re-printed the answer that was already sitting in the transcript two
+    // lines above — in Japanese, clipped mid-word, next to an English status word.
+    // A status line that repeats the content is one line of screen doing no work.
+    const text = data.phase || data.status || data.action || data.draft?.title || data.text || '';
     if (text) comment = String(text).replace(/\s+/g, ' ').trim();
     if (event === 'run') { emitRun(data); paintFooter(); refreshPrompt(); return; }
     const lines = renderEvent(event, data, { ...view(), resultLines: 4 });

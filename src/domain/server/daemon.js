@@ -58,7 +58,7 @@ const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
-  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status',
+  conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint',
 });
 
 const INVENTORY_EXCLUDE = /(?:^|\/)(?:node_modules|\.git|\.obsidian|graphify-out|dist|recordings|\.next)(?:\/|$)/;
@@ -194,6 +194,18 @@ class DaemonEngine extends EventEmitter {
       this.publish('security', this.securityState);
     });
     this.coordinator.on('run', (run) => { this.piFleet.ingestRun(run); this.onRun(run); });
+    // The thirty-minute checkpoint. It is a report, not a kill — the owner asked for
+    // 「期限で区切って途中経過を出す」, so the run continues and says where it is.
+    this.coordinator.on('checkpoint', (report) => {
+      const sessionId = this.runSessions.get(report.runId);
+      const late = report.overdueMinutes ? ` (${report.budgetMinutes + report.overdueMinutes} min elapsed)` : '';
+      this.publish('commentary', { source: 'BigKiji', status: 'CHECKPOINT',
+        text: `${report.completed.length}/${report.completed.length + report.stillRunning.length} done${late}`
+          + (report.stillRunning.length ? ` — still running: ${report.stillRunning.join(', ')}` : '')
+          + ' — continue or /abort' });
+      this.publish('checkpoint', report);
+      if (sessionId) this.sessions.append(sessionId, { type: 'checkpoint', ...report });
+    });
     this.models.on('update', (snapshot) => this.publish('models', snapshot));
     this.piFleet.on('update', (snapshot) => this.publish('fleet', snapshot));
     setImmediate(() => this.refreshInventory().catch(() => {}));

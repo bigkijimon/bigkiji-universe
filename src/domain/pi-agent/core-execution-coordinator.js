@@ -42,6 +42,11 @@ const FALLBACKS = Object.freeze({
 const LOCAL_PROVIDER = 'qwen';
 const PAID_PROVIDERS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
+// The owner's working budget for one run, and how often it reports once it is past.
+// Thirty minutes is a checkpoint, not a kill: see _reportProgress.
+const RUN_BUDGET_MS = 30 * 60 * 1000;
+const CHECKPOINT_MS = 10 * 60 * 1000;
+
 // How long a plan is worth approving. The code it was planned against moves.
 const APPROVAL_TTL_MS = 60 * 60 * 1000;
 
@@ -71,7 +76,10 @@ function selectRoles(prompt, routing = {}) {
 
 function runId(prompt) { return `run-${Date.now().toString(36)}-${knowledge.hash(prompt)}`; }
 function publicRun(run) {
-  const { prompt, ...safe } = run;
+  // deadlineTimer is a live Timeout. Spreading it into a response body serialises a
+  // handle, a socket list and the callback's closure — and this object is published
+  // over WebSocket and SSE on every run event.
+  const { prompt, deadlineTimer, ...safe } = run;
   return { ...safe, promptPreview: String(prompt || '').slice(0, 180) };
 }
 
@@ -282,6 +290,8 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (run.status !== 'AWAITING_APPROVAL') return publicRun(run);
     if (expected.idempotencyKey) run.directiveKeys.push(String(expected.idempotencyKey));
     run.status = 'EXECUTING'; run.startedAt = run.startedAt || new Date().toISOString(); run.updatedAt = new Date().toISOString();
+    run.deadlineAt = new Date(new Date(run.startedAt).getTime() + RUN_BUDGET_MS).toISOString();
+    this._armDeadline(run);
     this._emit(run, 'dispatch');
     for (const assignment of run.assignments) {
       const task = this.taskRunner.get(assignment.taskId);
@@ -400,6 +410,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       { id: 'maker-checker', pass: run.assignments.some((item) => !item.write && item.status === 'completed'), evidence: 'Independent read-only checker assignment' },
     ];
     const verified = run.quality.checks.every((check) => check.pass);
+    clearTimeout(run.deadlineTimer); run.deadlineTimer = null;
     run.status = verified ? 'COMPLETED' : 'FAILED'; run.finishedAt = new Date().toISOString();
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
@@ -468,6 +479,45 @@ class CoreExecutionCoordinator extends EventEmitter {
       this.runs.delete(run.id);
     }
     return expired.length;
+  }
+
+  /**
+   * Stop at the deadline to report, not to kill.
+   *
+   * The owner's decision, 2026-08-03: thirty minutes is a checkpoint, not a
+   * guillotine — "期限で区切って途中経過を出す". Killing work at the half-hour mark
+   * throws away whatever it had finished; saying nothing at the half-hour mark is
+   * how a run silently eats an afternoon. The run keeps going and the owner is
+   * told what is done, what is not, and how far past the mark it is.
+   */
+  _armDeadline(run) {
+    clearTimeout(run.deadlineTimer);
+    const remaining = new Date(run.deadlineAt).getTime() - Date.now();
+    run.deadlineTimer = setTimeout(() => this._reportProgress(run), Math.max(1000, remaining));
+    run.deadlineTimer.unref?.();
+  }
+
+  /** What is done and what is not, at the deadline and every checkpoint after it. */
+  _reportProgress(run) {
+    if (['COMPLETED', 'FAILED', 'EXPIRED'].includes(run.status) || run.aborting) return;
+    const done = run.assignments.filter((item) => item.status === 'completed');
+    const running = run.assignments.filter((item) => ['running', 'dispatching', 'executing'].includes(String(item.status).toLowerCase()));
+    const overdueMs = Date.now() - new Date(run.deadlineAt).getTime();
+    const report = {
+      runId: run.id, status: run.status,
+      completed: done.map((item) => `${item.role} · ${item.provider}`),
+      stillRunning: running.map((item) => `${item.role} · ${item.provider}`),
+      overdueMinutes: Math.max(0, Math.round(overdueMs / 60000)),
+      budgetMinutes: Math.round(RUN_BUDGET_MS / 60000),
+    };
+    run.progressReports = [...(run.progressReports || []), report].slice(-6);
+    knowledge.recordEvent(run.id, { type: 'run-checkpoint', status: run.status, provider: run.leader,
+      evidence: `${done.length}/${run.assignments.length} done after ${report.budgetMinutes + report.overdueMinutes} minutes` });
+    this.emit('checkpoint', report);
+    this._emit(run, 'checkpoint');
+    // Keep reporting rather than going quiet again.
+    run.deadlineTimer = setTimeout(() => this._reportProgress(run), CHECKPOINT_MS);
+    run.deadlineTimer.unref?.();
   }
 
   _fallback(run, assignment) {

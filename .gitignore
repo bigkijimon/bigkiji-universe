@@ -9,3 +9,4 @@ tools/selftest-result-*.json
 .playwright-mcp/
 __pycache__/
 *.py[cod]
+src/core/build-info.json

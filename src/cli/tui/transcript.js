@@ -484,6 +484,18 @@ function renderEvent(event, data = {}, options = {}) {
       const failure = String(data.error || data.reason || '').trim();
       return [...head, ...list, ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
     }
+    case 'checkpoint': {
+      // Thirty minutes in, the owner is told where the run is rather than left to
+      // guess or find it finished an hour later.
+      const elapsed = (data.budgetMinutes || 0) + (data.overdueMinutes || 0);
+      const head = renderToolCall('checkpoint', `${data.completed?.length || 0}/${(data.completed?.length || 0) + (data.stillRunning?.length || 0)} done · ${elapsed}m`, base);
+      const body = [
+        ...(data.completed?.length ? [`done: ${data.completed.join(', ')}`] : []),
+        ...(data.stillRunning?.length ? [`still running: ${data.stillRunning.join(', ')}`] : ['nothing is running']),
+        'continue, or /abort to stop it',
+      ].join('\n');
+      return [...head, ...renderToolResult(body, { ...base, maxLines: 4 })];
+    }
     case 'idea': {
       const title = data?.draft?.title || data.ideaId || data.id || '';
       if (!data.action) return [];
