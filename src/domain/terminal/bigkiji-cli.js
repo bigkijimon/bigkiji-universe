@@ -75,7 +75,14 @@ function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HIN
 async function ensureClient() {
   const client = new DaemonClient({ appRoot: APP_ROOT }); const health = await client.health();
   if (!health?.ok) { const spinner = new KijiSpinner(); spinner.start(); try { await client.ensure(); spinner.stop(true); } catch (error) { spinner.stop(false); throw error; } }
-  else { client.connected = true; client.token = client.loadToken(); }
+  else { client.connected = true; client.token = client.loadToken(); client.versionGap(health); }
+  // An engine from a different build answers every request and gets every answer
+  // subtly wrong. It is still better than no engine, so this warns rather than
+  // refuses — but it does not let the mismatch stay invisible the way it did for
+  // a whole morning of already-fixed bugs.
+  client.on('version-mismatch', ({ ours, theirs }) => {
+    console.error(`${A.error}! core engine is v${theirs}, this cli is v${ours} — restart the engine (bigkiji /reload or kill the daemon) before trusting what you see${A.reset}`);
+  });
   return client;
 }
 

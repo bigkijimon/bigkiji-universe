@@ -1,4 +1,8 @@
 'use strict';
+
+// One residency window for every local model BigKiji loads. A default of -1 here
+// meant any caller that did not pass one pinned the model in VRAM forever.
+const { DEFAULT_KEEP_ALIVE: KEEP_ALIVE } = require('../pi-core/conversation-engine');
 // v13 ハイブリッドモデル・オーケストレーター（Task Dispatcher / Auto-Fallback基盤）
 // キーの実在を検知して「可用ティアだけ」で動的フォールバックチェーンを構築する。
 // 課金許可モデルはGLMのみ。Claude Codeは確定計画後に外部CLIで起動し、
@@ -45,10 +49,10 @@ function resolveModel(provider, text, role = '') {
 }
 
 // 役割定義（スペック§1①）。2段階モデル構造：
-// - 会話モデル（常駐）: qwen2.5:0.5b（keep_alive: -1）
+// - 会話モデル（常駐）: qwen2.5:0.5b（keep_alive: 60秒＝会話が続く間だけ常駐）
 // - 思考モデル（オンデマンド）: qwen3.5:35b-a3b（PiAgent起動時のみ）
 const TIERS = [
-  { id: 'ollama/qwen2.5:0.5b', need: 'ollama', role: '常駐 · Fast ACK · 会話', tag: 'CHAT', keepAlive: -1 },
+  { id: 'ollama/qwen2.5:0.5b', need: 'ollama', role: '常駐 · Fast ACK · 会話', tag: 'CHAT', keepAlive: KEEP_ALIVE },
   { id: `zai/${GLM_MODELS.flagship}`, need: 'zai', role: 'approved paid execution · reasoning', tag: 'GLM' },
   { id: 'ollama/qwen3.5:35b-a3b', need: 'ollama', role: 'PiAgentオンデマンド · 思考', tag: 'PIAGENT', keepAlive: 0 },
 ];
@@ -223,7 +227,7 @@ async function ollamaHealth(timeoutMs = 4000) {
 // without num_ctx left the next num_ctx:4096 request paying 3450ms, while warming with
 // the same num_ctx brought it to 254ms. A warmup that ignores this looks like it works
 // and does nothing, which is worse than not having one.
-async function warmModel(model, { keepAlive = -1, timeoutMs = 180000, fetchImpl = global.fetch, options = null,
+async function warmModel(model, { keepAlive = KEEP_ALIVE, timeoutMs = 180000, fetchImpl = global.fetch, options = null,
   endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434' } = {}) {
   const target = String(model || '').trim();
   if (!target) return { model: '', ok: false, ms: 0, error: 'no model configured' };

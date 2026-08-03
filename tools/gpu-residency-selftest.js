@@ -69,7 +69,7 @@ const read = (relative) => fs.readFileSync(path.join(__dirname, '..', relative),
   // --- no caller may hold the card indefinitely -----------------------------
   const callers = ['src/domain/server/daemon.js', 'src/domain/pi-agent/fast-api-router.js',
     'src/domain/pi-agent/task-cache.js', 'src/domain/pi-agent/embedding-store.js',
-    'src/domain/pi-core/conversation-engine.js'];
+    'src/domain/pi-agent/model-router.js', 'src/domain/pi-core/conversation-engine.js'];
   for (const file of callers) {
     const source = read(file);
     assert.ok(!/keep_alive:\s*-1/.test(source), `${file} must not pin a model in VRAM forever`);
@@ -86,6 +86,13 @@ const read = (relative) => fs.readFileSync(path.join(__dirname, '..', relative),
   assert.match(daemon, /url\.pathname === '\/api\/gpu\/release'/, 'the owner needs a way to free the card now');
   assert.match(daemon, /this\.warmedModel = null;[\s\S]{0,200}this\.conversation\.release\(\)/,
     'releasing must clear the warm marker, or the next turn assumes weights that are gone');
+  // A default of -1 is the same bug as a literal -1: warmModel is called from more
+  // than one surface, and the one that omits the option gets forever.
+  const { warmModel } = require('../src/domain/pi-agent/model-router');
+  const warmed = [];
+  await warmModel('ollama/probe', { fetchImpl: async (url, init) => { warmed.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; } });
+  assert.equal(warmed[0].keep_alive, '60s', 'warmModel must default to the shared window, not to forever');
+
   const cli = read('src/domain/terminal/bigkiji-cli.js');
   assert.match(cli, /\/api\/gpu\/release/, 'and a command to reach it from where the owner already is');
   assert.match(cli, /\/gpu off/, 'which has to be discoverable in the hint line');

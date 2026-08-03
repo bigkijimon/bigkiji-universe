@@ -55,7 +55,12 @@ const stt = require('../domain/server/speech-to-text');
 const facilitator = new fastRouter.FastFacilitatorRouter();
 // Single source of truth for the displayed version: package.json. Overridable for CI builds.
 const APP_VERSION = require('../../package.json').version;
-const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || `v${APP_VERSION}`;
+// The build identity is stamped into src/core/build-info.json at pack time by
+// tools/stamp-build.js. Reading it from the environment alone was the reason a
+// forty-five-commit-old .app displayed the same BUILD string as the source it
+// had drifted away from: a packaged app has no BIGKIJI_BUILD_ID to read.
+const BUILD_INFO = (() => { try { return require('./build-info.json'); } catch (_) { return null; } })();
+const APP_BUILD_ID = process.env.BIGKIJI_BUILD_ID || BUILD_INFO?.buildId || `v${APP_VERSION}-dev`;
 
 const SMOKE = !!process.env.SMOKE;
 const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面をPNG撮影して終了

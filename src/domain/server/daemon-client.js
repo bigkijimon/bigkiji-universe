@@ -53,9 +53,28 @@ class DaemonClient extends EventEmitter {
     try { const response = await fetch(`${this.base}/health`, { signal: ctrl.signal }); return response.ok ? response.json() : null; }
     catch (_) { return null; } finally { clearTimeout(timer); }
   }
+  /**
+   * Say so when the surface and the engine are not the same build.
+   *
+   * A 1.0.0 GUI packaged the previous afternoon talked to a 2.5.0 daemon running
+   * from source, for a whole morning, silently: whichever process reached port
+   * 8777 first won, and nothing anywhere compared the two. Every bug the owner
+   * reported had already been fixed in the half that was not on screen. This does
+   * not refuse the connection — an engine that answers is better than none — it
+   * refuses to let the mismatch stay invisible.
+   * @returns {{ours: string, theirs: string}|null}
+   */
+  versionGap(health) {
+    const theirs = String(health?.appVersion || '');
+    const ours = String(require('../../../package.json').version || '');
+    if (!theirs || !ours || theirs === ours) return null;
+    const gap = { ours, theirs };
+    this.emit('version-mismatch', gap);
+    return gap;
+  }
   async ensure({ timeoutMs = 8000 } = {}) {
     const current = await this.health();
-    if (current?.ok) { this.connected = true; this.token = this.loadToken(); return { ...current, started: false }; }
+    if (current?.ok) { this.connected = true; this.token = this.loadToken(); return { ...current, started: false, versionGap: this.versionGap(current) }; }
     const entry = path.join(this.appRoot, 'src', 'domain', 'server', 'daemon.js');
     // Inside Electron, process.execPath points at Electron.app rather than a
     // standalone Node binary. ELECTRON_RUN_AS_NODE keeps the daemon headless
@@ -73,7 +92,7 @@ class DaemonClient extends EventEmitter {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 160));
-      const state = await this.health(500); if (state?.ok) { this.connected = true; this.token = this.loadToken(); return { ...state, started: true }; }
+      const state = await this.health(500); if (state?.ok) { this.connected = true; this.token = this.loadToken(); return { ...state, started: true, versionGap: this.versionGap(state) }; }
     }
     throw new Error('BigKiji Core Engine did not become ready on port 8777');
   }
