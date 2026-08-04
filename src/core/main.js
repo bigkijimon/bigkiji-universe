@@ -1882,6 +1882,20 @@ app.whenReady().then(async () => {
     // timeline can be photographed without waiting on a live provider. Same pattern as
     // SNAP_SETTINGS and SNAP_WAKE above: nothing is stubbed in the renderer, the events
     // take the ordinary broadcast path, and the text says plainly that it is a test.
+    // SNAP_GALAXY=1 photographs the particle field as the subject rather than as the
+    // paper theme's watermark, and prints what the field measurably IS: frame rate at
+    // the tuner's own reading, particles against files, and one particle sampled twice
+    // a second apart. A still frame cannot tell a moving field from a frozen one, and
+    // three attempts at this have passed review as source and failed on screen.
+    if (process.env.SNAP_GALAXY) {
+      const probe = 'JSON.stringify(window.bkGalaxyProbe ? window.bkGalaxyProbe() : null)';
+      setTimeout(() => mainWin?.webContents.executeJavaScript("window.BKTheme && window.BKTheme.apply('studio')").catch(() => {}), 1500);
+      setTimeout(() => mainWin?.webContents.executeJavaScript(probe)
+        .then((r) => console.log('SNAP_GALAXY a', r)).catch((e) => console.log('SNAP_GALAXY FAIL', e.message)), 3300);
+      // Both samples land before the 5s capture below, or the process is gone.
+      setTimeout(() => mainWin?.webContents.executeJavaScript(probe)
+        .then((r) => console.log('SNAP_GALAXY b', r)).catch((e) => console.log('SNAP_GALAXY FAIL', e.message)), 4500);
+    }
     if (process.env.SNAP_STEPS) {
       // Four assignments, one per state the Canvas work card can be in — running,
       // completed, not-yet-started and failed. One assignment could only ever

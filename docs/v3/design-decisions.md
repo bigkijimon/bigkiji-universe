@@ -24,11 +24,15 @@ Rules for this file:
 | 9 | 2026-08-04 | Particle motion moves into the **vertex shader**; the per-frame JS loop goes | claude | `synapse.js:424-429` integrates every file on the CPU every frame. Stardust already does it on the GPU for 30k points, so the pattern exists in-repo |
 | 10 | 2026-08-04 | The particle design knowledge goes into `product-design/references/particle-fields.md`, not a new skill | claude | The owner's own rule, recorded in `skill-registry.js` CATEGORIES: one skill per category, and UI work folds into the big existing one |
 
+| 11 | 2026-08-04 | Per-agent progress has **no denominator**: running agents get an indeterminate gauge plus a count of finished steps, only terminal ones get a filled bar, `—` ≠ 0. The one real fraction (assignments finished / planned) sits in the card header | claude | A provider never announces how many tools it will use. Same rule as `progressOf()` and `pricing.js` |
+| 12 | 2026-08-04 | The particle motion becomes a bounded rotation about each file's **real parent-folder hub**, GPU-integrated. The spiral-arm relayout (angle categorical / radius continuous) is **not** done | claude | The owner's complaint was motion, smoothness, fps and file-binding — all four measured fixed. Relayout would move every particle and reset the spatial memory decision #8 protects. See below |
+
 ## Open, waiting on the owner
 
 | Question | Why it is not minor |
 |---|---|
 | Does the synapse show at all on the paper theme, or only on studio? | Needs a screenshot judgement. If the inverted field reads as dirt rather than a faint line drawing, the answer changes the whole look of the default theme |
+| Should each cloud become a flat spiral disc — arm = top-level directory, radius = depth or age — instead of the current spherical shell? | It is the layout the reference clip actually teaches (`reference-analysis.md` §2) and it would make a file's position *say* something. But it moves every particle once, and the whole value of deterministic placement is that it does not move. That trade is the owner's to make, not a minor decision |
 | Should a transient `model-unavailable` mark the model unusable in the capability registry? | Get it wrong and one GPU hiccup permanently blacklists the best local model |
 
 ## Measured facts worth not rediscovering
@@ -42,3 +46,14 @@ Rules for this file:
 - Short Japanese UI queries select **nothing**: 「ボタンのホバーを磨きたい」 → no skill,
   while the same request with more words selects `product-design`. `pruneCommonTerms()`
   leaves that skill only 16 distinguishing grams. Not yet fixed.
+- The file galaxy runs at **120 fps, perfStage 0**, with **2176 particles for 2176 files**
+  (measured through `window.bkGalaxyProbe()`, added 2026-08-04). Particle count has
+  equalled file count all along; the defect was the motion, not the binding.
+- The flow edges were **not** fabricated. An earlier note in
+  `product-design/references/particle-fields.md` said the `Math.random()` in the edge
+  builder meant the lines were fictional; the random draw only picks *which* real edge
+  carries a light, and both endpoints are a file and its own parent. Corrected in the
+  skill. The real defect was that the sample differed on every launch — seeded now.
+- `onBeforeCompile` on a Three.js material **requires `customProgramCacheKey`** here:
+  four PointsMaterials in synapse.js share identical parameters, and without a distinct
+  key the hub material can be given the leaf material's program and lose its attributes.

@@ -264,6 +264,123 @@ function buildFileGalaxy(files) {
   for (const key in groups) buildCloud(key, groups[key]);
 }
 
+// ---------- ファイル粒子の運動（GPU積分） ----------
+//
+// The owner's words: 「全ての粒子が重力にそって動き回っていなくてとてもチープ」.
+// Both halves of that were true, and they are separate defects.
+//
+// CHEAP. Every particle used to oscillate on its own hashed phase, on three axes
+// at once, reading nothing about any other particle. Independent wobble at similar
+// amplitudes is the definition of noise, so the field looked like static confetti
+// no matter how many points were in it. What reads as gravity is not amplitude but
+// COHERENCE: motion perpendicular to a shared centre, with everything around that
+// centre going the same way. So a file now swings about its real parent-folder hub,
+// on that hub's own axis, and a folder's files sweep together.
+//
+// SLOW. That oscillation ran on the CPU for every file on every frame, and then
+// re-uploaded the whole position buffer. Here the GPU integrates from one uniform
+// and the buffer is uploaded once, which is the difference between a point budget
+// and a frame budget (docs/v3/06-rendering.md §2).
+//
+// The deterministic base position is NOT replaced — it is the axis this rotates
+// around, and at uMotion = 0 the scene is exactly the layout hash01(path) chose.
+// That is the property the owner navigates by ("my blog files are over there"), and
+// the swing stays inside the bound the spec sets for any added force (§3.3).
+const galaxyUniforms = { uTime: { value: 0 }, uMotion: { value: 1 } };
+const ORBIT_GLSL = /* glsl */ `
+uniform float uTime; uniform float uMotion;
+attribute vec3 aHub;    // the file's real parent-folder hub, in cloud-local space
+attribute vec3 aOrbit;  // phase, angular speed, swing amplitude in radians
+vec3 bkOrbit() {
+  vec3 r = position - aHub;
+  if (uMotion < 1e-4 || dot(r, r) < 1e-8) return position;
+  // Rodrigues about the hub's own direction. Files under one hub therefore share
+  // an axis and sweep as one body; a hub at the origin falls back to +Y, which is
+  // the disc rotation the galaxy reference shows (docs/reference-analysis.md §2).
+  float a = aOrbit.z * uMotion * sin(uTime * aOrbit.y + aOrbit.x);
+  vec3 axis = normalize(aHub + vec3(0.0, 0.31, 0.0));
+  vec3 rot = r * cos(a) + cross(axis, r) * sin(a) + axis * dot(axis, r) * (1.0 - cos(a));
+  float breath = 1.0 + aOrbit.z * uMotion * 0.42 * sin(uTime * aOrbit.y * 0.61 + aOrbit.x * 1.7);
+  return aHub + rot * breath;
+}`;
+
+/**
+ * The same swing, in JS, for the handful of things that need a world position on the
+ * CPU — the hierarchy arcs, the burst targets, the camera focus.
+ *
+ * It must stay identical to bkOrbit() above or the arcs detach from the particles
+ * they are drawn to. It is called at the arcs' own throttled cadence (~9/s), not per
+ * frame, which is why moving the per-frame work to the GPU actually bought something.
+ */
+function orbitPoint(base, j, hub, orbit, time, motion, out, k) {
+  const rx = base[j] - hub[j], ry = base[j + 1] - hub[j + 1], rz = base[j + 2] - hub[j + 2];
+  if (motion < 1e-4 || (rx * rx + ry * ry + rz * rz) < 1e-8) {
+    out[k] = base[j]; out[k + 1] = base[j + 1]; out[k + 2] = base[j + 2];
+    return;
+  }
+  const a = orbit[j + 2] * motion * Math.sin(time * orbit[j + 1] + orbit[j]);
+  let ax = hub[j], ay = hub[j + 1] + 0.31, az = hub[j + 2];
+  const al = Math.hypot(ax, ay, az) || 1;
+  ax /= al; ay /= al; az /= al;
+  const c = Math.cos(a), s = Math.sin(a), d = (ax * rx + ay * ry + az * rz) * (1 - c);
+  const px = rx * c + (ay * rz - az * ry) * s + ax * d;
+  const py = ry * c + (az * rx - ax * rz) * s + ay * d;
+  const pz = rz * c + (ax * ry - ay * rx) * s + az * d;
+  const breath = 1 + orbit[j + 2] * motion * 0.42 * Math.sin(time * orbit[j + 1] * 0.61 + orbit[j] * 1.7);
+  out[k] = hub[j] + px * breath;
+  out[k + 1] = hub[j + 1] + py * breath;
+  out[k + 2] = hub[j + 2] + pz * breath;
+}
+
+/** Adds the orbit to a stock PointsMaterial without giving up size, LOD opacity,
+ *  vertexColors, the round sprite or additive blending — all of which the rest of
+ *  this file sets by hand every frame and none of which a bare ShaderMaterial has. */
+function attachOrbit(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = galaxyUniforms.uTime;
+    shader.uniforms.uMotion = galaxyUniforms.uMotion;
+    shader.vertexShader = ORBIT_GLSL + shader.vertexShader
+      .replace('#include <begin_vertex>', 'vec3 transformed = bkOrbit();');
+  };
+  material.customProgramCacheKey = () => 'bk-orbit';
+  return material;
+}
+
+/**
+ * What the galaxy actually is, right now, measured rather than claimed.
+ *
+ * Particle work cannot be reviewed from source and barely from a screenshot: a still
+ * frame cannot tell a moving field from a frozen one, and neither can tell whether a
+ * point corresponds to a file. This reports the frame rate the tuner is really seeing,
+ * the particle count against the file count, and one particle's position so a caller
+ * can sample it twice and prove the motion. Read-only; no scene state is touched.
+ */
+window.bkGalaxyProbe = () => {
+  const clouds = Object.entries(fileClouds).map(([key, cloud]) => ({
+    key,
+    files: cloud.files.length,
+    particles: cloud.points.geometry.attributes.position.count,
+    hasOrbit: !!cloud.points.geometry.attributes.aOrbit,
+  }));
+  const first = Object.values(fileClouds)[0];
+  return {
+    fps,
+    perfStage,
+    uMotion: galaxyUniforms.uMotion.value,
+    uTime: Number(galaxyUniforms.uTime.value.toFixed(3)),
+    clouds,
+    files: galaxyState.count,
+    particles: clouds.reduce((sum, cloud) => sum + cloud.particles, 0),
+    // The base the GPU is orbiting around, and the CPU's mirror of where that
+    // particle currently is. Equal only when uMotion is 0.
+    sample: first ? {
+      base: [first.basePos[0], first.basePos[1], first.basePos[2]].map((n) => Number(n.toFixed(4))),
+      drift: [first.drift[0], first.drift[1], first.drift[2]].map((n) => Number(n.toFixed(4))),
+      hub: [first.hubPos[0], first.hubPos[1], first.hubPos[2]].map((n) => Number(n.toFixed(4))),
+    } : null,
+  };
+};
+
 // 1つの雲＝1惑星（or Core）の足元のディレクトリ階層ミニ銀河（ローカル座標・grpごと惑星に追従）
 function buildCloud(key, files) {
   const isCore = key === 'core';
@@ -303,10 +420,16 @@ function buildCloud(key, files) {
 
   const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
   const basePos = new Float32Array(N * 3), motion = new Float32Array(N * 3);
+  // The centre each file swings around, uploaded once. It is the file's own parent
+  // folder — real structure, not a decorative attractor — so a folder is legible as
+  // a body of particles that move together.
+  const hubPos = new Float32Array(N * 3);
+  const drift = new Float32Array(N * 3);
   const leafHub = new Array(N);
   files.forEach((f, i) => {
     const h = hubOf(f);
     leafHub[i] = h;
+    if (h) hubPos.set([h.x, h.y, h.z], i * 3);
     // 葉は最外殻へFibonacci風に分散。階層は筋繊維で読み、座標自体は
     // 垂直方向に並べない。わずかな扁平率で銀河ディスクのリップル感を残す。
     const ordered = rank[i] * Math.max(N - 1, 1);
@@ -314,10 +437,14 @@ function buildCloud(key, files) {
     const { x, y, z } = leafPoint;
     pos.set([x, y, z], i * 3);
     basePos.set([x, y, z], i * 3);
+    // The third slot changed meaning with the motion: it was a linear displacement in
+    // world units and is now a swing in RADIANS about the hub. 0.09–0.22 rad over a
+    // hub-to-leaf radius of ~0.4–1.2 R gives an arc of the same order as the old
+    // wobble, so the field did not get busier — it got organised.
     motion.set([
       hash01(f.p + ':phase') * Math.PI * 2,
       0.11 + hash01(f.p + ':speed') * 0.19,
-      R * (0.035 + hash01(f.p + ':drift') * 0.045),
+      0.09 + hash01(f.p + ':drift') * 0.13,
     ], i * 3);
     const c = new THREE.Color((COMPANY_META[f.c] || [0, '#8fa89c'])[1]);
     c.lerp(new THREE.Color('#ffffff'), 0.06 + 0.22 * (1 - rank[i])); // ガス色主体・新しいものだけ微白熱（白い砂粒化の禁止）
@@ -328,10 +455,18 @@ function buildCloud(key, files) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const ptsMat = new THREE.PointsMaterial({
+  geo.setAttribute('aHub', new THREE.BufferAttribute(hubPos, 3));
+  geo.setAttribute('aOrbit', new THREE.BufferAttribute(motion, 3));
+  // The bounding sphere is measured from the base positions, which are now the only
+  // ones the CPU uploads; the swing happens after culling has already decided. Widen
+  // it by the largest displacement the shader can produce or particles at the rim
+  // blink out as they swing past the edge.
+  geo.computeBoundingSphere();
+  if (geo.boundingSphere) geo.boundingSphere.radius += R * 0.34;
+  const ptsMat = attachOrbit(new THREE.PointsMaterial({
     size: 0.062, map: roundTex, vertexColors: true, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false,
-  });
+  }));
   const points = new THREE.Points(geo, ptsMat);
   points.userData = { files, key };
   grp.add(points);
@@ -373,19 +508,26 @@ function buildCloud(key, files) {
   const FN = Math.min(Math.max(40, N), 220);
   const fpos = new Float32Array(FN * 3);
   const fedges = [];
+  // Which edges carry a travelling light is sampled, and the sample is now seeded from
+  // the path rather than Math.random(). Every endpoint here is a real relationship —
+  // a file to its own parent folder, a folder to its own parent — so the lines do not
+  // lie; but with Math.random() the same vault drew a different set on every launch,
+  // which quietly undoes the deterministic placement everything else here protects.
   for (let i = 0; i < FN; i++) {
+    const seed = `${key}:flow:${i}`;
     let a, b;
-    if (Math.random() < 0.7 || !hubKeys.length) { // 葉⇄ハブ
-      const li = (Math.random() * N) | 0;
+    if (hash01(`${seed}:kind`) < 0.7 || !hubKeys.length) { // 葉⇄ハブ
+      const li = Math.min(N - 1, (hash01(`${seed}:leaf`) * N) | 0);
       a = new THREE.Vector3(pos[li * 3], pos[li * 3 + 1], pos[li * 3 + 2]);
       b = (leafHub[li] || center).clone();
     } else { // 幹（ハブ⇄親）
-      const hk = hubKeys[(Math.random() * hubKeys.length) | 0];
+      const hk = hubKeys[Math.min(hubKeys.length - 1, (hash01(`${seed}:hub`) * hubKeys.length) | 0)];
       const h = hub[hk];
       const pk = h.userData.depth === 2 ? hk.split('/').slice(0, -1).join('/') : null;
       a = h.clone(); b = (pk && hub[pk] ? hub[pk] : center).clone();
     }
-    fedges.push({ a, b, sp: 0.08 + Math.random() * 0.3, ph: Math.random(), dir: Math.random() < 0.5 ? 1 : -1 });
+    fedges.push({ a, b, sp: 0.08 + hash01(`${seed}:sp`) * 0.3, ph: hash01(`${seed}:ph`),
+      dir: hash01(`${seed}:dir`) < 0.5 ? 1 : -1 });
   }
   const fgeo = new THREE.BufferGeometry();
   fgeo.setAttribute('position', new THREE.BufferAttribute(fpos, 3));
@@ -436,8 +578,9 @@ function buildCloud(key, files) {
     membrane.addStrand([h.clone(), mid, leaf], 1);
   }
 
+  drift.set(basePos);
   fileClouds[key] = { grp, points, ptsMat, rootMat, rootPoint, hubMat, files, leafHub, center,
-    flow, flowMat, fpos, fedges, membrane, boost: 0, basePos, motion, liveSegments,
+    flow, flowMat, fpos, fedges, membrane, boost: 0, basePos, motion, hubPos, drift, liveSegments,
     liveEdges, liveEdgePositions, liveNetwork, liveNetworkMat, liveNetworkNext: 0 };
 
   // 常設シナプス束（v11全結合）: 雲の根→担当BHを繋ぐミニ筋繊維束。LODで消えないため、
@@ -450,18 +593,20 @@ function buildCloud(key, files) {
 }
 
 function updateFileCloudDrift(cloud, time, now, opacity, reduced) {
-  const positions = cloud.points.geometry.attributes.position.array;
-  for (let index = 0; index < cloud.files.length; index++) {
-    const j = index * 3; const phase = cloud.motion[j];
-    const speed = reduced ? 0 : cloud.motion[j + 1]; const amp = reduced ? 0 : cloud.motion[j + 2];
-    positions[j] = cloud.basePos[j] + Math.sin(time * speed + phase) * amp;
-    positions[j + 1] = cloud.basePos[j + 1] + Math.cos(time * speed * 0.73 + phase * 1.31) * amp * 0.72;
-    positions[j + 2] = cloud.basePos[j + 2] + Math.sin(time * speed * 0.57 + phase * 1.87) * amp;
-  }
-  cloud.points.geometry.attributes.position.needsUpdate = true;
   cloud.liveNetworkMat.opacity = Math.max(0.035, opacity * 0.13) * (1 + cloud.boost * 0.55);
   if (now < cloud.liveNetworkNext) return;
   cloud.liveNetworkNext = now + (reduced ? 260 : 110);
+  // The particles themselves are integrated on the GPU (bkOrbit). This mirror exists
+  // only for the things the CPU has to draw between them — the hierarchy arcs below,
+  // the burst targets, the camera focus — so it runs at the arcs' cadence, roughly
+  // nine times a second, instead of sixty. The per-frame loop that used to be here,
+  // plus the whole-buffer re-upload it forced, is what capped the frame rate.
+  const positions = cloud.drift;
+  const motionScale = reduced ? 0 : 1;
+  for (let index = 0; index < cloud.files.length; index++) {
+    const j = index * 3;
+    orbitPoint(cloud.basePos, j, cloud.hubPos, cloud.motion, time, motionScale, positions, j);
+  }
   let cursor = 0;
   for (const edge of cloud.liveEdges) {
     const j = edge.index * 3;
@@ -492,7 +637,7 @@ function flashFile(rel) {
   const cl = fileClouds[ref.key];
   if (!cl) return;
   const f = cl.files[ref.i];
-  const p = cl.points.geometry.attributes.position.array;
+  const p = cl.drift;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
     map: dotTex, color: (COMPANY_META[f.c] || [0, '#ffffff'])[1],
     blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 1,
@@ -502,10 +647,15 @@ function flashFile(rel) {
   cl.grp.add(sp); // 雲と一緒に惑星へ追従
   fileFlashes.push({ sp, t0: performance.now() });
 }
+// `cloud.drift`, not the position attribute, everywhere the CPU needs where a particle
+// currently IS. The attribute holds the base position and is uploaded once; the shader
+// adds the swing on the GPU, so reading the attribute back would give the layout the
+// particle is orbiting rather than the particle. The mirror is refreshed with the
+// hierarchy arcs (~9/s), which is well inside a pointer's or a camera move's tolerance.
 function fileWorldPoint(rel) {
   const ref = galaxyState.map[rel]; if (!ref) return null;
   const cloud = fileClouds[ref.key]; if (!cloud) return null;
-  const positions = cloud.points.geometry.attributes.position.array;
+  const positions = cloud.drift;
   const point = new THREE.Vector3(positions[ref.i * 3], positions[ref.i * 3 + 1], positions[ref.i * 3 + 2]);
   return cloud.grp.localToWorld(point);
 }
@@ -1217,7 +1367,7 @@ function emitBurst(key, { tokens = 0 } = {}) {
   const cl = canon ? fileClouds.core : (fileClouds[key] || fileClouds.core);
   if (!cl) return;
   const color = canon ? '#FFE81F' : (nd ? window.AGENT_META[key].color : '#3fe3a8');
-  const arr = cl.points.geometry.attributes.position.array;
+  const arr = cl.drift;
   const total = arr.length / 3;
   // 放出量＝関係の濃さ（実イベント累積）+ このターンの実測トークン
   const n = Math.min(3 + Math.round(Math.log2(relStrength(key) + 1)) + Math.round(tokens / 800), 12);
@@ -1244,7 +1394,7 @@ function emitBurstTo(key, rel) {
   if (!ref || !nd || reducedMq.matches || perfStage === 2) return;
   const cl = fileClouds[ref.key];
   if (!cl) return;
-  const arr = cl.points.geometry.attributes.position.array;
+  const arr = cl.drift;
   _bv.set(arr[ref.i * 3], arr[ref.i * 3 + 1], arr[ref.i * 3 + 2]);
   cl.grp.localToWorld(_bv);
   const bnow = performance.now();
@@ -1810,7 +1960,7 @@ function setFocus(key, i) {
   clearFocus();
   const cl = fileClouds[key];
   if (!cl) return;
-  const p = cl.points.geometry.attributes.position.array;
+  const p = cl.drift;
   const leaf = new THREE.Vector3(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
   const hubV = (cl.leafHub[i] || cl.center).clone();
   const bend = leaf.clone().lerp(hubV, 0.52).add(new THREE.Vector3(0, 0.12, 0.08));
@@ -2120,7 +2270,7 @@ resize();
 const cameraFocus = new SmoothFocusController(camera, controls, { home: new THREE.Vector3(0, 0, 0), homeDistance: 11.5 });
 function focusCloud(key, index, deep = false) {
   const cl = fileClouds[key]; if (!cl) return;
-  const p = cl.points.geometry.attributes.position.array;
+  const p = cl.drift;
   const worldPoint = new THREE.Vector3(p[index * 3], p[index * 3 + 1], p[index * 3 + 2]);
   cl.grp.localToWorld(worldPoint);
   hybridOrbit.select(key);
@@ -2259,6 +2409,12 @@ const clock = new THREE.Clock();
   museumO = THREE.MathUtils.damp(museumO, dist < 5.5 ? 1 : 0, 5, delta);
   const sysO = 1; // 惑星系は常時表示
   const gO = Math.max(galaxyO, 0.12); // 遠景でも「オーブの下に粒子」の気配
+  // Two numbers, once per frame, for every file particle in the vault — this is the
+  // whole per-frame cost of the galaxy's motion now. uMotion is a switch rather than a
+  // fade: at 0 every particle sits exactly on its deterministic hash01(path) position,
+  // so reduced-motion and the lowest LOD stage show the same layout, held still.
+  galaxyUniforms.uTime.value = t;
+  galaxyUniforms.uMotion.value = (reduced || perfStage >= 2) ? 0 : 1;
   for (const k in fileClouds) {
     const cl = fileClouds[k];
     // ホバーレンズ: 触れた雲は拡大し、糸と粒が明るくなる（解像度を上げる）
