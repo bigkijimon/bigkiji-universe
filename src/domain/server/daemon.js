@@ -81,6 +81,28 @@ function effectiveMode(req, requested) {
   return isLoopback(req) ? wanted : 'plan';
 }
 
+// A run that has finished is history, not a phase.
+//
+// `phase` is what the CLI footer's status word and phase vector are drawn from, and it
+// was `snapshot().at(-1)?.status` — the status of the newest run, finished or not. So a
+// fresh REPL, before the owner had asked for anything, opened reading
+//
+//     ⣛  failed  —          phase vector  ○1 preflight  ○2 execute  ○3 verify    0%
+//
+// because the last run of some earlier session had failed. Measured in a real pty on
+// 2026-08-05, and visible in the owner's own screenshot the same day; `/runs` on the
+// same screen correctly said `0 waiting`, so the footer and the command disagreed.
+//
+// The current phase is the newest run that can still move. AWAITING_APPROVAL counts —
+// it is waiting on the owner, which is very much a current state — and the terminal ones
+// do not. With nothing live, the honest word is IDLE, the same rule as `—` ≠ 0 in the
+// work card: an absent phase is not a failed one.
+const TERMINAL_RUN = Object.freeze(['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED']);
+function currentPhase(runs) {
+  const live = (Array.isArray(runs) ? runs : []).filter((run) => !TERMINAL_RUN.includes(run?.status));
+  return live.at(-1)?.status || 'IDLE';
+}
+
 const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
@@ -883,7 +905,7 @@ class DaemonEngine extends EventEmitter {
       // actually did). They are different questions and only the first was answered.
       models: { ...this.models.snapshot(), performance: this.coordinator.registry?.snapshot?.().performance || { models: {} } },
       inventory: this.inventory, tools: this.tools, security: this.securityState,
-      conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: this.coordinator.snapshot().at(-1)?.status || 'IDLE' };
+      conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: currentPhase(this.coordinator.snapshot()) };
   }
   shutdown() {
     clearInterval(this.inventoryTimer); clearInterval(this.toolTimer);
@@ -1180,4 +1202,4 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
 
 if (require.main === module) startDaemon();
 
-module.exports = { DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES };
+module.exports = { DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };

@@ -68,6 +68,33 @@ Rules for this file:
   four PointsMaterials in synapse.js share identical parameters, and without a distinct
   key the hub material can be given the leaf material's program and lose its attributes.
 
+## The 2026-08-05 real-behaviour pass — what driving it actually found
+
+Run in a real pty (`node-pty`, the CLI under `/bin/sh tools/bigkiji`) and a real Electron
+window, because none of this is visible to `npm test`.
+
+| # | Checked | Result |
+|---|---|---|
+| 1 | `/runs` lists what waits | `runs(0 waiting)` · `nothing is waiting for approval` |
+| 2 | default mode is `ask` | footer reads `mode: ask` on a cold start |
+| 3 | modes do not loosen from the LAN | `effectiveMode` (daemon-selftest) — loopback only |
+| 4 | five state questions in a row are never answered by a model | **4 of 5.** 「承認待ちはありますか？」 fell through — fixed |
+| 5 | the footer survives 63 columns | compact chips, meter, both rules and the mode row all intact |
+| 6 | Ctrl-C | clean exit — `\e[?2004l\e[r` restores the scroll region |
+| 7 | the GUI approval carries role, question and reads | screenshot: hashes + rev, ⚠未回答, ⚠下調べ 0/2, per-provider reads |
+| 8 | `task:step` reaches the work card | 4 rows; the running agent's cat animates, the waiting one's is `paused` |
+| 9 | a run's changed files are listed | `変更したファイル 2 · main.html +61 −4 · App.jsx +24 −6` |
+
+Two defects came out of it, both invisible to the suite and both now guarded:
+
+- **The footer said `failed` before the owner had asked for anything.** `phase` was the
+  newest run's status whether or not it had finished, so an earlier session's failure
+  greeted every new REPL — while `/runs` on the same screen said `0 waiting`. A finished
+  run is history, not a phase; with nothing live the word is `IDLE`.
+- **「承認待ちはありますか？」 was handed to the model.** The daemon already knows the
+  answer exactly. Asking a model to report state is the bet that produced 「順調に進んで
+  います」 over two untouched runs.
+
 ## Answered since (2026-08-05)
 
 | Question | Answer | Who |

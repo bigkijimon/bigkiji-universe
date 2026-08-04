@@ -265,7 +265,12 @@ function ollama(value) {
 
     // The four the owner actually typed, plus the shapes around them.
     for (const asked of ['ほんとに動いてる？', '仕事できてる？', '進んでる？', 'さぎょうが遅くない？',
-      'どうなってる？', '何してるの', 'どこまで進んだ？', 'status', 'any progress?', 'is it still running']) {
+      'どうなってる？', '何してるの', 'どこまで進んだ？', 'status', 'any progress?', 'is it still running',
+      // Found by driving the real CLI on 2026-08-05 — five state questions in a row,
+      // four intercepted and this one handed to the model. `/runs` answers it exactly,
+      // so the daemon knew and the model was asked anyway.
+      '承認待ちはありますか？', '承認待ちのものある？', 'anything waiting for approval?',
+      'is anything pending?']) {
       assert.ok(isStatusQuestion(asked), `a status question must be intercepted: ${asked}`);
     }
 
@@ -275,7 +280,9 @@ function ollama(value) {
     for (const kept of ['予約フローの進捗管理機能を作ってください', '進捗バーを実装して',
       'ページの表示が遅い問題を調査して', 'ログの読み込みが遅い原因を調べてほしい',
       '作業工程を可視化する機能を追加して', 'こんにちは', '今日は寒いね',
-      'school フォルダを分析して改善点を洗い出してください']) {
+      'school フォルダを分析して改善点を洗い出してください',
+      // The words the new approval pattern matches, in sentences that are real work.
+      '承認画面を作って', '承認待ちリストのUIを実装してほしい', '承認フローを設計して']) {
       assert.ok(!isStatusQuestion(kept), `this is not a status question and must not be stolen: ${kept}`);
     }
 

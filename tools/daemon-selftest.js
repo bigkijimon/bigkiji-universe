@@ -131,6 +131,29 @@ const WebSocket = require('ws');
   assert.match(daemonSource, /async _turn\(text, \{ sessionId = '', mode = 'plan' \}/,
     'and the default for a caller that names no mode is the one that waits');
 
+  // ---- the phase the footer draws ------------------------------------------
+  // `phase` was the newest run's status whether or not that run had finished, so a
+  // fresh REPL opened reading `failed` because some earlier session's last run had.
+  // Measured in a real pty on 2026-08-05; `/runs` on the same screen said `0 waiting`,
+  // which is how the two disagreed in front of the owner.
+  {
+    const { currentPhase } = require('../src/domain/server/daemon');
+    assert.equal(currentPhase([]), 'IDLE', 'no runs at all is idle');
+    assert.equal(currentPhase(undefined), 'IDLE', 'and so is no snapshot');
+    assert.equal(currentPhase([{ status: 'FAILED' }]), 'IDLE',
+      'a run that failed is history — this is the one that shipped as "failed" on an empty prompt');
+    assert.equal(currentPhase([{ status: 'COMPLETED' }, { status: 'FAILED' }]), 'IDLE',
+      'and so is a whole session of finished runs');
+    assert.equal(currentPhase([{ status: 'FAILED' }, { status: 'EXECUTING' }]), 'EXECUTING',
+      'a live run is the phase, whatever came before it');
+    assert.equal(currentPhase([{ status: 'EXECUTING' }, { status: 'FAILED' }]), 'EXECUTING',
+      'and a later failure does not hide a run that is still going');
+    assert.equal(currentPhase([{ status: 'COMPLETED' }, { status: 'AWAITING_APPROVAL' }]), 'AWAITING_APPROVAL',
+      'waiting on the owner is a current state, not a finished one');
+    assert.equal(currentPhase([{ status: 'SECURITY_BLOCKED' }]), 'IDLE',
+      'a blocked run is over too — the block is reported by the approval surface, not the phase');
+  }
+
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase');
 })().catch((error) => { console.error(error); process.exit(1); });

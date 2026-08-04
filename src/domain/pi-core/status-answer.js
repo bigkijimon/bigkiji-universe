@@ -49,6 +49,14 @@ const ASKS = [
   // must reach the model. Kana as well as kanji, because it was typed in kana.
   /(作業|さぎょう).{0,4}(でき|して|中|進|遅)/,
   /状況/, /ステータス/, /何[をも]?して(る|いる|ます)/, /終わ(った|ってる|りました)/,
+  // 「承認待ちはありますか？」 — measured 2026-08-05 driving the real CLI: this one fell
+  // through to the model, and it is the question whose true answer the daemon already
+  // has to hand (`/runs` answers it exactly). Asking a model whether something is
+  // waiting for the owner's approval is the same bet that produced 「順調に進んでいます」
+  // over two untouched runs. The 待ち/待って is required, so 「承認画面を作って」 —
+  // real work — does not match; heuristicKind and MAX_LENGTH bound it further.
+  /承認.{0,3}(待ち|待って)/,
+  /\b(anything|any\s+runs?)\s+(waiting|pending)\b/i, /\bwaiting\s+for\s+(my\s+)?approval\b/i,
   /\b(is|are)\s+(it|you|they)\s+(working|running|going|doing)/i,
   /\bstill\s+(running|working|going)\b/i,
   /\bany\s+progress\b/i,
