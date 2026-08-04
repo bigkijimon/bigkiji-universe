@@ -148,6 +148,18 @@ function drawLabel(c, g, text, { glyph, glyphColor, size = 34, sub = '' } = {}) 
     g.fillText(sub, 256, 170);
   }
 }
+// Every label sprite ever made, so the theme can reach them.
+//
+// These are the words drawn INSIDE the WebGL canvas — DESIGN, SCHOOL, CLAUDE CODE and
+// their `Nev` counters. On the paper theme they were the loudest thing on a conversation
+// screen: text competing with text, at the same weight as the greeting. CSS cannot help,
+// because they are texture, not DOM, and dimming the canvas element dims the particles
+// with them. So the sprites carry their own dimmer.
+const LABEL_SPRITES = [];
+// Set by applyLabelWeight(). Kept as module state so a sprite created after a theme
+// change is born at the right weight rather than flashing in at full strength.
+let labelWeight = 1;
+
 function labelSprite(text, opts = {}) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 200;
   const g = c.getContext('2d');
@@ -158,7 +170,25 @@ function labelSprite(text, opts = {}) {
   s.renderOrder = 20;
   s.scale.set(2.7, 1.05, 1);
   s.userData.lbl = { c, g, text, opts, sub: '' };
+  s.userData.baseOpacity = s.material.opacity;
+  s.material.opacity = s.userData.baseOpacity * labelWeight;
+  LABEL_SPRITES.push(s);
   return s;
+}
+
+/**
+ * How loud the in-canvas words are, as a multiple of their own opacity.
+ *
+ * Multiplied rather than assigned: a sprite that fades itself in and out (the hub labels
+ * do, by distance) keeps doing so, one order of magnitude quieter. Assigning would freeze
+ * them at a constant and undo the LOD.
+ */
+function applyLabelWeight(weight) {
+  labelWeight = Math.max(0, Math.min(1, Number(weight)));
+  for (const sprite of LABEL_SPRITES) {
+    const base = sprite.userData.baseOpacity;
+    if (typeof base === 'number') sprite.material.opacity = base * labelWeight;
+  }
 }
 // ラベル2行目（実測の活動・トークン量）を差し替え描画
 function setLabelSub(s, sub) {
@@ -2053,6 +2083,10 @@ setInterval(() => {
 
 // ---------- Live settings: render priority + reduced glow ----------
 function applyAppearanceSettings(appearance = {}) {
+  // Paper is a conversation surface: the scene is a watermark behind it, and its own
+  // words have to stop reading as content. Studio is the scene itself, so they stay.
+  // 0.18 was chosen by looking at it — see docs/v3/design-decisions.md.
+  applyLabelWeight(appearance.theme === 'studio' ? 1 : 0.18);
   const next = RENDER_PRIORITIES.includes(appearance.renderPriority) ? appearance.renderPriority : 'auto';
   renderPriority = next;
   try { localStorage.setItem('bk.renderPriority', next); } catch (_) {} // read back at startup for antialias
@@ -2463,9 +2497,13 @@ const clock = new THREE.Clock();
         overlayItems.push({ el, w, h, depth: _v.z, x, y: (-_v.y * 0.5 + 0.5) * rect.h - h / 2 });
       }
     }
-    el.style.opacity = plateO;
+    // labelWeight, applied where the LOD writes rather than once at creation.
+    // Setting it on the material at theme-change time did nothing, measured: this line
+    // runs every frame and overwrote it before the next paint. Anything that assigns an
+    // opacity per frame owns that opacity — the dimmer has to live here or nowhere.
+    el.style.opacity = plateO * labelWeight;
     // LODの引き継ぎ: プレートが立つほど3Dの役割ラベルは退く
-    nd.label.material.opacity = 1 - plateO;
+    nd.label.material.opacity = (1 - plateO) * labelWeight;
   }
   overlayItems.sort((a, b) => a.depth - b.depth); // 近景が先＝場所の優先権とz上位
   const placedRects = [];

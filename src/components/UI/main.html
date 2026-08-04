@@ -77,7 +77,10 @@
      The canvas ELEMENT, not #canvasWrap. The wrapper also holds #views (SYSTEM / FILES /
      CLOSE / AUTO) and #workState at z-index 28 — dimming the wrapper dimmed the controls
      with the scene, which a screenshot caught and code review would not have. */
-  :root[data-theme="paper"] #canvasWrap > canvas { opacity: .30; filter: saturate(.55); }
+  /* .55, not .30. The scene's own words carry their own dimmer now (synapse.js
+     applyLabelWeight), so the layer no longer has to be crushed to stop the labels
+     shouting — and the particles, which are the part worth keeping, come back. */
+  :root[data-theme="paper"] #canvasWrap > canvas { opacity: .55; filter: saturate(.7); }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; overflow: hidden; background: var(--bg-0);
     font-family: -apple-system, "Hiragino Sans", sans-serif; color: var(--ink);
