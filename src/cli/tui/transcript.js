@@ -780,7 +780,17 @@ function renderEvent(event, data = {}, options = {}) {
         const cost = [row.ms ? `${Math.round(row.ms / 1000)}s` : DASH, row.tokens ? `${row.tokens} tok` : DASH,
           formatCost(row.cost), formatContext(row.context)].join(' ');
         const stood = row.standInFor ? ` (for ${lower(row.standInFor)})` : '';
-        const note = row.error || row.headline || '';
+        // A report row is a summary, not the artefact.
+        //
+        // maxLines below counts *source* lines, and a specialist that answers with a
+        // whole file answers in one. Measured 2026-08-05: a leader returned the entire
+        // game — `<!DOCTYPE html>` onward — as a single headline, it sailed through the
+        // 16-line fold untouched, and word-wrapping turned it into several hundred rows
+        // that buried `report(3/3 done · completed)` and everything above it. The owner
+        // could not tell whether the run had finished. Folded to one line here, where
+        // the count is known, rather than trusting a cap that cannot see it.
+        const note = truncateToWidth(String(row.error || row.headline || '').replace(/\s+/g, ' ').trim(),
+          Math.max(20, width - 6));
         // What it put on disk. A provider that reports no line counts gets the file
         // count and a dash, never a fabricated 0.
         const files = (row.changed || []).length;

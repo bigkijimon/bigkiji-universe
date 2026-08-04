@@ -821,6 +821,29 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 1;
 }
 
+// A specialist that answers with a whole file must not bury the report.
+//
+// maxLines counts source lines, and a whole file arrives as one. Measured 2026-08-05:
+// a leader returned the entire game as a single headline, it passed the 16-line fold
+// untouched, and wrapping turned it into several hundred rows that buried
+// `report(3/3 done · completed)`. The owner could not tell whether the run had ended.
+{
+  const huge = `Quick note on environment: no live file tools. ${'<!DOCTYPE html><canvas id=c></canvas><script>const W=480,H=272;'.repeat(60)}`;
+  const lines = plainLines(T.renderEvent('report', {
+    status: 'COMPLETED', completed: 3, total: 3, ms: 253000,
+    rows: [{ role: 'leader', provider: 'glm', status: 'completed', ms: 65000, headline: huge,
+      changed: [{ added: 120, removed: 4 }], isolated: true, workspacePath: '/x/.bigkiji/worktrees/run-1-leader' },
+    { role: 'debug', provider: 'glm', status: 'completed', ms: 15000, headline: 'checks pass' }],
+    checks: [{ id: 'tests-pass', pass: true }],
+  }, { width: 100 }));
+  assert.ok(lines.length <= 20, `a finished run has to be readable in one screen, got ${lines.length} lines`);
+  assert.match(lines[0], /report\(3\/3 done/, 'the completion line stays at the top where it can be seen');
+  assert.ok(lines.some((line) => /1 file . \+120 -4/.test(line)), 'what it produced');
+  assert.ok(lines.some((line) => line.includes('/x/.bigkiji/worktrees/run-1-leader')), 'and where it put it');
+  assert.ok(lines.every((line) => line.length <= 120), 'no row may overflow the terminal');
+  checks += 5;
+}
+
 // npm talking about npm, in the error colour, twenty lines at a time.
 //
 // The patterns for this were written, exported, and called from nowhere. Measured
@@ -869,4 +892,4 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 3;
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it`);
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it · a whole file in one headline cannot bury the report`);
