@@ -95,6 +95,54 @@ Two defects came out of it, both invisible to the suite and both now guarded:
   answer exactly. Asking a model to report state is the bet that produced 「順調に進んで
   います」 over two untouched runs.
 
+## Building a game from the CLI — what actually happened (2026-08-05)
+
+The owner asked for a three.js mini game built **from the BigKiji terminal**, finished.
+Driven in a real pty, `run-msenli4v`, ~5 minutes, 3 specialists:
+
+| Specialist | Provider | Wrote |
+|---|---|---|
+| leader · lead-pi | codex gpt-5.6-sol · 125 s · 245k tok | `game.js` |
+| ui · design-pi | codex gpt-5.6-sol · 123 s · 140k tok | `index.html`, `app.css` |
+| debug · debug-pi | glm-4.7-flash · 20 s | read-only diagnosis |
+
+**It works.** *BigKiji · Garden Patrol* — a cat in a garden, WASD/arrows to move,
+pointer to aim, Space or click to fire, purple shadows closing in. Measured in a real
+browser: **120 fps**, zero console errors, score climbs, health falls, game over shows
+`Patrol again`, restart returns to 0/100 and the next round scores again.
+
+Three things worth keeping:
+
+- **Write-isolated runs are never auto-merged, by design.** Each specialist worked in
+  its own `git worktree` and the coordinator keeps the worktree rather than applying it
+  (`forgetRun`, "that work is the only copy of it and the owner has not looked at it
+  yet"). The two halves had to be assembled by hand — and they fitted exactly, because
+  every `getElementById` in the leader's `game.js` had a matching `id` in the ui's
+  `index.html`. That is the DOM contract the debug lens verified.
+- **The game shipped unwinnable, and arithmetic proved it before any play-test could.**
+  Bullets spawn at `muzzleOffset.y = 1.1` and their velocity is `aim.clone().setY(0)`,
+  so `y` never changes; enemies sit at `y = 0.5`; the hit test is a 3D
+  `distanceTo(...) < 0.55`. A vertical gap of **0.6 against a radius of 0.55** means no
+  shot can ever connect, however well aimed. Measured first: 14 seconds firing in every
+  direction, score 0, health 0. Told this, BKU's own planner came back with the right
+  one-line constraint — `muzzleOffset y を 0.5 に変更` — which is what was applied.
+  Verified after: score 0 → 20 → 30, peak 30, restart scores again.
+- **A "did it finish?" test must read a status field, not search the transcript.** Two
+  driver versions stopped live runs early: one matched the words `run report` inside a
+  specialist's grep of `run-report-selftest.js`, the other watched a footer field that
+  disappears when the run ends. Searching output for a status is the same mistake as
+  asking a model for one — the answer is somewhere in the text whether or not it is true.
+
+### Open — for the owner
+
+**A plan carrying an unanswered question can loop.** `run-mseo84pl` was approved twice
+(13:05 and 13:16). Both times its specialists ran and it returned to
+`AWAITING_APPROVAL` with the same goal and the same `⚠ unanswered: この高さに合わせる
+ことで視覚的な不自然さが発生する可能性はあるが、機能優先で進めるか？`. The CLI's inline
+choice is `1 approve · 2 reject · 3 later` — there is no way to **answer the question**,
+only to approve a plan that still contains it. Not touched here: the re-plan decision is
+coordinator logic, not presentation.
+
 ## Answered since (2026-08-05)
 
 | Question | Answer | Who |
