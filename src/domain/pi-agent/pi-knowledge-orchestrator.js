@@ -57,10 +57,21 @@ function createTask(ownerText, kind = 'plan') {
   return { id: `bk-${Date.now().toString(36)}-${hash(text)}`, kind, ownerText: text,
     promptHash: hash(text), status: 'planned', provider: 'ollama', createdAt: new Date().toISOString() };
 }
-function rememberPlan(task, plan, decisions = []) {
+/**
+ * @param {object} task
+ * @param {string} plan  The spec as prose — what a human reads.
+ * @param {string[]} decisions
+ * @param {object|null} spec  The same spec with its fields intact. Prose is lossy:
+ *   a cache hit that returns only `plan` cannot answer "what are the constraints",
+ *   so callers that need fields silently degraded to whatever they already had.
+ */
+function rememberPlan(task, plan, decisions = [], spec = null) {
   const state = loadState();
+  const listOf = (value) => (Array.isArray(value) ? value : [value].filter(Boolean)).map((x) => cleanText(String(x), 300));
   const item = { taskId: task.id, promptHash: task.promptHash, planHash: hash(plan),
     plan: cleanText(plan, 5000), decisions: decisions.map((x) => cleanText(x, 300)),
+    spec: spec ? { goal: cleanText(String(spec.goal || ''), 900), constraints: listOf(spec.constraints),
+      steps: listOf(spec.steps), acceptance: listOf(spec.acceptance) } : null,
     executorPolicy: ['claude', 'codex', 'gemini', 'glm'], planningPolicy: 'local-qwen-or-deterministic-local', status: 'planned',
     savedAt: new Date().toISOString() };
   state.plans = [...state.plans.filter((p) => p.promptHash !== item.promptHash), item].slice(-100);

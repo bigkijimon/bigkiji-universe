@@ -154,6 +154,83 @@ const WebSocket = require('ws');
       'a blocked run is over too — the block is reported by the approval surface, not the phase');
   }
 
+  // What the specialists are actually handed.
+  //
+  // Measured on the owner's machine 2026-08-05: 「3djsのゲームを作ってください。」 reached
+  // the coordinator as goal = that same line, constraints [], steps [], acceptance [],
+  // and one unanswered question — and a leader plus a UI specialist were dispatched
+  // against it. The front desk that writes a real spec existed the whole time and was
+  // required by main.js alone, which skips it whenever the daemon is connected. These
+  // cover the wiring, not the model: the facilitator is a stub, so a green run here
+  // means the path is connected and the fields survive it.
+  {
+    const specRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-spec-test-'));
+    let calls = 0;
+    const facilitator = {
+      pending: null,
+      reset() { this.pending = null; },
+      async facilitate() {
+        calls += 1;
+        if (calls === 1) return { status: 'needs_clarification', provider: 'ollama', questions: ['which genre?'], latencyMs: 1 };
+        return { status: 'ready', provider: 'ollama', planHash: 'plan-hash-1', latencyMs: 1,
+          // `constraints` is a bare string on purpose. A small model answering an
+          // array schema emits one, specText() already had to learn that, and a spec
+          // that throws on the way to the coordinator loses the whole turn.
+          promptSpec: { goal: 'Create a single-file HTML5 3D game using Three.js.', constraints: 'Three.js via CDN',
+            steps: ['scene, camera, renderer', 'player movement'], acceptance: ['runs in a browser with no build step'] },
+          promptSpecText: 'Goal: Create a single-file HTML5 3D game using Three.js.' };
+      },
+      async answer(_ownerText, _questions, said) { return this.facilitate(said); },
+    };
+    const conversationEngine = {
+      model: 'stub-qwen',
+      turn: async () => ({ kind: 'TASK', reply: 'わかりました。', title: 'game', summary: '', ideas: [], requirements: [],
+        decisions: [], openQuestions: [], todos: [], turnId: 'turn-stub', provider: 'local-qwen', latencyMs: 1, degraded: false }),
+    };
+    const spec = new DaemonEngine({ stateRoot: specRoot, workspace: process.cwd(), conversationEngine, facilitator });
+
+    // A missing decision holds the run back. Guessing it is what produced plans that
+    // came back asking the same question instead of building anything.
+    const first = await spec.turn('3djsのゲームを作ってください。');
+    assert.equal(first.run, null, 'a request with an open question must not dispatch specialists yet');
+    assert.deepStrictEqual(first.questions, ['which genre?']);
+    assert.equal(first.awaitingAnswer, true);
+    assert.match(first.reply, /1\. which genre\?/, 'the question has to reach every surface, not just the field');
+
+    // The next thing typed in that session is the answer, and it becomes the spec.
+    const second = await spec.turn('おまかせ', { sessionId: first.sessionId });
+    assert.ok(second.run, 'answering has to produce the run the first turn held back');
+    assert.equal(second.run.status, 'AWAITING_APPROVAL');
+    assert.equal(second.run.promptSpec.goal, 'Create a single-file HTML5 3D game using Three.js.');
+    assert.deepStrictEqual(second.run.promptSpec.constraints, ['Three.js via CDN'], 'a string constraint has to survive as a list');
+    assert.equal(second.run.promptSpec.steps.length, 2);
+    assert.deepStrictEqual(second.run.promptSpec.questions, [], 'the answered question must not travel on as unanswered');
+    assert.equal(second.provider, 'ollama', 'the spec turn is served by the front desk, not by a second conversation turn');
+    assert.equal(spec.facilitatorPending, null, 'the pending question is cleared once answered');
+
+    // An open question is not a licence to reinterpret anything typed later. Past the
+    // window the turn is an ordinary request again.
+    const stale = await spec.turn('別件です', { sessionId: first.sessionId });
+    spec.facilitatorPending = { sessionId: first.sessionId, questions: ['which genre?'], at: Date.now() - (16 * 60 * 1000) };
+    const afterExpiry = await spec.turn('全然違う依頼', { sessionId: first.sessionId });
+    assert.equal(afterExpiry.provider, 'local-qwen', 'an expired question must not swallow the next request');
+    assert.ok(stale.run || afterExpiry.run, 'the ordinary path still submits runs');
+
+    // Answering the `⚠ unanswered` a waiting plan already carries.
+    const waiting = spec.coordinator.submit({ prompt: 'make a game', cwd: process.cwd(), mode: 'plan',
+      promptSpec: { goal: 'make a game', constraints: [], steps: [], acceptance: [], questions: ['which genre?'] } });
+    assert.deepStrictEqual(waiting.promptSpec.questions, ['which genre?']);
+    const answered = await spec.answerRun({ runId: waiting.id, text: 'shooter' });
+    assert.notEqual(answered.run.id, waiting.id, 'the plan is rebuilt on the answer, not started on a guess');
+    assert.equal(answered.answered, waiting.id);
+    assert.deepStrictEqual(answered.run.promptSpec.questions, []);
+    assert.equal(answered.run.promptSpec.goal, 'Create a single-file HTML5 3D game using Three.js.');
+    await assert.rejects(() => spec.answerRun({ runId: answered.run.id, text: 'shooter' }), /no unanswered question/,
+      'a plan with nothing to answer says so instead of rewriting itself');
+    await assert.rejects(() => spec.answerRun({ runId: waiting.id, text: '   ' }), /answer is required/);
+    spec.shutdown();
+  }
+
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at');
 })().catch((error) => { console.error(error); process.exit(1); });

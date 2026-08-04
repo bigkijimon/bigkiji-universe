@@ -118,6 +118,10 @@ class DaemonClient extends EventEmitter {
   turn(text, { signal, ...options } = {}) { return this.post('/api/turn', { text, ...options }, { signal }); }
   prompt(text, options = {}) { return this.post('/api/prompt', { text, ...options }); }
   approve(run) { const value = typeof run === 'string' ? { id: run } : run; return this.post('/api/run/approve', value); }
+  // Answering a plan's open question. Slower than the other calls by a local
+  // generation — the spec is rewritten before it returns — so it carries the
+  // caller's abort signal like turn() does.
+  answerRun(runId, text, { signal } = {}) { return this.post('/api/run/answer', { runId, text }, { signal }); }
   syncCredentials(values, { replace = false } = {}) { return this.post('/api/security/credentials', { values, replace }); }
   configureConversation(config) { return this.post('/api/conversation/config', config); }
   abort(id) { return this.post('/api/run/abort', { id }); }

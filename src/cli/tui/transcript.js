@@ -538,7 +538,13 @@ function runBrief(run = {}, options = {}) {
   if (flat(spec.goal)) rows.push(`goal: ${flat(spec.goal)}`);
   const constraints = list(spec.constraints);
   if (constraints.length) rows.push(`constraints: ${constraints.join(' / ')}`);
-  for (const question of list(spec.questions)) rows.push(`${mark.warn} unanswered: ${question}`);
+  const questions = list(spec.questions);
+  for (const question of questions) rows.push(`${mark.warn} unanswered: ${question}`);
+  // A question with no way to answer it is what produced the eleven-hour wait. The
+  // CLI offered approve, reject and later; none of those is an answer, so approving
+  // sent the plan back to asking the same thing. `/answer` rewrites the spec from
+  // the reply and re-plans on it.
+  if (questions.length) rows.push(`/answer ${run.id || '<id>'} <your answer> — rewrites the plan from it`);
   if (!rows.length) return [];
   return renderToolResult(rows.join('\n'), { ...options, indent: 2, maxLines: 8 });
 }

@@ -821,4 +821,26 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 1;
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never`);
+// A question the owner cannot answer.
+//
+// `⚠ unanswered` reached the screen on 2026-08-04 and then stopped there: the CLI
+// offered approve, reject and later, none of which is an answer, so approving sent
+// the plan back to asking the same thing. The way out has to be printed next to the
+// question — an affordance nobody can see is one nobody uses.
+{
+  const lines = plainLines(T.renderEvent('run', {
+    id: 'run-msesmjj9', status: 'AWAITING_APPROVAL', assignments: [],
+    promptSpec: { goal: '3djsのゲームを作ってください。', constraints: ['genre_definition'],
+      questions: ['What genre or scope do you envision?'] },
+  }, { width: 100 })).join('\n');
+  assert.match(lines, /unanswered: What genre or scope/, 'the question still reaches the screen');
+  assert.match(lines, /\/answer run-msesmjj9 <your answer>/, 'and so does the way to answer it');
+  const quiet = plainLines(T.renderEvent('run', {
+    id: 'run-7', status: 'AWAITING_APPROVAL', assignments: [],
+    promptSpec: { goal: 'Ship the thing', constraints: [], questions: [] },
+  }, { width: 100 })).join('\n');
+  assert.ok(!/\/answer/.test(quiet), 'a plan asking nothing must not advertise an answer command');
+  checks += 3;
+}
+
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it`);

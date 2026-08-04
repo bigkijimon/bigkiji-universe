@@ -77,7 +77,7 @@ function header(state = {}, width = screenWidth(), frame = 0) {
 // as a list of things you can type.
 const HINTS = Object.freeze([
   ['/help', 'commands'], ['/status', 'fleet'], ['/runs', 'what is waiting'], ['/approve', 'start it'],
-  ['/pi', 'talk to pi'], ['/gpu off', 'free vram'], ['/exit', ''],
+  ['/answer', 'reply to a question'], ['/pi', 'talk to pi'], ['/gpu off', 'free vram'], ['/exit', ''],
 ]);
 
 // Wrapped at the separator, never mid-token.
@@ -493,6 +493,38 @@ async function repl(client) {
         } else if (command === '/reject') await rejectRun(run);
         else await approveRun(run);
       }
+      // The answer to `⚠ unanswered`.
+      //
+      // A plan can carry a question the owner has no way to answer: approve, reject
+      // and later are not answers, and approving one sent the plan straight back to
+      // asking. This hands the reply to the front desk, which rewrites the spec with
+      // the decision in it and re-plans — so the specialists get a brief instead of
+      // a question. The first word is a run id only when it looks like one; anything
+      // else is the answer, addressed to the newest plan that is actually asking.
+      else if (text === '/answer' || text.startsWith('/answer ')) {
+        live = await client.state();
+        const rest = text.slice(7).trim();
+        const [first, ...others] = rest.split(/\s+/);
+        const addressed = first && /^run-/i.test(first);
+        const asking = waitingRuns().filter((item) => (item.promptSpec?.questions || []).length);
+        const run = addressed ? findWaiting(first) : asking.at(-1);
+        const said = addressed ? others.join(' ') : rest;
+        if (!run) {
+          emit(renderNote(waitingRuns().length ? 'no waiting plan is asking anything — /approve starts it' : 'nothing is waiting for approval', view()));
+        } else if (!(run.promptSpec?.questions || []).length) {
+          emit(renderNote(`${lower(shortRunId(run.id))} has no unanswered question — /approve starts it`, view()));
+        } else if (!said) {
+          emit(renderNote('usage: /answer [run-id] <your answer>', view()));
+        } else {
+          emit(renderToolCall('answer', `${lower(shortRunId(run.id))} ${glyphs().arrow || '->'} rewriting the plan`, view()));
+          turnAbort = new AbortController();
+          const result = await client.answerRun(run.id, said, { signal: turnAbort.signal });
+          turnAbort = null;
+          emit([...renderToolResult(result.spec || 'spec rewritten', { ...view(), indent: 2, maxLines: 10 }),
+            ...renderNote(`${lower(shortRunId(result.run?.id || ''))} replaces ${lower(shortRunId(result.answered || ''))} — /approve starts it`, view())]);
+          live = await client.state();
+        }
+      }
       // Step 1 of the owner's own workflow: talk to Pi.
       //
       // Until now there was no way to do that from here — Pi ran only inside the
@@ -535,7 +567,7 @@ async function repl(client) {
       }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. read-only work starts on its own and reports each step as it happens; anything that writes waits for you. /runs lists what is waiting, /approve [id] starts it and /reject [id] drops it — an id can be a prefix. ctrl-c interrupts the work without leaving. /pi consults pi directly — it has no tools and cannot run anything.', view()));
+      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. read-only work starts on its own and reports each step as it happens; anything that writes waits for you. /runs lists what is waiting, /approve [id] starts it and /reject [id] drops it — an id can be a prefix. when a plan shows an unanswered question, /answer [id] <your answer> rewrites the plan from your reply instead of starting it on a guess. ctrl-c interrupts the work without leaving. /pi consults pi directly — it has no tools and cannot run anything.', view()));
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the

@@ -28,6 +28,7 @@ const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
 const { detectAndProbeAll } = require('../pi-agent/tool-registry');
+const { FastFacilitatorRouter } = require('../pi-agent/fast-api-router');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -97,6 +98,20 @@ function effectiveMode(req, requested) {
 // it is waiting on the owner, which is very much a current state — and the terminal ones
 // do not. With nothing live, the honest word is IDLE, the same rule as `—` ≠ 0 in the
 // work card: an absent phase is not a failed one.
+/**
+ * A spec field as a list, whatever the model returned it as.
+ *
+ * `"constraints": "none"` is a reasonable thing for a small model to emit against a
+ * schema that asks for an array, and specText() in fast-api-router already learned
+ * this the expensive way — it used to throw on exactly that, and the caller turned
+ * the throw into a bare "Fast route unavailable" that named no cause.
+ */
+function asList(value) {
+  if (Array.isArray(value)) return value.map((entry) => String(entry)).filter(Boolean);
+  return [value].filter(Boolean).map(String);
+}
+/** How long an unanswered front-desk question stays the meaning of the next thing typed. */
+const FACILITATION_WINDOW_MS = 15 * 60 * 1000;
 const TERMINAL_RUN = Object.freeze(['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED']);
 function currentPhase(runs) {
   const live = (Array.isArray(runs) ? runs : []).filter((run) => !TERMINAL_RUN.includes(run?.status));
@@ -182,7 +197,7 @@ async function readJson(req, max = 1024 * 1024) {
 
 class DaemonEngine extends EventEmitter {
   constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd(),
-    conversationEngine = null, ideaStore = null, knowledgeStore = knowledge } = {}) {
+    conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null } = {}) {
     super();
     this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = path.resolve(workspace);
     // Tests inject a throwaway stateRoot; production uses the resolved data layout,
@@ -196,6 +211,17 @@ class DaemonEngine extends EventEmitter {
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
       maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });
     this.conversation = conversationEngine || new ConversationEngine();
+    // The front desk that turns a one-line request into a spec worth executing.
+    //
+    // It existed and worked — measured 2026-08-05, 17 characters in, a 945-character
+    // decision-complete spec out in 5.7s on a local model that costs nothing — and it
+    // was reachable from nowhere. `fast-api-router` was required by main.js alone, and
+    // main.js only calls it when the daemon is *not* connected, which on a running
+    // machine is never. So every request arrived here as `goal: <the owner's one line>`
+    // with empty constraints, steps and acceptance, and the specialists were asked to
+    // build from it. This is that router, on the path both surfaces actually use.
+    this.facilitator = facilitator || new FastFacilitatorRouter();
+    this.facilitatorPending = null;
     this.ideas = ideaStore || new IdeaDraftStore({ root: rootFor('ideasRoot', 'ideas'), workspace: this.workspace });
     this.ideaEnhancements = new Map();
     this.knowledge = knowledgeStore;
@@ -395,6 +421,17 @@ class DaemonEngine extends EventEmitter {
     // where a wrong answer is worse than no answer, and it is also the one class we can
     // answer exactly — so it never reaches the model at all.
     if (isStatusQuestion(clean)) return this._statusTurn(session, clean);
+    // The owner answering the question the front desk asked last turn.
+    //
+    // Bound to the session that was asked and to a window, because "what did you mean
+    // by that" cannot be allowed to swallow an unrelated request typed an hour later.
+    // A status question is already intercepted above, so asking how things are going
+    // while a question is open still answers the status question.
+    const asked = this.facilitatorPending;
+    if (asked && asked.sessionId === session.id && Date.now() - asked.at < FACILITATION_WINDOW_MS) {
+      return await this._answerTurn(session, clean, mode);
+    }
+    if (asked) { this.facilitatorPending = null; this.facilitator.reset(); }
     const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
@@ -408,10 +445,32 @@ class DaemonEngine extends EventEmitter {
       this.knowledge.rememberIdea?.(draft, 'draft');
       this.publish('knowledge', { status: 'DRAFTED', ideaId: draft.id, draftHash: draft.draftHash, localOnly: true });
     }
+    // What the specialists are actually given.
+    //
+    // This block used to be the whole of it: `goal` was the owner's line verbatim and
+    // the other three fields were whatever the conversation model happened to attach.
+    // Measured on 2026-08-05 with 「3djsのゲームを作ってください。」 — summary "",
+    // requirements [], todos [], decisions [], and one question. A leader and a UI
+    // specialist were then dispatched against that, which is why plans came back
+    // asking the same question instead of building. The front desk writes the spec
+    // now; the conversation model's fields remain the fallback for when it cannot.
+    let facilitation = null;
     if (result.kind === 'TASK') {
-      const goal = result.summary || clean;
-      const promptSpec = { goal, constraints: result.requirements || [], steps: result.todos || [],
-        acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
+      facilitation = await this._facilitate(clean);
+      if (facilitation?.status === 'needs_clarification') {
+        // No run yet. A missing decision is cheaper to ask about than to guess at,
+        // and a plan built on a guess is what the owner has been rejecting.
+        this.facilitatorPending = { sessionId: session.id, questions: facilitation.questions, at: Date.now() };
+      }
+    }
+    if (result.kind === 'TASK' && facilitation?.status !== 'needs_clarification') {
+      const written = facilitation?.promptSpec || null;
+      const goal = written?.goal || result.summary || clean;
+      const promptSpec = written
+        ? { goal, constraints: asList(written.constraints), steps: asList(written.steps),
+          acceptance: asList(written.acceptance), questions: [], ideaId: draft?.id }
+        : { goal, constraints: result.requirements || [], steps: result.todos || [],
+          acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
       // The mode reaches the coordinator now.
       //
       // This read `mode === 'manual' ? 'manual' : 'plan'`, which flattened every mode
@@ -420,20 +479,118 @@ class DaemonEngine extends EventEmitter {
       // fixed; the value arriving here has already been narrowed to 'plan' for anything
       // that is not a loopback request (see effectiveMode in the HTTP layer), which is
       // what keeps a phone on the LAN from asking for auto-edit.
-      run = this.coordinator.submit({ prompt: clean, promptSpec, cwd: this.workspace, mode });
+      run = this.coordinator.submit({ prompt: clean, promptSpec, planHash: facilitation?.planHash || null, cwd: this.workspace, mode });
       // submit() emits 'run' synchronously, so onRun has already appended this run
       // to the session and published it. Doing it again here printed the same run
       // twice in the transcript and wrote it twice into the session file.
       this.runSessions.set(run.id, session.id);
     }
-    const output = { accepted: true, kind: result.kind, reply: result.reply, sessionId: session.id, turnId: result.turnId,
+    const questions = facilitation?.status === 'needs_clarification' ? facilitation.questions : [];
+    // The questions travel in the reply as well as in their own field. Every surface
+    // renders `reply`; only the CLI knows what to do with `questions`, and a question
+    // the owner cannot see is the same as one that was never asked.
+    const reply = questions.length ? `${result.reply}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}` : result.reply;
+    const output = { accepted: true, kind: result.kind, reply, sessionId: session.id, turnId: result.turnId,
       provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
-      requiresApproval: !!run || false };
+      questions, awaitingAnswer: questions.length > 0, requiresApproval: !!run || false };
     this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('stats', { turn: { input: result.context?.estimatedTokens || 0, output: Math.max(1, Math.ceil(result.reply.length / 4)) },
       ms: result.latencyMs, provider: result.provider, model: result.model });
     this.publish('session', this.sessions.read(session.id));
     return output;
+  }
+
+  /**
+   * The front desk, with its failure made harmless.
+   *
+   * `facilitate()` already falls back to a deterministic spec when no local model
+   * answers, so the only thing left to guard is the call itself — an unreachable
+   * Ollama must not take the turn down with it. A null here means "carry on with the
+   * conversation model's fields", which is exactly the behaviour that shipped before.
+   */
+  async _facilitate(ownerText) {
+    try {
+      return await this.facilitator.facilitate(ownerText, {
+        onStart: (provider) => this.publish('commentary', { source: 'Front desk', status: 'PLANNING',
+          text: `Writing a decision-complete spec with ${provider}.` }),
+      });
+    } catch (error) {
+      this.publish('commentary', { source: 'Front desk', status: 'DEGRADED',
+        text: `Spec writing unavailable (${String(error.message).slice(0, 120)}) — using the conversation model's own fields.` });
+      return null;
+    }
+  }
+
+  /**
+   * The turn that carries the answer to an open question.
+   *
+   * The conversation model is skipped deliberately. It classified this request one
+   * turn ago and re-running it would spend a second local generation to re-derive
+   * what we already hold, on a screen the owner has already told us looks frozen.
+   * The reply is the spec, which is both the useful answer and the visible proof
+   * that the expansion ran at all.
+   */
+  async _answerTurn(session, text, mode) {
+    const started = Date.now();
+    this.facilitatorPending = null;
+    const spec = await this._facilitate(text);
+    const turnId = `turn-${started.toString(36)}-spec`;
+    if (!spec?.promptSpec) {
+      this.facilitator.reset();
+      const reply = 'The spec could not be written from that answer. Say it once more, or start again with the request in full.';
+      this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'CHAT', text: reply, turnId, provider: 'front-desk' });
+      const failed = { accepted: true, kind: 'CHAT', reply, sessionId: session.id, turnId, provider: 'front-desk',
+        model: 'facilitator', latencyMs: Date.now() - started, degraded: true, draft: null, run: null,
+        questions: [], awaitingAnswer: false, requiresApproval: false };
+      this.publish('conversation', { kind: 'turn_complete', ...failed });
+      this.publish('session', this.sessions.read(session.id));
+      return failed;
+    }
+    const written = spec.promptSpec;
+    const promptSpec = { goal: written.goal || text, constraints: asList(written.constraints), steps: asList(written.steps),
+      acceptance: asList(written.acceptance), questions: [] };
+    const run = this.coordinator.submit({ prompt: `${written.goal || text}\n\nOwner answers: ${text}`,
+      promptSpec, planHash: spec.planHash || null, cwd: this.workspace, mode });
+    this.runSessions.set(run.id, session.id);
+    const reply = spec.promptSpecText || written.goal || text;
+    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'TASK', text: reply,
+      turnId, provider: spec.provider, latencyMs: spec.latencyMs });
+    const output = { accepted: true, kind: 'TASK', reply, sessionId: session.id, turnId, provider: spec.provider,
+      model: 'facilitator', latencyMs: Date.now() - started, degraded: !!spec.fallbackReason, draft: null, run,
+      questions: [], awaitingAnswer: false, requiresApproval: true };
+    this.publish('conversation', { kind: 'turn_complete', ...output });
+    this.publish('session', this.sessions.read(session.id));
+    return output;
+  }
+
+  /**
+   * Answering the `⚠ unanswered` a plan is already carrying.
+   *
+   * The plan the owner is looking at was built without the missing decision, so the
+   * honest move is to rebuild it rather than to start it and hope. The run is aborted
+   * and resubmitted with a spec that contains the answer — the same shape as the
+   * `edit` directive, which has always replaced a plan rather than patching one.
+   */
+  async answerRun({ runId, text }) {
+    const run = this.coordinator.get(String(runId || '')); if (!run) throw new Error('Unknown run');
+    const inspected = redactPayload(String(text || ''));
+    if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_DIRECTIVE');
+    const said = inspected.text.trim(); if (!said) throw new Error('An answer is required');
+    const questions = asList(run.promptSpec?.questions);
+    if (!questions.length) throw new Error('This plan has no unanswered question');
+    const sessionId = this.runSessions.get(run.id);
+    if (sessionId) this.sessions.append(sessionId, { type: 'directive', action: 'answer', text: said });
+    const asked = run.promptSpec?.goal || run.promptPreview || '';
+    const spec = await this.facilitator.answer(asked, questions, said);
+    const written = spec?.promptSpec;
+    if (!written) throw new Error('The spec could not be written from that answer');
+    this.coordinator.abort(run.id);
+    const next = this.coordinator.submit({ prompt: `${asked}\n\nOwner answers: ${said}`,
+      promptSpec: { goal: written.goal || asked, constraints: asList(written.constraints), steps: asList(written.steps),
+        acceptance: asList(written.acceptance), questions: [] },
+      planHash: spec.planHash || null, cwd: this.workspace, mode: run.mode || 'plan' });
+    if (sessionId) this.runSessions.set(next.id, sessionId);
+    return { answered: run.id, run: next, spec: spec.promptSpecText || '', provider: spec.provider };
   }
 
   /**
@@ -1116,6 +1273,10 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const body = await readJson(req);
         return json(res, 200, await engine.turn(body.text, { mode: effectiveMode(req, body.mode), sessionId: body.sessionId }));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/run/answer') {
+        const body = await readJson(req);
+        return json(res, 200, await engine.answerRun({ runId: body.runId, text: body.text }));
       }
       if (req.method === 'GET' && url.pathname === '/api/ideas') return json(res, 200, { ideas: engine.ideas.list(Number(url.searchParams.get('limit') || 40)) });
       if (req.method === 'GET' && url.pathname === '/api/idea') {
