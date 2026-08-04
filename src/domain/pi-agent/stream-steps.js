@@ -45,16 +45,42 @@ function clip(value) {
 // Count a unified diff the provider is about to apply. Same rule as the renderer's
 // counter: a bare '+' is prose far more often than a patch, so nothing counts until a
 // hunk header has been seen.
+const HUNK = /^@@ /;
+const FILE_START = /^(diff --git |Index: )/;
+const FILE_META = /^(\+\+\+ |--- |index |new file |deleted file |old mode |new mode |similarity |rename |Binary files )/;
+
+/**
+ * Added and removed line counts for one patch.
+ *
+ * The termination rule is the load-bearing part. This counted every '+' and '-' from the
+ * first `@@ ` to the end of the string, which is right for a patch and wrong for a patch
+ * with anything after it: a provider that writes its diff and then narrates
+ * "- ran tests / - all green" had those tallied as three deleted lines, and the number
+ * the owner approves against was too big. A hunk runs until a line that is not
+ * diff-shaped, and then stops.
+ *
+ * The rules came from the console window's own counter, which had them and was fed a
+ * stream with the newlines already stripped out of it, so it had reported 0/0 since the
+ * day it was written and none of this ever ran. That module is gone; this is the one
+ * copy, on the path that executes.
+ */
 function countPatch(patch) {
   let added = 0;
   let removed = 0;
+  let patching = false;
   let inHunk = false;
   for (const line of String(patch || '').split('\n')) {
-    if (/^@@ /.test(line)) { inHunk = true; continue; }
-    if (!inHunk) continue;
-    if (/^(\+\+\+ |--- )/.test(line)) continue;
-    if (line.startsWith('+')) added += 1;
-    else if (line.startsWith('-')) removed += 1;
+    if (HUNK.test(line)) { patching = true; inHunk = true; continue; }
+    if (FILE_START.test(line)) { patching = true; inHunk = false; continue; }
+    if (!patching) continue;
+    // Between `diff --git` and the first `@@` come the file headers. Inside a hunk those
+    // same prefixes are content: `+++i;` is a line somebody added, and a removed markdown
+    // rule is `----`. Only skip them where they can actually be headers.
+    if (!inHunk && FILE_META.test(line)) continue;
+    if (line.startsWith('+')) { added += 1; continue; }
+    if (line.startsWith('-')) { removed += 1; continue; }
+    if (line === '' || line.startsWith(' ') || line.startsWith('\\')) continue; // context
+    patching = false; inHunk = false;
   }
   return { added, removed };
 }

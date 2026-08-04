@@ -467,6 +467,41 @@ function createMainWindow() {
 //
 // Opaque and with no vibrancy set, so its stylesheet may use ordinary backgrounds
 // without colliding with a material — the same reasoning as the setup window.
+// The console renderer is a Vite bundle, so editing its source changes nothing until it
+// is rebuilt — and `npx electron .` does not rebuild it, only `npm start` / `npm test` do
+// (prestart / pretest). That is a trap with no symptom: the window opens, looks right,
+// and is running last build's code. It cost a wrong conclusion during this work — a
+// counter was measured as broken from a bundle that predated its fix.
+//
+// So say so. Only in development: a packaged app ships console-dist without the sources
+// (see package.json build.files), and there is nothing to compare against there.
+function warnIfConsoleBundleStale() {
+  try {
+    const built = fs.statSync(path.join(UI_ROOT, 'console-dist', 'index.html')).mtimeMs;
+    const sourceRoot = path.join(UI_ROOT, 'console-app');
+    if (!fs.existsSync(sourceRoot)) return;
+    let newest = 0; let newestFile = '';
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(file); continue; }
+        const { mtimeMs } = fs.statSync(file);
+        if (mtimeMs > newest) { newest = mtimeMs; newestFile = path.relative(sourceRoot, file); }
+      }
+    };
+    walk(sourceRoot);
+    if (newest <= built) return;
+    const message = `console-dist is older than ${newestFile} — run \`npm run build:console\`; this window is showing the previous build`;
+    console.log(`STALE CONSOLE BUNDLE: ${message}`);
+    // Under SMOKE this is a failure, not a note: the whole point of that run is to be
+    // able to trust what it reports about the window.
+    if (SMOKE) consoleWin?.webContents.on('did-finish-load', () => {
+      consoleWin.webContents.executeJavaScript(`console.error(${JSON.stringify(`STALE CONSOLE BUNDLE: ${message}`)})`).catch(() => {});
+    });
+  } catch (_) { /* no bundle yet is the loader's problem to report, not this one's */ }
+}
+
 function createConsoleWindow() {
   if (consoleWin && !consoleWin.isDestroyed()) { consoleWin.show(); consoleWin.focus(); return consoleWin; }
   consoleWin = new BrowserWindow({
@@ -484,7 +519,7 @@ function createConsoleWindow() {
   // a running `npm run dev:console:web` swaps in the dev server for hot reload; preload
   // and the whole IPC contract are identical either way.
   if (process.env.BKU_CONSOLE_DEV_URL) consoleWin.loadURL(process.env.BKU_CONSOLE_DEV_URL);
-  else consoleWin.loadFile(path.join(UI_ROOT, 'console-dist', 'index.html'));
+  else { warnIfConsoleBundleStale(); consoleWin.loadFile(path.join(UI_ROOT, 'console-dist', 'index.html')); }
   consoleWin.once('ready-to-show', () => { consoleWin.show(); consoleWin.focus(); });
   consoleWin.on('close', (e) => { if (!quitting) { e.preventDefault(); consoleWin.hide(); } });
   return consoleWin;
@@ -1878,7 +1913,14 @@ app.whenReady().then(async () => {
           const s = box ? getComputedStyle(box) : null;
           const anims = box && box.getAnimations ? box.getAnimations().map((a) => ({
             name: a.animationName, state: a.playState, time: Math.round(a.currentTime || 0) })) : [];
+          // The status bar's change badge is a separate claim from the timeline: it is
+          // summed from the same steps, and for the life of this window it read 0/0
+          // because it was counted from task:log, which arrives with its newlines
+          // already flattened. Reported here so "the counter works" is measured rather
+          // than assumed from the timeline next to it.
+          const badge = document.querySelector('.status .add');
           return JSON.stringify({ steps: document.querySelectorAll('.worklog .step').length,
+            diffBadge: badge ? badge.textContent.trim() : null,
             worklog: pick(box), stepText: step ? step.textContent.trim().slice(0,40) : null,
             anim: s ? { name: s.animationName, dur: s.animationDuration, fill: s.animationFillMode,
               play: s.animationPlayState, count: s.animationIterationCount } : null,

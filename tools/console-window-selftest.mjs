@@ -294,39 +294,35 @@ assert.ok(/Open Console/.test(main), 'the tray menu offers it');
 // is a counter, not a diff view, and these pin the two properties that make the number
 // trustworthy rather than decorative.
 //
-// The old test lifted this function out of console.js by slicing the source between two
-// string offsets and rebuilding it with new Function(). It is now an ordinary module, so
-// the test imports it — same six cases, checked against the same arithmetic.
+// They now run against stream-steps.js countPatch(), which is the code that actually
+// produces the numbers this window shows. The window used to run its own copy over
+// task:log, and that copy could never work: task-runner.js flattens every chunk through
+// cleanText() before it is emitted, so the counter was handed a single line with no
+// newlines in it and reported 0/0 for the entire life of the window. The module is
+// deleted; two of these six cases failed against countPatch when they were moved, which
+// is exactly why they were worth moving rather than deleting with it.
 {
-  const { createDiffCounter } = await import(`../${APP}/src/lib/diff-count.mjs`);
-  const { countDiff, totals, clear } = createDiffCounter();
-  const tally = (id, text) => {
-    const e = countDiff(id, text);
-    return { added: e.added || 0, removed: e.removed || 0 };
-  };
+  const { countPatch } = await import('../src/domain/pi-agent/stream-steps.js');
 
-  assert.deepEqual(tally('a', '+ this is prose\n- and so is this'), { added: 0, removed: 0 },
+  assert.deepEqual(countPatch('+ this is prose\n- and so is this'), { added: 0, removed: 0 },
     'text before any hunk header is not a patch');
-  assert.deepEqual(tally('b', 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
+  assert.deepEqual(countPatch('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
     { added: 2, removed: 1 }, 'file headers between diff --git and the first @@ are not content');
-  assert.deepEqual(tally('c', '@@ -1,0 +1,2 @@\n+++i;\n+count++;'), { added: 2, removed: 0 },
+  assert.deepEqual(countPatch('@@ -1,0 +1,2 @@\n+++i;\n+count++;'), { added: 2, removed: 0 },
     'inside a hunk, +++i; is a line somebody added — not a file header');
-  assert.deepEqual(tally('d', '@@ -1,1 +0,0 @@\n----'), { added: 0, removed: 1 },
+  assert.deepEqual(countPatch('@@ -1,1 +0,0 @@\n----'), { added: 0, removed: 1 },
     'and a removed markdown rule is a removed line');
-  assert.deepEqual(tally('e', '@@ -1,0 +1,1 @@\n+real\nsummary:\n- updated x\n- ran tests\n- all green'),
+  assert.deepEqual(countPatch('@@ -1,0 +1,1 @@\n+real\nsummary:\n- updated x\n- ran tests\n- all green'),
     { added: 1, removed: 0 },
     'a hunk ends at the first line that is not diff-shaped; what the provider narrates afterwards is prose');
-  assert.deepEqual(tally('f', '@@ -1,0 +1,1 @@\n+real\n\nFAIL x\n- Expected\n+ Received'), { added: 1, removed: 0 },
+  assert.deepEqual(countPatch('@@ -1,0 +1,1 @@\n+real\n\nFAIL x\n- Expected\n+ Received'), { added: 1, removed: 0 },
     'including jest output, which is full of leading + and -');
 
-  // b(+2 −1) + c(+2) + d(−1) + e(+1) + f(+1); a contributed nothing because it was prose.
-  assert.deepEqual(totals(), { added: 6, removed: 2 }, 'the status bar sums every task in the run');
-  clear();
-  assert.deepEqual(totals(), { added: 0, removed: 0 },
-    'a new run starts a new count; carrying the last one forward overstates what is about to happen');
-
-  assert.ok(/cleanText/.test(read(`${APP}/src/lib/diff-count.mjs`)),
-    'and the module records why this counter reads 0/0 against the live task:log stream');
+  // And the window sums them from the steps it already holds, rather than re-parsing a
+  // string that no longer has the newlines the parse depends on.
+  const ipc = read(`${APP}/src/lib/ipc.js`);
+  assert.ok(!/diff-count/.test(ipc), 'the window must not re-parse task:log for a diff count');
+  assert.ok(/progressOf\(steps\)/.test(ipc), 'the change counter is a fold over task:step');
 }
 
 // ---- session history ---------------------------------------------------------

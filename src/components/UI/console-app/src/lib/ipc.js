@@ -21,15 +21,22 @@
 
 import { setState, getState } from './store.js';
 import { appendBounded } from './ansi.mjs';
-import { createDiffCounter } from './diff-count.mjs';
-import { foldSteps } from './steps.mjs';
+import { foldSteps, progressOf } from './steps.mjs';
 
 const bk = globalThis.window?.bigkiji;
 
-// Where the run's change counter lives. One counter per window, cleared when a new run
-// starts — carrying the previous run's tally forward would overstate what the owner is
-// about to approve.
-const counter = createDiffCounter();
+// The change counter is derived from `steps`, not counted here.
+//
+// It used to run its own diff parser over task:log. That could never work and had never
+// worked: task-runner.js passes every stdout chunk through cleanText(), whose body
+// includes `.replace(/\s+/g, ' ')`, so by the time a log line reaches this window it has
+// no newlines in it — a line-oriented patch counter fed a single line reported 0 added
+// and 0 removed for the entire life of the window. The numbers the owner is shown before
+// approving anything were therefore always zero.
+//
+// task:step carries `added` / `removed` already, counted by stream-steps.js from the raw
+// buffer before that flattening happens, so the totals are a fold over state we hold
+// rather than a second parse of a string that lost the information.
 
 // pty bytes do not go through the store. They arrive at keystroke frequency and their
 // only consumer is xterm, which keeps its own buffer — routing them through React state
@@ -65,10 +72,6 @@ export function startIpc() {
     const taskId = log?.taskId;
     if (!taskId) return;
     const text = log?.text || '';
-    if (log?.stream !== 'stderr') {
-      counter.countDiff(taskId, text);
-      setState({ diff: counter.totals() });
-    }
     setState((prev) => ({
       taskLogs: { ...prev.taskLogs, [taskId]: appendBounded(prev.taskLogs[taskId] || [], text) },
     }));
@@ -95,7 +98,11 @@ export function startIpc() {
   // back to when a provider changes its output format.
   bk.onTaskStep?.((step) => {
     if (!step) return;
-    setState((prev) => ({ steps: foldSteps(prev.steps, [step]) }));
+    setState((prev) => {
+      const steps = foldSteps(prev.steps, [step]);
+      const { added, removed } = progressOf(steps);
+      return { steps, diff: { added, removed } };
+    });
   });
 
   // Already broadcast to this window (main.js), just never consumed here before.
@@ -120,9 +127,9 @@ function applySettings(settings) {
 function ingestRun(run) {
   if (!run || !run.id) return;
   if (getState().run?.id !== run.id) {
-    counter.clear();
-    // A new run starts a new timeline as well as a new count.
-    setState({ diff: counter.totals(), steps: [] });
+    // A new run starts a new timeline as well as a new count. Carrying the previous
+    // run's tally forward would overstate what the owner is about to approve.
+    setState({ diff: { added: 0, removed: 0 }, steps: [] });
   }
   setState({ run });
 }
