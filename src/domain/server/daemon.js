@@ -28,7 +28,7 @@ const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
 const { detectAndProbeAll } = require('../pi-agent/tool-registry');
-const { FastFacilitatorRouter } = require('../pi-agent/fast-api-router');
+const { FastFacilitatorRouter, questionText } = require('../pi-agent/fast-api-router');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -515,7 +515,7 @@ class DaemonEngine extends EventEmitter {
     // The questions travel in the reply as well as in their own field. Every surface
     // renders `reply`; only the CLI knows what to do with `questions`, and a question
     // the owner cannot see is the same as one that was never asked.
-    const reply = questions.length ? `${result.reply}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}` : result.reply;
+    const reply = questions.length ? `${result.reply}\n\n${questionText(questions)}` : result.reply;
     const output = { accepted: true, kind: result.kind, reply, sessionId: session.id, turnId: result.turnId,
       provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
       questions, awaitingAnswer: questions.length > 0, requiresApproval: !!run || false };
@@ -602,7 +602,7 @@ class DaemonEngine extends EventEmitter {
     const inspected = redactPayload(String(text || ''));
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_DIRECTIVE');
     const said = inspected.text.trim(); if (!said) throw new Error('An answer is required');
-    const questions = asList(run.promptSpec?.questions);
+    const questions = Array.isArray(run.promptSpec?.questions) ? run.promptSpec.questions : asList(run.promptSpec?.questions);
     if (!questions.length) throw new Error('This plan has no unanswered question');
     const sessionId = this.runSessions.get(run.id);
     if (sessionId) this.sessions.append(sessionId, { type: 'directive', action: 'answer', text: said });

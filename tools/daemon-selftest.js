@@ -171,7 +171,8 @@ const WebSocket = require('ws');
       reset() { this.pending = null; },
       async facilitate() {
         calls += 1;
-        if (calls === 1) return { status: 'needs_clarification', provider: 'ollama', questions: ['which genre?'], latencyMs: 1 };
+        if (calls === 1) return { status: 'needs_clarification', provider: 'ollama', latencyMs: 1,
+          questions: [{ ask: 'which genre?', options: ['shooter', 'puzzle'] }] };
         return { status: 'ready', provider: 'ollama', planHash: 'plan-hash-1', latencyMs: 1,
           // `constraints` is a bare string on purpose. A small model answering an
           // array schema emits one, specText() already had to learn that, and a spec
@@ -193,9 +194,14 @@ const WebSocket = require('ws');
     // came back asking the same question instead of building anything.
     const first = await spec.turn('3djsのゲームを作ってください。');
     assert.equal(first.run, null, 'a request with an open question must not dispatch specialists yet');
-    assert.deepStrictEqual(first.questions, ['which genre?']);
+    assert.deepStrictEqual(first.questions, [{ ask: 'which genre?', options: ['shooter', 'puzzle'] }]);
     assert.equal(first.awaitingAnswer, true);
     assert.match(first.reply, /1\. which genre\?/, 'the question has to reach every surface, not just the field');
+    // The owner asked for questions they can answer by picking. An open-ended question
+    // is a form to fill in, and answering it costs more than the request did.
+    assert.match(first.reply, /a\) shooter/, 'the options have to be on screen');
+    assert.match(first.reply, /b\) puzzle/);
+    assert.match(first.reply, /おまかせ/, 'and there is always an answer that needs no decision');
 
     // The next thing typed in that session is the answer, and it becomes the spec.
     const second = await spec.turn('おまかせ', { sessionId: first.sessionId });
@@ -218,8 +224,9 @@ const WebSocket = require('ws');
 
     // Answering the `⚠ unanswered` a waiting plan already carries.
     const waiting = spec.coordinator.submit({ prompt: 'make a game', cwd: process.cwd(), mode: 'plan',
-      promptSpec: { goal: 'make a game', constraints: [], steps: [], acceptance: [], questions: ['which genre?'] } });
-    assert.deepStrictEqual(waiting.promptSpec.questions, ['which genre?']);
+      promptSpec: { goal: 'make a game', constraints: [], steps: [], acceptance: [],
+        questions: [{ ask: 'which genre?', options: ['shooter', 'puzzle'] }] } });
+    assert.equal(waiting.promptSpec.questions.length, 1);
     const answered = await spec.answerRun({ runId: waiting.id, text: 'shooter' });
     assert.notEqual(answered.run.id, waiting.id, 'the plan is rebuilt on the answer, not started on a guess');
     assert.equal(answered.answered, waiting.id);

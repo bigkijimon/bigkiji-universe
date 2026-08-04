@@ -37,7 +37,8 @@ function facilitatorPrompt(ownerText, prior = '') {
     `Owner request: """${knowledge.cleanText(ownerText, 5000)}"""\n` +
     (prior ? `Previous facilitation context: """${knowledge.cleanText(prior, 2600)}"""\n` : '') +
     (prior ? `The owner has answered the clarification. Do not ask another question; choose safe reasonable defaults and produce a decision-complete Prompt Spec.\n`
-      : `If a materially important decision is missing, ask 1-3 short questions. Otherwise produce a decision-complete Prompt Spec.\n`) +
+      : `If materially important decisions are missing, ask for ALL of them in this one round — never hold one back to ask next turn. Otherwise produce a decision-complete Prompt Spec.\n`
+        + `Every question must be answerable by picking, not by writing: give 2-5 concrete, mutually exclusive options. Never ask an open-ended question.\n`) +
     // The spec is read by Claude, Codex, GLM and Gemini, and describes identifiers,
     // paths and libraries that only exist in English. Measured 2026-08-05: a Japanese
     // request already came back as an English spec because this prompt is in English —
@@ -48,7 +49,7 @@ function facilitatorPrompt(ownerText, prior = '') {
     `Write the Prompt Spec in English, whatever language the owner used.\n` +
     `Ask your questions in the owner's own language.\n` +
     `Never translate names, file paths, identifiers, numbers, or the owner's domain terms — copy them exactly as written.\n` +
-    `Return JSON only: {"status":"needs_clarification|ready","questions":["..."],"promptSpec":{"goal":"...","constraints":["..."],"steps":["..."],"acceptance":["..."]}}`;
+    `Return JSON only: {"status":"needs_clarification|ready","questions":[{"ask":"...","options":["...","..."]}],"promptSpec":{"goal":"...","constraints":["..."],"steps":["..."],"acceptance":["..."]}}`;
 }
 async function runOllama(prompt) {
   const response = await fetch('http://127.0.0.1:11434/api/generate', {
@@ -74,6 +75,35 @@ function fallbackSpec(ownerText) {
     steps: ['Audit relevant code', 'Implement the requested change', 'Run proportional verification'], acceptance: ['Requested behavior works', 'Tests pass', 'No blocked paid provider is invoked'],
   } };
 }
+/**
+ * Questions the owner can answer by picking.
+ *
+ * The owner asked for this after a six-character request produced three open-ended
+ * questions in a row — "どのような形式の映画ですか？" is a form to fill in, not a decision
+ * to make, and answering it costs more than the request did. A question with no
+ * options is still shown: losing the question entirely would be worse than showing
+ * one that has to be typed at.
+ */
+function normalizeQuestions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 4).map((entry) => {
+    const ask = knowledge.cleanText(typeof entry === 'string' ? entry : (entry?.ask || entry?.question || ''), 240);
+    if (!ask) return null;
+    const raw = Array.isArray(entry?.options) ? entry.options : [];
+    const options = [...new Set(raw.map((o) => knowledge.cleanText(String(o), 80)).filter(Boolean))].slice(0, 5);
+    return { ask, options };
+  }).filter(Boolean);
+}
+/** Numbered questions, lettered options, and the one answer that is always available. */
+function questionText(questions) {
+  return questions.map((q, i) => {
+    const head = `${i + 1}. ${q.ask}`;
+    if (!q.options.length) return head;
+    const options = q.options.map((option, j) => `   ${String.fromCharCode(97 + j)}) ${option}`);
+    return [head, ...options].join('\n');
+  }).join('\n') + (questions.length ? '\n\n答えは「1a 2c 3b」のように並べても、言葉で書いても、「おまかせ」でも通ります。' : '');
+}
+
 function specText(spec) {
   const p = spec.promptSpec || {};
   // fallbackSpec always fills these with arrays; a model answering the same schema
@@ -116,10 +146,10 @@ class FastFacilitatorRouter {
       } catch (err) { lastError = err; }
     }
     if (!parsed) parsed = fallbackSpec(combined);
-    const questions = Array.isArray(parsed.questions) ? parsed.questions.slice(0, 3).map((q) => knowledge.cleanText(q, 240)) : [];
+    const questions = normalizeQuestions(parsed.questions);
     if (parsed.status === 'needs_clarification' && questions.length && !this.pending) {
       this.pending = { ownerText: combined, questions, provider, at: new Date().toISOString() };
-      const message = questions.map((q, i) => `${i + 1}. ${q}`).join('\n'); onDelta?.(message);
+      const message = questionText(questions); onDelta?.(message);
       return { status: 'needs_clarification', provider, questions, latencyMs: Date.now() - started, availability };
     }
     if (parsed.status === 'needs_clarification') { parsed = fallbackSpec(combined); modelWrote = false; }
@@ -152,7 +182,7 @@ class FastFacilitatorRouter {
    * asked the questions itself: no further question, one decision-complete spec.
    */
   async answer(ownerText, questions, answerText, hooks = {}) {
-    const asked = (Array.isArray(questions) ? questions : []).filter(Boolean).slice(0, 3).map((q) => knowledge.cleanText(String(q), 240));
+    const asked = normalizeQuestions(questions);
     if (!asked.length) throw new Error('There is no question to answer');
     const said = knowledge.cleanText(String(answerText || ''), 5000);
     if (!said) throw new Error('An answer is required');
@@ -163,4 +193,4 @@ class FastFacilitatorRouter {
   reset() { this.pending = null; }
 }
 
-module.exports = { PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, ollamaReady, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText };
+module.exports = { normalizeQuestions, questionText, PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, ollamaReady, availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText };
