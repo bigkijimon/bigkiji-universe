@@ -492,8 +492,16 @@ class CoreExecutionCoordinator extends EventEmitter {
           evidence: `${reason} — skipping ${task.provider} for ${Math.round(tripped.cooldownMs / 1000)}s` });
         this.emit('cooldown', { runId: run.id, ...tripped });
       }
+      // First 'model-unavailable' from a provider+model in this run is not evidence.
+      // A deleted model and a model whose server hiccuped for one call say the same
+      // sentence; the difference only shows on the retry below. Measured 2026-08-04:
+      // `pi` accepted the exact model name that had just reported "not found", so the
+      // failure the owner saw was transient and would have marked the local model down
+      // for every routing decision afterwards.
+      const transient = !ok && reason === 'model-unavailable' && !assignment.transientSeen;
+      if (transient) assignment.transientSeen = true;
       const lesson = this.registry.record({ provider: task.provider, model: task.model, role: assignment.role,
-        ok: task.status === 'completed', durationMs, tokens: task.tokens, reason });
+        ok: task.status === 'completed', durationMs, tokens: task.tokens, reason, transient });
       // Surface what PiAgent learned. A routing change the owner cannot see is
       // indistinguishable from the router being erratic.
       if (lesson) {
@@ -514,7 +522,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (failed.length && run.repairCycle < run.maxRepairCycles) {
       run.status = 'REPAIRING'; run.repairCycle += 1; this._emit(run, 'repair');
       let restarted = 0;
-      for (const item of failed) restarted += this._fallback(run, item) ? 1 : 0;
+      // Same model first, a different provider only if that fails too. Falling straight
+      // to the fallback chain on a transient outage moves free local work onto a paid
+      // provider for a blip that would have cleared on its own.
+      for (const item of failed) restarted += (this._retryTransient(run, item) || this._fallback(run, item)) ? 1 : 0;
       if (restarted) {
         run.revision += 1;
         run.planHash = knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision,
@@ -823,6 +834,45 @@ class CoreExecutionCoordinator extends EventEmitter {
    * Move an assignment to another provider and plan the replacement task.
    * @returns {boolean}
    */
+  /**
+   * One more go at the same model, for the one failure that is usually not the model's.
+   *
+   * `classifyFailure` and `retryAfterMs` have computed 'model-unavailable' all along and
+   * nothing consumed it: every failure went straight to `_fallback`, which changes
+   * provider. For a rate limit or an exhausted quota that is right — the same provider
+   * will keep failing. For 'model-unavailable' it is usually wrong, because the message
+   * a deleted model produces and the message a hiccuping local server produces are the
+   * same sentence, and the local model is the free, private one.
+   *
+   * Exactly once per assignment, and only for this reason. A model that really is gone
+   * fails the retry, gets its registry penalty, and falls back on the next cycle — one
+   * cycle later than before, which is the price of not abandoning the free model over a
+   * blip.
+   *
+   * @returns {boolean} true when a retry was planned and the caller should not fall back
+   */
+  _retryTransient(run, assignment) {
+    const task = this.taskRunner.get(assignment.taskId);
+    if (String(task?.failureReason || '') !== 'model-unavailable') return false;
+    if (assignment.transientRetried) return false;
+    assignment.transientRetried = true;
+    const retry = this.taskRunner.plan({
+      id: `${assignment.taskId}-retry-${run.repairCycle}`,
+      // Provider AND model unchanged — that is the whole point of this path.
+      provider: assignment.provider, model: assignment.model, cwd: run.cwd, planHash: run.planHash,
+      prompt: task?.prompt || run.prompt,
+      metadata: { ...(task?.metadata || {}), runId: run.id, repairCycle: run.repairCycle, transientRetry: true },
+    });
+    this.taskToRun.set(retry.id, run.id);
+    assignment.taskId = retry.id; assignment.status = retry.status;
+    assignment.disclosureHash = retry.disclosure?.disclosureHash || '';
+    assignment.learned = false;
+    knowledge.recordEvent(run.id, { type: 'transient-retry', status: run.status, provider: assignment.provider,
+      evidence: `${assignment.role}: ${assignment.model} reported unavailable — retrying the same model once before falling back` });
+    this.emit('retry', { runId: run.id, role: assignment.role, provider: assignment.provider, model: assignment.model, reason: 'model-unavailable' });
+    return true;
+  }
+
   _reassign(run, assignment, next) {
     const oldTask = this.taskRunner.get(assignment.taskId);
     const model = resolveModel(next, run.prompt, assignment.role, { write: assignment.write });

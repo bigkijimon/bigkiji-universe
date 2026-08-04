@@ -164,6 +164,66 @@ ok('the registry can now tell the tiers apart', () => {
     'which is the whole point — one worked and one did not');
 });
 
+// ---------------------------------------------------------------------------
+// One blip must not cost the local model its reputation.
+//
+// 'model-unavailable' is the one failure class where the message is genuinely
+// ambiguous: a model that has been deleted and a model whose server hiccuped for one
+// call say exactly the same sentence. Measured 2026-08-04 — `pi` accepted the exact
+// model name that had just reported "not found", so the failure the owner watched was
+// transient. It was still being scored as a fact about the model, and the model in
+// question is the free, private, no-quota one the owner keeps as the last resort.
+//
+// An earlier diagnosis of this same screen blamed an `ollama/` prefix in task-runner
+// and was wrong; both name forms were tested against the real CLI and both returned
+// OK. These assertions exist so the corrected diagnosis is the one that survives.
+// ---------------------------------------------------------------------------
+
+ok('a first model-unavailable leaves no mark, a second one does', () => {
+  const { ModelCapabilityRegistry } = require('../src/domain/pi-agent/model-capability-registry');
+  const registry = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 't-')) });
+  const local = LOCAL_MODELS?.planner || 'qwen3.5:35b-a3b';
+  const key = `ollama::${local}`;
+
+  registry.record({ provider: 'ollama', model: local, role: 'leader', ok: false,
+    reason: 'model-unavailable', transient: true });
+  const afterBlip = registry.snapshot().performance.models[key];
+  assert.ok(!afterBlip || !afterBlip.failures,
+    `a transient sighting must not be scored: ${JSON.stringify(afterBlip)}`);
+
+  registry.record({ provider: 'ollama', model: local, role: 'leader', ok: false,
+    reason: 'model-unavailable', transient: false });
+  const afterReal = registry.snapshot().performance.models[key];
+  assert.ok(afterReal && afterReal.failures >= 1,
+    'the second one is evidence and must be recorded as a failure');
+});
+
+ok('rate-limit and quota are still never scored, transient or not', () => {
+  const { ModelCapabilityRegistry } = require('../src/domain/pi-agent/model-capability-registry');
+  const registry = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'th-')) });
+  for (const reason of ['rate-limit', 'quota']) {
+    registry.record({ provider: 'glm', model: GLM_MODELS.flash, role: 'debug', ok: false, reason });
+    registry.record({ provider: 'glm', model: GLM_MODELS.flash, role: 'debug', ok: false, reason });
+  }
+  const row = registry.snapshot().performance.models[`glm::${GLM_MODELS.flash}`];
+  assert.ok(!row || !row.failures,
+    'being throttled is a fact about the calendar, not about the provider');
+});
+
+ok('the retry keeps the same model instead of jumping to a paid provider', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent',
+    'core-execution-coordinator.js'), 'utf8');
+  // The retry must run BEFORE the fallback chain, or the free model is abandoned first
+  // and the retry never happens.
+  assert.match(source, /this\._retryTransient\(run, item\) \|\| this\._fallback\(run, item\)/,
+    'the same-model retry is tried first');
+  const body = source.slice(source.indexOf('_retryTransient(run, assignment)'));
+  assert.match(body.slice(0, 1400), /provider: assignment\.provider, model: assignment\.model/,
+    'and it reuses the provider and model rather than resolving new ones');
+  assert.match(body.slice(0, 1400), /if \(assignment\.transientRetried\) return false;/,
+    'exactly once, so a model that really is gone still falls back');
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`model fleet selftest: ${failures} FAILED`); process.exit(1); }
-console.log('model fleet selftest: PASS · every provider names its model · cheap is the exception · several at once · one GPU job at a time · owner sets the width');
+console.log('model fleet selftest: PASS · every provider names its model · cheap is the exception · several at once · one GPU job at a time · owner sets the width · one blip does not cost the local model its reputation');

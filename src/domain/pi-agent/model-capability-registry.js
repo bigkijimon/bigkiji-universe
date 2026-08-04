@@ -195,9 +195,17 @@ class ModelCapabilityRegistry {
   // every routing decision afterwards — the same shape of bug as the 207
   // samples with zero successes that the migration above cleans up, arriving by
   // a different road.
-  record({ provider, role, ok, durationMs = 0, tokens = {}, model = '', reason = '' } = {}) {
+  //
+  // `transient` is the caller saying "this one is not evidence yet". It exists for
+  // 'model-unavailable', which is genuinely ambiguous: a model that has been deleted
+  // and a model whose server hiccuped for one call produce the identical message. The
+  // first sighting is therefore recorded without a penalty and retried; only a second
+  // failure of the same provider and model in the same run is treated as a fact about
+  // the model. Getting this backwards permanently marks down the best local model —
+  // which is free, private and the owner's stated last resort — over one GPU blip.
+  record({ provider, role, ok, durationMs = 0, tokens = {}, model = '', reason = '', transient = false } = {}) {
     if (!provider) return;
-    if (!ok && THROTTLED.has(reason)) return this._throttled({ provider, role, model, reason });
+    if (!ok && (THROTTLED.has(reason) || transient)) return this._throttled({ provider, role, model, reason });
     for (const id of [...new Set([provider, ModelCapabilityRegistry.key(provider, model)])]) {
       const row = this.performance.models[id] || { samples: 0, successes: 0, failures: 0, ewmaLatencyMs: 0, roles: {} };
       row.provider = provider; if (model) row.model = model;
