@@ -23,7 +23,6 @@ Rules for this file:
 | 8 | 2026-08-04 | Particle "gravity" must be **additive on top of** the deterministic hash-seeded position, bounded (lerp ≤ 0.3) | docs/v3/06-rendering.md §3.3 | Deterministic placement is what gives the owner spatial memory of their own vault. Replacing it makes the universe unrecognisable between runs |
 | 9 | 2026-08-04 | Particle motion moves into the **vertex shader**; the per-frame JS loop goes | claude | `synapse.js:424-429` integrates every file on the CPU every frame. Stardust already does it on the GPU for 30k points, so the pattern exists in-repo |
 | 10 | 2026-08-04 | The particle design knowledge goes into `product-design/references/particle-fields.md`, not a new skill | claude | The owner's own rule, recorded in `skill-registry.js` CATEGORIES: one skill per category, and UI work folds into the big existing one |
-
 | 11 | 2026-08-04 | Per-agent progress has **no denominator**: running agents get an indeterminate gauge plus a count of finished steps, only terminal ones get a filled bar, `—` ≠ 0. The one real fraction (assignments finished / planned) sits in the card header | claude | A provider never announces how many tools it will use. Same rule as `progressOf()` and `pricing.js` |
 | 12 | 2026-08-04 | The particle motion becomes a bounded rotation about each file's **real parent-folder hub**, GPU-integrated | claude | `synapse.js:424-429` integrated every file on the CPU every frame. Superseded in part by #13 — on a disc the rotation is in-plane about the disc axis |
 | 13 | 2026-08-05 | Each cloud becomes a **flat spiral disc**: arm = folder (categorical, assigned from sorted keys), radius = depth then recency (continuous). **Every particle moved once** | owner | 「全粒子の表示動かしても構いません。しっかり繋がりがわかるようにシナプスの固まりを表してください」. Overrides the "do not move placement" half of #8; the deterministic half stands — the new positions are still seeded from the path and never drift |
@@ -34,7 +33,7 @@ Rules for this file:
 |---|---|
 | Does the synapse show at all on the paper theme, or only on studio? | Needs a screenshot judgement. If the inverted field reads as dirt rather than a faint line drawing, the answer changes the whole look of the default theme |
 | ~~Should each cloud become a flat spiral disc?~~ | **Answered 2026-08-05 by the owner: yes.** 「全粒子の表示動かしても構いません」. Decision #13 below |
-| Should a transient `model-unavailable` mark the model unusable in the capability registry? | Get it wrong and one GPU hiccup permanently blacklists the best local model |
+| ~~Should a transient `model-unavailable` mark the model unusable?~~ | **Answered 2026-08-05 — see "Answered since" at the foot of this file.** |
 
 ## Measured facts worth not rediscovering
 
@@ -58,3 +57,10 @@ Rules for this file:
 - `onBeforeCompile` on a Three.js material **requires `customProgramCacheKey`** here:
   four PointsMaterials in synapse.js share identical parameters, and without a distinct
   key the hub material can be given the leaf material's program and lose its attributes.
+
+## Answered since (2026-08-05)
+
+| Question | Answer | Who |
+|---|---|---|
+| Should a transient `model-unavailable` mark the model unusable in the capability registry? | **No, not on the first sighting.** It is recorded without a penalty and the same model is retried once; only a second failure of the same provider+model in one run is scored. `transient` is an explicit argument rather than adding the reason to `THROTTLED`, because a model that really is gone still has to be learned | claude |
+
