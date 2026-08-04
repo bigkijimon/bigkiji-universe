@@ -101,13 +101,21 @@ class DaemonClient extends EventEmitter {
     const response = await fetch(`${this.base}${route}`, { headers: this.headers() });
     if (!response.ok) throw new Error(`Daemon HTTP ${response.status} on ${route}`); return response.json();
   }
-  async post(route, body = {}) {
-    const response = await fetch(`${this.base}${route}`, { method: 'POST', headers: this.headers({ 'content-type': 'application/json' }), body: JSON.stringify(body) });
+  // `signal` so a caller can stop waiting.
+  //
+  // Without it, Ctrl-C during a turn left the CLI holding an await it could not release:
+  // the interface stayed alive and the interrupt reached the coordinator, but the next
+  // command queued behind a conversation the owner had already given up on. Aborting the
+  // request is the CLI letting go of the answer — the daemon finishes its own work either
+  // way, which is why /api/abort is sent alongside rather than instead.
+  async post(route, body = {}, { signal } = {}) {
+    const response = await fetch(`${this.base}${route}`, { method: 'POST', signal,
+      headers: this.headers({ 'content-type': 'application/json' }), body: JSON.stringify(body) });
     if (!response.ok) { const detail = await response.text(); throw new Error(`Daemon HTTP ${response.status}: ${detail.slice(0, 240)}`); }
     return response.json();
   }
   state() { return this.get('/api/state'); }
-  turn(text, options = {}) { return this.post('/api/turn', { text, ...options }); }
+  turn(text, { signal, ...options } = {}) { return this.post('/api/turn', { text, ...options }, { signal }); }
   prompt(text, options = {}) { return this.post('/api/prompt', { text, ...options }); }
   approve(run) { const value = typeof run === 'string' ? { id: run } : run; return this.post('/api/run/approve', value); }
   syncCredentials(values, { replace = false } = {}) { return this.post('/api/security/credentials', { values, replace }); }

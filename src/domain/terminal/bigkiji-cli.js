@@ -186,6 +186,7 @@ async function repl(client) {
   const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
   let abortedTurn = false; // one abort per turn; the second Ctrl-C leaves
+  let turnAbort = null; // lets Ctrl-C stop waiting on the answer, not just ask the daemon to stop
   const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
   // Readline owns the input row: re-issue the prompt or the line being typed gets
   // eaten, then repair the rows underneath it — readline's refresh emits ESC[0J,
@@ -539,13 +540,18 @@ async function repl(client) {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the
         // transcript should hold nothing but the question and the answer.
-        const result = await client.turn(text, { mode: transportMode(mode), sessionId }); sessionId = result.sessionId;
+        turnAbort = new AbortController();
+        const result = await client.turn(text, { mode: transportMode(mode), sessionId, signal: turnAbort.signal }); sessionId = result.sessionId;
         emit(renderAssistantText(result.reply, view()));
         if (result.draft) emit(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, view()));
         if (result.run) emitRun(result.run);
       }
-    } catch (error) { emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true })); }
-    finally { turnStartedAt = 0; }
+    } catch (error) {
+      // An abort the owner asked for is not an error to report as one. They pressed
+      // Ctrl-C; they know.
+      if (error?.name !== 'AbortError') emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true }));
+    }
+    finally { turnStartedAt = 0; turnAbort = null; }
     paintFooter(true); refreshPrompt();
   };
 
@@ -624,6 +630,10 @@ async function repl(client) {
     if (turnStartedAt && !abortedTurn) {
       abortedTurn = true;
       emit(renderNote('interrupting — ctrl-c again to leave bigkiji', view()));
+      // Two halves, and both are needed. The abort below tells the coordinator to stop
+      // the run; this releases the await the REPL is sitting on, so the next command is
+      // not queued behind an answer the owner has already abandoned.
+      try { turnAbort?.abort(); } catch (_) {}
       client.post('/api/abort')
         .then((result) => emit(renderToolCall('abort', phrase(result?.status || 'sent'), view())))
         .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 2, isError: true })))
@@ -638,6 +648,18 @@ async function repl(client) {
     if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect();
     process.exit(interrupted ? 130 : 0);
   });
+  // Say what is already waiting, on the way in.
+  //
+  // offerApproval() only fires on a `run` event, so a run that went to sleep waiting
+  // before this session started announced itself nowhere: the transcript opened empty
+  // and the sole mention was a footer segment. That is the exact shape of the original
+  // failure — two runs waiting eleven hours while the owner asked whether anything was
+  // happening — so the first thing the transcript says is what is waiting for them.
+  const waitingAtStart = waitingRuns();
+  if (waitingAtStart.length) {
+    emit([...renderToolCall('runs', `${waitingAtStart.length} waiting for you`, view()),
+      ...renderNote(`nothing is running. /runs to read them ${glyphs().note} /approve ${shortRunId(waitingAtStart.at(-1).id)} to start the newest`, view())]);
+  }
   paintFooter(true); refreshPrompt();
 }
 

@@ -543,29 +543,45 @@ function runBrief(run = {}, options = {}) {
   return renderToolResult(rows.join('\n'), { ...options, indent: 2, maxLines: 8 });
 }
 
-const READS_PER_PROVIDER = 6;
+const READS_SHOWN = 4;
 
 /**
- * Which files each agent will actually open, from the disclosure the owner is approving.
+ * Which files the agents will actually open, from the disclosure the owner is approving.
  *
  * The disclosure is the thing the approval hash is sealed against, so this is not a
  * summary of the plan — it is the plan, in the same bytes the coordinator will check.
+ *
+ * Identical lists are merged. The context pruner scores files per prompt, not per
+ * provider, so three assignments on one request routinely get the same slice — printed
+ * once each that was three wrapped copies of the same six paths, which is how a block
+ * meant to inform an approval turns into something nobody reads.
  * @returns {string[]}
  */
 function runReads(run = {}, options = {}) {
   const { mark = glyphs() } = options;
-  const rows = [];
+  const byFiles = new Map();
   for (const disclosure of run.disclosures || []) {
     const files = (disclosure.files || []).filter((file) => file && file.path);
     if (!files.length) continue;
-    const shown = files.slice(0, READS_PER_PROVIDER).map((file) => {
+    const labels = files.map((file) => {
       const ranges = Array.isArray(file.ranges) ? file.ranges.join(',') : '';
       return ranges ? `${shortenPath(file.path)} ${ranges}` : shortenPath(file.path);
     });
-    const hidden = files.length - shown.length;
-    rows.push(`${lower(disclosure.provider || 'agent')} reads: ${shown.join(` ${mark.note} `)}${
-      hidden ? ` ${mark.ellipsis} +${hidden} ${hidden === 1 ? 'file' : 'files'}` : ''}`);
+    // Keyed on the whole list, never on the truncated line. Two agents whose first four
+    // files match and whose fifth does not are reading different things, and merging
+    // them under one row would say they are not.
+    const key = labels.join(' ');
+    const entry = byFiles.get(key) || { labels, who: [] };
+    const provider = lower(disclosure.provider || 'agent');
+    if (!entry.who.includes(provider)) entry.who.push(provider);
+    byFiles.set(key, entry);
   }
+  const rows = [...byFiles.values()].map(({ labels, who }) => {
+    const shown = labels.slice(0, READS_SHOWN);
+    const hidden = labels.length - shown.length;
+    return `${who.join(', ')} reads: ${shown.join(` ${mark.note} `)}${
+      hidden ? ` ${mark.ellipsis} +${hidden} ${hidden === 1 ? 'file' : 'files'}` : ''}`;
+  });
   if (!rows.length) return [];
   return renderNote(rows.join('\n'), { ...options, indent: 2 });
 }
@@ -619,7 +635,13 @@ function renderEvent(event, data = {}, options = {}) {
       // travelled all the way from the coordinator and was dropped right here, so
       // the only thing the transcript ever said about a failure was that it failed.
       const failure = String(data.error || data.reason || '').trim();
-      return [...head, ...runBrief(data, base), ...list, ...runReads(data, base),
+      // The goal, the questions and the file list exist to inform a decision, so they
+      // print where there is a decision to make. A run publishes an event on every
+      // status change, and repeating a twenty-line brief each time buries the line that
+      // actually changed — measured on a live run 2026-08-04, four identical blocks in
+      // as many seconds. Once it is executing, the step feed is the thing worth reading.
+      const deciding = data.status === 'AWAITING_APPROVAL' || data.status === 'SECURITY_BLOCKED';
+      return [...head, ...(deciding ? runBrief(data, base) : []), ...list, ...(deciding ? runReads(data, base) : []),
         ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
     }
     // One tool call by one delegated agent, as it happens.
