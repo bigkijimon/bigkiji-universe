@@ -192,7 +192,39 @@ assert.strictEqual(expandPath('~/x', home), path.join(home, 'x'), 'tilde expansi
   const hostile = store.update({ paths: { tools: 'not-an-object' } });
   assert.deepStrictEqual(hostile.paths.tools, {}, 'a hand-edited settings file cannot feed junk into detection');
 
+  // The two tools the owner drives that nothing here knew about.
+  //
+  // Blender generates the thin/lattice assets and cleans GLBs for Unreal; Unreal is
+  // the editor those assets go into. Both were installed and in daily use while the
+  // fleet display counted neither.
+  {
+    const registry = require('../src/domain/pi-agent/tool-registry');
+    const byId = Object.fromEntries(registry.detectAll({ env: {}, home: '/nonexistent-home', saved: {}, systemBinDirs: [] })
+      .map((tool) => [tool.id, tool]));
+    for (const id of ['blender', 'unreal']) {
+      assert.ok(byId[id], `${id} has to be in the registry at all`);
+      assert.match(byId[id].settingKey, /^tools\./, `${id} needs its own settings key so it can be pointed elsewhere`);
+    }
+    assert.equal(byId.blender.probe, false, 'Blender runs per job with --background — there is no server to health-check');
+    assert.equal(byId.unreal.probe, true, 'the editor does hold a port open, and it is worth checking');
+
+    // Port 8000 is ComfyUI on this machine, and it is also the plugin's default.
+    // Pointed at the default, a client reached ComfyUI, was answered in HTML, and
+    // reported a connection to an editor that was not running.
+    const unreal = registry.TOOLS.find((tool) => tool.id === 'unreal');
+    assert.ok(unreal.probe.urls.every((url) => !url.includes(':8000')),
+      'the editor must never be probed on the port ComfyUI already holds');
+    assert.match(unreal.probe.urls[0], /:55557\//);
+    const html = '<!DOCTYPE html><html><head><title>ComfyUI</title></head></html>';
+    assert.equal(unreal.probe.accept(html, { status: 200 }, 'http://127.0.0.1:55557/'), '',
+      'a web page is not an editor, whatever port it came from');
+    assert.equal(unreal.probe.accept('', { status: 503 }, 'http://127.0.0.1:55557/'), '',
+      'a server that is failing is not a server that is ready');
+    assert.match(unreal.probe.accept('Not Found', { status: 404 }, 'http://127.0.0.1:55557/'), /55557/,
+      'the MCP server answers 404 on the root and that still proves the port is open');
+  }
+
   fs.rmSync(userData, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
-  console.log('tool registry selftest: PASS · sync detection · found ≠ connected · probes resolve within timeout · settings normalised');
+  console.log('tool registry selftest: PASS · sync detection · found ≠ connected · probes resolve within timeout · settings normalised · Blender and Unreal are managed, and the editor is never probed on ComfyUI\'s port');
 })().catch((error) => { console.error(error); process.exit(1); });

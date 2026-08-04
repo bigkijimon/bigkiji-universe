@@ -180,6 +180,54 @@ const TOOLS = Object.freeze([
     probe: null,
   },
   {
+    id: 'blender',
+    label: 'Blender',
+    kind: 'binary',
+    settingKey: 'tools.blender',
+    purpose: 'Headless procedural modelling and GLB cleanup for Unreal.',
+    env: ['BLENDER_BIN'],
+    // `blender` is rarely on PATH from a .app install, so the bundle is checked first.
+    binaries: ['blender'],
+    candidates: (ctx) => ['/Applications/Blender.app/Contents/MacOS/Blender',
+      path.join(ctx.home, 'Applications', 'Blender.app', 'Contents', 'MacOS', 'Blender')],
+    // Run per job with --background and no server, so there is nothing to health-check.
+    // Asset generation is CPU work and does not contend for the GPU with ComfyUI —
+    // only a Cycles *render* would, and this pipeline exports meshes rather than
+    // rendering them. Same reasoning as LTX-2 above: inventing an endpoint for a batch
+    // tool would be inventing health.
+    probe: null,
+  },
+  {
+    id: 'unreal',
+    label: 'Unreal Engine',
+    kind: 'directory',
+    settingKey: 'tools.unreal',
+    purpose: 'Game editor, driven over its Model Context Protocol plugin.',
+    env: ['UE_ROOT', 'UNREAL_ROOT'],
+    // The engine lives in the owner's home, not under /Users/Shared/Epic Games where
+    // the installer usually puts it; the shared path is kept as a fallback for a
+    // machine that did it the ordinary way.
+    candidates: (ctx) => [path.join(ctx.home, 'UE_5.8'), '/Users/Shared/Epic Games/UE_5.8'],
+    probe: {
+      type: 'http',
+      // 55557, never 8000.
+      //
+      // The plugin's default port is 8000, and on this machine 8000 is ComfyUI. A
+      // client pointed at the default therefore reached ComfyUI, was answered in
+      // HTML, and reported a connection to an editor that was not running. The port
+      // is pinned here for the same reason the owner's notes pin it at the launch
+      // flag: a default that is already taken is not a default.
+      urls: ['http://127.0.0.1:55557/'],
+      accept: (body, response, url) => {
+        // Whatever the port, a web page is not an editor. This is the ComfyUI answer
+        // that caused the false positive, refused explicitly rather than by luck.
+        if (/<!doctype html|comfyui/i.test(body)) return '';
+        if (response.status >= 500) return '';
+        return `Answering on ${new URL(url).host} — the editor's MCP port is open`;
+      },
+    },
+  },
+  {
     id: 'ollama',
     label: 'Ollama',
     kind: 'binary',
