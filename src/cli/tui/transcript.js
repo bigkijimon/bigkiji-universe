@@ -547,6 +547,14 @@ function runBrief(run = {}, options = {}) {
   if (flat(spec.goal)) rows.push(`goal: ${flat(spec.goal)}`);
   const constraints = list(spec.constraints);
   if (constraints.length) rows.push(`constraints: ${constraints.join(' / ')}`);
+  // Decided by the fleet, not by the owner. Hands-off mode answers its own open
+  // questions so nothing stops mid-run; this is where those answers are declared, so
+  // the owner reviewing the finished thing can see what was settled for them.
+  const decided = Array.isArray(spec.decidedWithoutOwner) ? spec.decidedWithoutOwner : [];
+  for (const item of decided) {
+    const ask = flat(typeof item === 'string' ? item : item?.ask);
+    if (ask) rows.push(`decided for you: ${ask}`);
+  }
   const questions = list(spec.questions);
   for (const question of questions) rows.push(`${mark.warn} unanswered: ${question}`);
   // A question with no way to answer it is what produced the eleven-hour wait. The

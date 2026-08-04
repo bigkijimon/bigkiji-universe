@@ -494,7 +494,13 @@ class DaemonEngine extends EventEmitter {
       if (facilitation?.status === 'needs_clarification' && mode === 'demo') {
         this.publish('commentary', { source: 'Front desk', status: 'PLANNING',
           text: `Deciding ${facilitation.questions.length} open question${facilitation.questions.length === 1 ? '' : 's'} without the owner — hands-off mode.` });
+        const decided = facilitation.questions;
         facilitation = await this._facilitate(HANDS_OFF_ANSWER);
+        // What was decided without asking. Hands-off is not the same as unaccountable:
+        // the owner sees one instruction go in and a finished thing come out, so the
+        // decisions made on their behalf have to be on the plan they review at the end,
+        // named, rather than inferred from the result.
+        if (facilitation) facilitation.decidedWithoutOwner = decided;
       }
       if (facilitation?.status === 'needs_clarification') {
         // No run yet. A missing decision is cheaper to ask about than to guess at,
@@ -507,7 +513,8 @@ class DaemonEngine extends EventEmitter {
       const goal = written?.goal || result.summary || clean;
       const promptSpec = written
         ? { goal, constraints: asList(written.constraints), steps: asList(written.steps),
-          acceptance: asList(written.acceptance), questions: [], ideaId: draft?.id }
+          acceptance: asList(written.acceptance), questions: [],
+          decidedWithoutOwner: facilitation?.decidedWithoutOwner || [], ideaId: draft?.id }
         : { goal, constraints: result.requirements || [], steps: result.todos || [],
           acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
       // The mode reaches the coordinator now.

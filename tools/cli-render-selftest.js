@@ -883,6 +883,13 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
       questions: ['What genre or scope do you envision?'] },
   }, { width: 100 })).join('\n');
   assert.match(lines, /unanswered: What genre or scope/, 'the question still reaches the screen');
+  const handsOff = plainLines(T.renderEvent('run', {
+    id: 'run-9', status: 'AWAITING_APPROVAL', assignments: [],
+    promptSpec: { goal: 'Build a browser shooter.', constraints: [], questions: [],
+      decidedWithoutOwner: [{ ask: 'どのジャンルにしますか？' }] },
+  }, { width: 100 })).join('\n');
+  assert.match(handsOff, /decided for you: どのジャンルにしますか？/,
+    'what hands-off settled without asking has to be visible on the plan');
   assert.match(lines, /\/answer run-msesmjj9 <your answer>/, 'and so does the way to answer it');
   const quiet = plainLines(T.renderEvent('run', {
     id: 'run-7', status: 'AWAITING_APPROVAL', assignments: [],

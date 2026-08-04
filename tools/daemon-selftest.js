@@ -270,6 +270,11 @@ const WebSocket = require('ws');
     assert.equal(out.run.promptSpec.goal, 'Build a browser shooter.', 'the decisions are made and written into the spec');
     assert.notEqual(out.run.status, 'AWAITING_APPROVAL', 'a hands-off writing run does not wait for approval');
     assert.equal(calls, 2, 'the open questions are answered by a second facilitation, not by guessing');
+    // Hands-off is not unaccountable. The owner sees one instruction go in and a
+    // finished thing come out, so what was settled for them is named on the plan.
+    assert.deepStrictEqual(out.run.promptSpec.decidedWithoutOwner,
+      [{ ask: 'which genre?', options: ['shooter', 'puzzle'] }],
+      'the decisions made without asking have to be declared');
     // Permissive on this machine, never over the network. The daemon listens on
     // 0.0.0.0 and a token on the LAN must not be able to buy unattended writes.
     assert.equal(effectiveMode({ socket: { remoteAddress: '192.168.1.20' } }, 'demo'), 'plan',
