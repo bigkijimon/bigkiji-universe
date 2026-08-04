@@ -129,11 +129,27 @@ ok('the extractor really does reject the bug that shipped', () => {
 // script is the outage; this states which buttons depend on it, so the next person
 // deleting "an unused id" can see what it costs.
 ok('the tray buttons the owner clicks are still wired inside that script', () => {
+  // Read the buttons out of the file rather than naming them here. The list used to be
+  // hardcoded as ['openConsole', 'openCanvas'], and when the console was retired the
+  // honest change — deleting a button — failed a test that was asserting the button's
+  // existence rather than its wiring. What matters is that every button the tray draws
+  // does something, not which buttons there are.
   const html = fs.readFileSync(path.join(UI, 'tray.html'), 'utf8');
-  for (const id of ['openConsole', 'openCanvas']) {
-    assert.ok(html.includes(`getElementById('${id}')`), `${id} lost its listener`);
-    assert.ok(new RegExp(`id="${id}"`).test(html), `${id} lost its element`);
-  }
+  const buttons = [...html.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(buttons.length >= 4, `found ${buttons.length} tray buttons — the extractor is probably broken, not the file`);
+  const unwired = buttons.filter((id) => !html.includes(`getElementById('${id}')`)
+    && !html.includes(`getElementById("${id}")`)
+    && !new RegExp(`[#\\[]${id}\\b`).test(html));
+  assert.deepStrictEqual(unwired, [], `tray buttons with no listener anywhere in the file: ${unwired.join(', ')}`);
+});
+
+// The console window is retired (docs/v3/design-decisions.md #1). Nothing the owner can
+// click may reach it: the tray's two buttons opened two different windows, and having
+// them both quietly resolve to the same one is the confusion that decision removed.
+ok('no tray button offers the retired console', () => {
+  const html = fs.readFileSync(path.join(UI, 'tray.html'), 'utf8');
+  assert.ok(!/id="openConsole"/.test(html), 'the CONSOLE button is back in the tray');
+  assert.ok(/id="openCanvas"/.test(html), 'the one remaining button lost its id');
 });
 
 if (failures) { console.error(`inline script selftest: ${failures} FAILED`); process.exit(1); }

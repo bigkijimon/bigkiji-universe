@@ -248,6 +248,36 @@ for (const [label, files] of CSS_GROUPS) {
   report.push(`   ok   ${label} — ${used} var() references against ${declared.size} declared tokens`);
 }
 
+// An inline style attribute beats every selector that lacks !important, so a stylesheet
+// rule that tries to override one is discarded exactly the way an undefined var() is —
+// silently, and with the file still reading as if it worked.
+//
+// Measured: main.html carried `<div id="views" style="…display:flex…">`, and the paper
+// theme's `:root[data-theme="paper"] #views { display: none }` had therefore never once
+// taken effect. The LOD chips sat on top of the conversation for the whole life of the
+// theme, in a rule written specifically to remove them. Same failure shape as the label
+// opacity that a per-frame writer was overwriting: the code says one thing, the cascade
+// says another, and only a screenshot disagrees.
+//
+// Only `display` is checked. It is the property where the mistake actually costs a
+// surface, and widening this to every property would flag the many inline positions and
+// colours that no rule is competing with.
+for (const [label, files] of CSS_GROUPS) {
+  const shadowed = [];
+  for (const file of files.filter((f) => f.endsWith('.html'))) {
+    const html = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const [, id, style] of html.matchAll(/<[a-z]+[^>]*\bid="([^"]+)"[^>]*\bstyle="([^"]*)"/gi)) {
+      if (!/(^|;)\s*display\s*:/i.test(style)) continue;
+      // A rule that sets display on this id — the whole document is one string here, so
+      // this finds the competing rule wherever in the file it was written.
+      const rule = new RegExp(`#${id}\\b[^{]*\\{[^}]*display\\s*:[^;!}]*[;}]`, 'i');
+      if (rule.test(html)) shadowed.push(`${file}: #${id} has an inline display, so the stylesheet rule that sets its display is discarded`);
+    }
+  }
+  failures.push(...shadowed);
+  report.push(`   ok   ${label} — no stylesheet display rule is shadowed by an inline style`);
+}
+
 console.log(report.join('\n'));
 assert.deepStrictEqual(failures, [], `\nUnreadable text:\n  ${failures.join('\n  ')}\n`);
 console.log(`\ncontrast selftest: PASS · ${report.length} foreground/background pairs measured across light and dark · `

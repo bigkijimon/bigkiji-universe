@@ -61,7 +61,7 @@
       banner: '❖ BigKiji Universe — live zsh shell. You can also send from the command bar above',
       transcribing: '🎙 transcribing…',
       coreThink: 'CORE THINKING · π',
-      canvasBtn: '⛶ CANVAS',
+      canvasBtn: '⛶ OPEN',
       aiBtn: 'π AI', shellBtn: '❯ SHELL',
     },
     ja: {
@@ -80,7 +80,7 @@
       banner: '❖ BigKiji Universe — 実シェル(zsh)稼働中。上の指示バー(⏎)からも送れます',
       transcribing: '🎙 文字起こし中…',
       coreThink: 'CORE THINKING · π',
-      canvasBtn: '⛶ CANVAS',
+      canvasBtn: '⛶ OPEN',
       aiBtn: 'π AI', shellBtn: '❯ SHELL',
     },
   };

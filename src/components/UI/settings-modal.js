@@ -402,6 +402,11 @@
       render();
       button?.addEventListener('click', open);
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); if (e.key === ',' && e.metaKey) { e.preventDefault(); open(); } });
+      // The application menu's Settings item sends this. Only the console renderer was
+      // listening (console-app/src/lib/ipc.js), so with the console retired the menu item
+      // opened a window and then did nothing. It belongs here, where the modal is, rather
+      // than in each window that hosts it.
+      window.bigkiji.onOpenSettings?.(() => open());
       // Another window (or the tray) may change settings; keep this modal and the name in sync.
       window.bigkiji.onWorkspaceChanged?.((next) => {
         workspaces = next;

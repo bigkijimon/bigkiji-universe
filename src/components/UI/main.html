@@ -783,10 +783,38 @@
   :root[data-theme="paper"] #canvasWrap canvas {
     filter: invert(1) hue-rotate(180deg) saturate(.5);
     mix-blend-mode: multiply; opacity: .42; }
-  /* LOD controls are a tool for looking at the scene; they belong with the rest of
-     the instrumentation, not on top of a conversation. */
-  :root[data-theme="paper"] #views { display: none; }
+  /* ── The scene stops narrating over the conversation ────────────────────────────
+     Four HUD layers sit between z-index 25 and 28, all of them above #chatLayer at 1,
+     and each was written when this window WAS the scene:
+
+       #views     LOD chips (SYSTEM / FILES / CLOSE / AUTO) — a tool for looking at the
+                  scene, not for talking to BigKiji
+       #popups    3-second event toasts and the near-LOD museum plates. Measured: a
+                  synthetic run photographed a toast reading "Local Qwen planner · SNAP
+                  visual test" lying across the work card
+       #crawl     the ticker, which narrates the same events a second time
+       #workState WORKING / IDLE — and this one contradicts the header. It means "a bus
+                  event arrived within 5 s" (synapse.js), while the header's 待機中 /
+                  実行中 means "a run is executing". Two different facts, two words that
+                  read as the same fact, six inches apart. The header's is the one about
+                  the owner's work, so it is the one that stays.
+
+     All four follow decision #3: instrumentation lives behind ⚡詳細, default off. None
+     is deleted — the ids are synapse.js's and removing them kills the window at load —
+     and studio keeps every one of them, because there the scene is the subject.
+
+     The layout for #views moved here from an inline style attribute. Inline wins over
+     any selector without !important, so the hide rule below had never once taken effect
+     and the chips sat on the conversation for the whole life of the paper theme.
+     tools/contrast-selftest.js now fails on that shape. */
+  #views { position: absolute; top: 8px; left: 10px; z-index: 28; display: flex; gap: 4px; }
+  :root[data-theme="paper"] #views,
+  :root[data-theme="paper"] #popups,
+  :root[data-theme="paper"] #crawl,
+  :root[data-theme="paper"] #workState { display: none; }
   body.detail-on #views { display: flex !important; }
+  body.detail-on #popups, body.detail-on #crawl { display: block !important; }
+  body.detail-on #workState { display: flex !important; }
 
   #chatLayer { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column;
     min-height: 0; pointer-events: none; }
@@ -1021,7 +1049,11 @@
     <div class="stage">
       <div id="canvasWrap">
         <div id="workState" class="idle"><span id="workCat" aria-hidden="true"></span><i></i><span>IDLE</span></div>
-        <div id="views" style="position:absolute;top:8px;left:10px;z-index:28;display:flex;gap:4px">
+        <!-- The layout moved to the stylesheet (search #views) because it was inline,
+             and an inline `display:flex` outranks any selector without !important. The
+             paper theme's rule hiding these has therefore never once taken effect: the
+             LOD chips have been sitting on the conversation since the theme shipped. -->
+        <div id="views">
           <button class="fchip on" data-d="11.5">SYSTEM</button>
           <button class="fchip" data-d="6.5">FILES</button>
           <button class="fchip" data-d="4.6">CLOSE</button>

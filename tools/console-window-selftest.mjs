@@ -195,7 +195,34 @@ assert.ok(/for \(const w of \[trayWin, mainWin, consoleWin\]\)/.test(main),
   'the console window must receive broadcasts, or it shows a frozen snapshot of a live system');
 assert.ok(/ipcMain\.on\('open-console'/.test(main), 'something has to be able to open it');
 assert.ok(/openConsole: \(\) => ipcRenderer\.send\('open-console'\)/.test(preload), 'and the renderer needs the door');
-assert.ok(/Open Console/.test(main), 'the tray menu offers it');
+
+// ---- retirement --------------------------------------------------------------
+// The console is retired (docs/v3/design-decisions.md #1): the Canvas carries the
+// approval gate, the per-agent work steps, the changed-file list and the terminal, and
+// two windows that both talk is what made the app confusing.
+//
+// This used to assert `Open Console` appeared in main.js — "the tray menu offers it".
+// That assertion is now inverted rather than deleted, because the risk changed direction:
+// what needs guarding is that nothing the owner can click reaches the retired window, and
+// that the escape hatch back to it still exists so the retirement costs an env var to
+// undo instead of a revert.
+{
+  assert.ok(!/label: 'Open Console'/.test(main), 'no menu item may offer the retired console');
+  assert.ok(/const CONSOLE_LEGACY = /.test(main), 'the escape hatch that brings it back must stay named');
+  assert.ok(/BIGKIJI_CONSOLE/.test(main), 'and it is BIGKIJI_CONSOLE=1');
+  assert.ok(/function openWorkspace\(\)/.test(main), 'one function decides which window is the app');
+  assert.ok(/if \(CONSOLE_LEGACY\) return createConsoleWindow\(\)/.test(main),
+    'and it is the only place that can still choose the console');
+  // Every owner-facing door goes through openWorkspace(). A stray createConsoleWindow()
+  // in a handler would reopen the window the owner was told is gone.
+  const doors = ['open-console', 'openConsole:', 'Alt+Shift+Space', 'openSettings:'];
+  for (const door of doors) {
+    const at = main.indexOf(door);
+    assert.ok(at > 0, `${door} vanished — this list is what makes the check above mean anything`);
+    assert.ok(/openWorkspace\(\)/.test(main.slice(at, at + 400)),
+      `${door} must open the workspace, not a specific window`);
+  }
+}
 {
   // Closing hides rather than destroys, matching the other windows: a destroyed window
   // would drop the broadcast target and take the terminal mirror with it.

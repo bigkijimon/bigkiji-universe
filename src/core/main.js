@@ -76,6 +76,15 @@ const SNAP = process.env.SNAP || ''; // SNAP=<出力dir> で5秒後に両画面�
 const SHOW_MAIN = process.argv.includes('--show-main') || process.env.BIGKIJI_SHOW_MAIN === '1';
 // Opens the working window directly, the way `--show-main` opens the 3D scene.
 const SHOW_CONSOLE = process.argv.includes('--show-console') || process.env.BIGKIJI_SHOW_CONSOLE === '1';
+// The console window is retired (decision #1 in docs/v3/design-decisions.md): one window,
+// and that window is the Synapse Canvas. It carries all four things the console was kept
+// for — the approval gate, the per-agent work steps, the changed-file list and the
+// terminal — and two surfaces that both talk is what made the app confusing.
+//
+// The renderer is not deleted. `BIGKIJI_CONSOLE=1` still opens it, so a regression in the
+// Canvas has somewhere to be compared against, and so retiring it costs one env var to
+// undo rather than a revert. Nothing the owner can click reaches it any more.
+const CONSOLE_LEGACY = process.argv.includes('--console') || process.env.BIGKIJI_CONSOLE === '1' || SHOW_CONSOLE;
 const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
 const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
@@ -480,7 +489,13 @@ function createMainWindow() {
   if (mainWin && !mainWin.isDestroyed()) { mainWin.show(); mainWin.focus(); return; }
   mainWin = new BrowserWindow({
     width: 1280, height: 840, minWidth: 900, minHeight: 620,
-    show: !SMOKE ? false : true, backgroundColor: '#05080f',
+    // Paper is the default theme now, and this constant was still the cosmic near-black:
+    // the window painted #05080f for the frame or two before main.html's stylesheet
+    // landed, so every launch opened with a black flash on a white app. The design
+    // language decides it, not the light/dark scheme — those are two different settings
+    // (settings-store.js) and only `theme` says which of the two palettes is in use.
+    show: !SMOKE ? false : true,
+    backgroundColor: settingsStore?.get()?.appearance?.theme === 'studio' ? '#05080f' : '#faf9f5',
     titleBarStyle: 'hiddenInset', title: 'BigKiji Universe — Synapse Canvas',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
@@ -560,6 +575,25 @@ function createConsoleWindow() {
   return consoleWin;
 }
 
+/**
+ * The one window the owner works in.
+ *
+ * Every "open the working window" path — the tray button, the tray menu, ⌥⇧Space, the
+ * setup wizard, `openSettings` — went to the console. They all come here now, and here
+ * is the Canvas. Keeping one function rather than editing six call sites is deliberate:
+ * the next person moving this surface changes one line, and there is no call site left
+ * that can quietly disagree with the others about which window is the app.
+ */
+function openWorkspace() {
+  if (CONSOLE_LEGACY) return createConsoleWindow();
+  createMainWindow();
+  // createMainWindow() shows on ready-to-show for a fresh window and immediately for one
+  // that already exists; an accessory app (app.dock.hide) is never frontmost, so without
+  // this the window can come back behind whatever the owner was reading.
+  app.focus({ steal: true });
+  return mainWin;
+}
+
 // ---------- Tray ----------
 function createTray() {
   tray = new Tray(nativeImage.createEmpty()); // バイナリ資産ゼロ：テキストTray
@@ -568,9 +602,12 @@ function createTray() {
   tray.on('click', toggleTrayWindow);
   tray.on('right-click', () => {
     tray.popUpContextMenu(Menu.buildFromTemplate([
-      // Console first: it is where work happens, and it is what should open by reflex.
-      { label: 'Open Console', accelerator: 'Alt+Shift+Space', click: () => createConsoleWindow() },
-      { label: 'Open Synapse Canvas', click: () => createMainWindow() },
+      // One entry, because there is one window. This menu used to offer the console and
+      // the canvas as two different places to work, which is exactly the confusion
+      // decision #1 removed.
+      // English, like the rest of the system chrome — the owner pinned that on
+      // 2026-07-31 (agents.js I18N). The conversation surface is the Japanese one.
+      { label: 'Open BigKiji', accelerator: 'Alt+Shift+Space', click: () => openWorkspace() },
       { type: 'separator' },
       { label: 'Quit BigKiji Universe', click: () => { quitting = true; app.quit(); } },
     ]));
@@ -1624,7 +1661,9 @@ ipcMain.handle('file:detail', async (_e, relPath) => {
 ipcMain.on('pty:input', (_e, data) => { if (pty) pty.write(data); });
 ipcMain.on('pty:resize', (_e, { cols, rows }) => { if (pty && ptyMode === 'pty') pty.resize(cols, rows); });
 ipcMain.on('open-main', () => createMainWindow());
-ipcMain.on('open-console', () => createConsoleWindow());
+// The channel name is the tray's preload contract (`openConsole`) and stays as it is —
+// renaming an IPC channel to match a retired window buys nothing and breaks the bridge.
+ipcMain.on('open-console', () => openWorkspace());
 ipcMain.handle('get-info', () => {
   let loops = [];
   try {
@@ -1801,9 +1840,9 @@ app.whenReady().then(async () => {
     Menu,
     app,
     handlers: {
-      openConsole: () => createConsoleWindow(),
+      openConsole: () => openWorkspace(),
       openMain: () => createMainWindow(),
-      openSettings: () => { createConsoleWindow(); broadcast('ui:open-settings'); },
+      openSettings: () => { openWorkspace(); broadcast('ui:open-settings'); },
     },
   });
   createTray();
@@ -1858,7 +1897,7 @@ app.whenReady().then(async () => {
   });
   if (!ok) console.log('⌥Space registration failed (already used by another app)');
 
-  // ⌥⇧Space = open the console.
+  // ⌥⇧Space = open the working window.
   //
   // The tray's CONSOLE button has advertised this in its tooltip, and the tray's
   // context menu has drawn it as an accelerator, since the console window existed.
@@ -1866,14 +1905,14 @@ app.whenReady().then(async () => {
   // and an accessory app (app.dock.hide) shows no menu bar, so the application
   // menu's Cmd-N never reaches the keyboard either. Pressing the advertised keys
   // did nothing at all. Registering it is the smaller change than un-promising it
-  // in two places.
+  // in two places. It goes to the Canvas now — same keys, one window.
   const consoleKeyOk = globalShortcut.register('Alt+Shift+Space', () => {
-    const w = createConsoleWindow();
+    const w = openWorkspace();
     // An accessory app is not frontmost by definition, so show/focus alone can leave
     // the window behind whatever the owner was reading. Same call the --show-console
     // path already makes.
     app.focus({ steal: true });
-    w.show(); w.focus();
+    w?.show(); w?.focus();
   });
   if (!consoleKeyOk) console.log('⌥⇧Space registration failed (already used by another app)');
 
@@ -1989,31 +2028,38 @@ app.whenReady().then(async () => {
       setTimeout(() => {
         // Bring it forward first: Chromium throttles animations in an occluded window, and
         // a paused entry animation reads exactly like a styling bug.
-        consoleWin?.show(); consoleWin?.focus();
-        consoleWin?.webContents.executeJavaScript(`(() => {
-          // Nothing else in a headless run would click this, and a panel that only opens
-          // under a real cursor is a panel nobody has actually seen open.
-          document.querySelector('[aria-label="Results"]')?.click();
-          const box = document.querySelector('.worklog');
-          const step = document.querySelector('.worklog .step');
+        //
+        // This used to probe the console's .worklog. The work card lives on the Canvas
+        // now, and a probe aimed at a retired window would have kept reporting a healthy
+        // surface nobody opens — the exact failure mode the SMOKE level check had.
+        mainWin?.show(); mainWin?.focus();
+        mainWin?.webContents.executeJavaScript(`(() => {
           const pick = (el) => { if (!el) return null; const s = getComputedStyle(el); const r = el.getBoundingClientRect();
             return { opacity: s.opacity, visibility: s.visibility, display: s.display, color: s.color,
                      background: s.backgroundColor, h: Math.round(r.height), w: Math.round(r.width), top: Math.round(r.top) }; };
-          const s = box ? getComputedStyle(box) : null;
-          const anims = box && box.getAnimations ? box.getAnimations().map((a) => ({
-            name: a.animationName, state: a.playState, time: Math.round(a.currentTime || 0) })) : [];
-          // The status bar's change badge is a separate claim from the timeline: it is
-          // summed from the same steps, and for the life of this window it read 0/0
-          // because it was counted from task:log, which arrives with its newlines
-          // already flattened. Reported here so "the counter works" is measured rather
-          // than assumed from the timeline next to it.
-          const badge = document.querySelector('.status .add');
-          return JSON.stringify({ steps: document.querySelectorAll('.worklog .step').length,
-            diffBadge: badge ? badge.textContent.trim() : null,
-            worklog: pick(box), stepText: step ? step.textContent.trim().slice(0,40) : null,
-            anim: s ? { name: s.animationName, dur: s.animationDuration, fill: s.animationFillMode,
-              play: s.animationPlayState, count: s.animationIterationCount } : null,
-            running: anims,
+          const card = document.querySelector('.worksheet');
+          // One row per assignment, each carrying the two claims the owner asked for:
+          // how far along it is, and whether its loading cat is actually moving. A cat
+          // that is 'paused' on a running agent is the defect; a cat that is 'running'
+          // on a waiting agent is the opposite one. Both are invisible in a screenshot.
+          const rows = [...document.querySelectorAll('.worksheet .agent')].map((el) => {
+            const cat = el.querySelector('.agent-cat');
+            const anims = cat && cat.getAnimations ? cat.getAnimations().map((a) => a.playState) : [];
+            return { state: el.dataset.state,
+              name: (el.querySelector('.agent-head b')?.textContent || '').trim(),
+              count: (el.querySelector('.agent-count')?.textContent || '').trim(),
+              now: (el.querySelector('.agent-now')?.textContent || '').trim(),
+              catPlay: cat ? getComputedStyle(cat).animationPlayState : null,
+              catRunning: anims };
+          });
+          // What the run changed — the last of the four surfaces decision #1 required of
+          // this window before the console could be retired. Empty here is a real answer
+          // (nothing was written yet), so the count is reported rather than the presence.
+          const files = [...document.querySelectorAll('.worksheet-files p')].map((p) => p.textContent.trim());
+          return JSON.stringify({ card: pick(card),
+            frac: (document.querySelector('.worksheet-head em')?.textContent || '').trim(),
+            rows, files,
+            approval: !document.getElementById('approvalBar')?.hidden,
             reduce: matchMedia('(prefers-reduced-motion: reduce)').matches });
         })()`).then((r) => console.log('SNAP_STEPS', r)).catch((e) => console.log('SNAP_STEPS FAIL', e.message));
       }, 4200);
@@ -2023,13 +2069,16 @@ app.whenReady().then(async () => {
         for (const window of [trayWin, mainWin]) window?.webContents.executeJavaScript("window.dispatchEvent(new CustomEvent('bk:wake-core'))").catch(() => {});
       }, 2600);
     }
-    // The console is where work actually happens, so it is captured too. Without it a
-    // visual change to the working surface could only be checked by opening the app by
-    // hand, which is how "it builds" gets mistaken for "it reads".
-    createConsoleWindow();
+    // Only what ships. The console used to be captured here because it was where work
+    // happened; the Canvas is that window now, and photographing a retired one every
+    // time hides which picture is the one to look at. `BIGKIJI_CONSOLE=1` brings it back
+    // for a side-by-side.
+    if (CONSOLE_LEGACY) createConsoleWindow();
     setTimeout(async () => {
       try {
-        for (const [name, w] of [['tray', trayWin], ['main', mainWin], ['console', consoleWin]]) {
+        const shots = [['tray', trayWin], ['main', mainWin]];
+        if (CONSOLE_LEGACY) shots.push(['console', consoleWin]);
+        for (const [name, w] of shots) {
           const img = await w.webContents.capturePage();
           fs.writeFileSync(path.join(SNAP, `snap-${name}.png`), img.toPNG());
         }
@@ -2044,20 +2093,22 @@ app.whenReady().then(async () => {
     // The windows are created earlier in whenReady; on fast machines their
     // load event can precede this harness. Seed from current WebContents state
     // so the smoke result measures the app, not listener timing.
-    // The console window is created here rather than at startup: it is not part of the
-    // normal boot, but a window that renders model output and hosts a terminal is
-    // exactly the kind of thing that should fail the build when it stops loading.
-    createConsoleWindow();
+    // The retired console is checked only when something asks for it. Gating a build on
+    // a window nobody can open turns a real failure signal into noise, and the two
+    // windows that ship are the ones whose health this run is claiming.
+    if (CONSOLE_LEGACY) createConsoleWindow();
     const state = {
       trayLoaded: !!trayWin && !trayWin.webContents.isLoadingMainFrame(),
       mainLoaded: !!mainWin && !mainWin.webContents.isLoadingMainFrame(),
-      consoleLoaded: !!consoleWin && !consoleWin.webContents.isLoadingMainFrame(),
+      consoleLoaded: CONSOLE_LEGACY ? !!consoleWin && !consoleWin.webContents.isLoadingMainFrame() : null,
       errors: [],
     };
     trayWin.webContents.once('did-finish-load', () => { state.trayLoaded = true; });
     mainWin.webContents.once('did-finish-load', () => { state.mainLoaded = true; });
-    consoleWin.webContents.once('did-finish-load', () => { state.consoleLoaded = true; });
-    for (const [name, w] of [['tray', trayWin], ['main', mainWin], ['console', consoleWin]]) {
+    consoleWin?.webContents.once('did-finish-load', () => { state.consoleLoaded = true; });
+    const watched = [['tray', trayWin], ['main', mainWin]];
+    if (consoleWin) watched.push(['console', consoleWin]);
+    for (const [name, w] of watched) {
       w.webContents.on('did-fail-load', (_event, code, description) => state.errors.push(`${name}: load ${code} ${description}`));
       // Electron 43 passes ONE details object and `level` is a string ('error' |
       // 'warning' | 'info' | 'debug'); it used to be a number where 3 meant error.
@@ -2072,8 +2123,11 @@ app.whenReady().then(async () => {
       });
     }
     setTimeout(() => {
-      const ok = !!tray && state.trayLoaded && state.mainLoaded && state.consoleLoaded && ptyMode !== 'none' && state.errors.length === 0;
-      console.log(`${ok ? 'SMOKE OK' : 'SMOKE FAIL'} tray=${!!tray} trayWin=${state.trayLoaded} mainWin=${state.mainLoaded} consoleWin=${state.consoleLoaded} pty=${ptyMode} rendererErrors=${state.errors.length}`);
+      // `consoleLoaded === null` means "not asked for", and it must not read as a pass
+      // or a failure — the same `—` ≠ 0 rule the work card follows.
+      const consoleOk = state.consoleLoaded === null || state.consoleLoaded === true;
+      const ok = !!tray && state.trayLoaded && state.mainLoaded && consoleOk && ptyMode !== 'none' && state.errors.length === 0;
+      console.log(`${ok ? 'SMOKE OK' : 'SMOKE FAIL'} tray=${!!tray} trayWin=${state.trayLoaded} mainWin=${state.mainLoaded} consoleWin=${state.consoleLoaded === null ? 'retired' : state.consoleLoaded} pty=${ptyMode} rendererErrors=${state.errors.length}`);
       state.errors.slice(0, 5).forEach((e) => console.log('  RENDER ERR:', e));
       quitting = true;
       app.exit(ok ? 0 : 1);

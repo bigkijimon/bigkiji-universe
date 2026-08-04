@@ -349,8 +349,12 @@
         <button id="trayClose" type="button" title="閉じる（メニューバーのアイコンで戻せます）" aria-label="閉じる">×</button>
       </div>
       <div class="toolRow">
-        <button id="openConsole" class="hbtn" title="Conversation and terminal (⌥⇧Space)">▤ CONSOLE</button>
-        <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
+        <!-- One button, because there is one window. CONSOLE and CANVAS opened two
+             different places to work; the console is retired (decision #1) and both
+             entries now led to the same window, which is a menu that lies about having
+             a choice in it. -->
+        <button id="openCanvas" class="hbtn" data-i18n="canvasBtn"
+          title="Conversation, work steps, artifacts and the terminal (⌥⇧Space)">⛶ OPEN</button>
         <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
         <button id="trayDetail" class="hbtn" type="button" aria-expanded="false"
           title="艦隊とプロセスログ">⚡ 詳細</button>
@@ -699,7 +703,6 @@
     });
     window.bigkiji.listIdeas?.().then((ideas) => { if (ideas?.[0] && ideas[0].status !== 'archived') showIdea(ideas[0], ideas[0].status); }).catch(() => {});
     window.bigkiji.onComposerFocus(() => { cmd.focus(); cmd.select(); });
-    document.getElementById('openConsole').addEventListener('click', () => window.bigkiji.openConsole());
     document.getElementById('openCanvas').addEventListener('click', () => window.bigkiji.openMain());
     // main.js intercepts 'close' and hides instead of destroying, so the window comes
     // back with its conversation, its position and its size intact.

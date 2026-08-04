@@ -26,6 +26,8 @@ Rules for this file:
 | 11 | 2026-08-04 | Per-agent progress has **no denominator**: running agents get an indeterminate gauge plus a count of finished steps, only terminal ones get a filled bar, `—` ≠ 0. The one real fraction (assignments finished / planned) sits in the card header | claude | A provider never announces how many tools it will use. Same rule as `progressOf()` and `pricing.js` |
 | 12 | 2026-08-04 | The particle motion becomes a bounded rotation about each file's **real parent-folder hub**, GPU-integrated | claude | `synapse.js:424-429` integrated every file on the CPU every frame. Superseded in part by #13 — on a disc the rotation is in-plane about the disc axis |
 | 13 | 2026-08-05 | Each cloud becomes a **flat spiral disc**: arm = folder (categorical, assigned from sorted keys), radius = depth then recency (continuous). **Every particle moved once** | owner | 「全粒子の表示動かしても構いません。しっかり繋がりがわかるようにシナプスの固まりを表してください」. Overrides the "do not move placement" half of #8; the deterministic half stands — the new positions are still seeded from the path and never drift |
+| 14 | 2026-08-05 | The console window is **retired**. Every owner-facing door — tray button, tray menu, ⌥⇧Space, the app menu's Settings — goes through one `openWorkspace()` and lands on the Canvas. The renderer is kept and reachable with `BIGKIJI_CONSOLE=1` | claude, on owner decision #1 | The condition #1 set was met and measured: the Canvas carries the approval gate, the per-agent work steps, the changed-file list and the terminal. Keeping the code costs nothing and makes the retirement an env var to undo rather than a revert |
+| 15 | 2026-08-05 | On `paper`, four HUD layers — `#views`, `#popups`, `#crawl`, `#workState` — hide, and ⚡詳細 brings them all back. Studio keeps them | claude | Decision #3, applied to the layers a screenshot found still narrating over the conversation. `#workState` also **contradicted** the header: it means "a bus event arrived within 5 s", the header means "a run is executing", and they were six inches apart reading as one fact |
 
 ## Open, waiting on the owner
 
@@ -54,6 +56,14 @@ Rules for this file:
   builder meant the lines were fictional; the random draw only picks *which* real edge
   carries a light, and both endpoints are a file and its own parent. Corrected in the
   skill. The real defect was that the sample differed on every launch — seeded now.
+- **An inline `style` attribute silently discards the stylesheet rule that fights it.**
+  `<div id="views" style="…display:flex…">` meant `:root[data-theme="paper"] #views
+  { display: none }` had never once taken effect, so the LOD chips sat on the
+  conversation for the whole life of the paper theme while the file read as if they
+  did not. `tools/contrast-selftest.js` fails on that shape now — same class as the
+  undefined `var()` guard, and as the per-frame writer that was overwriting a label's
+  opacity: the code says one thing, the cascade says another, and only a screenshot
+  disagrees.
 - `onBeforeCompile` on a Three.js material **requires `customProgramCacheKey`** here:
   four PointsMaterials in synapse.js share identical parameters, and without a distinct
   key the hub material can be given the leaf material's program and lose its attributes.
