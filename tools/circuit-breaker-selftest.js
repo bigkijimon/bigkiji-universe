@@ -291,10 +291,12 @@ ok('_fallback walks past providers in cooldown and stops at the first available 
   const coordinator = new CoreExecutionCoordinator({ taskRunner, breaker,
     registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'c-')) }) });
 
-  // claude-code falls back to glm, then codex, then qwen. Take the first two out.
-  assert.deepEqual(FALLBACKS['claude-code'], ['glm', 'codex', 'qwen']);
-  breaker.record('glm', { ok: false, reason: 'quota' });
-  breaker.record('codex', { ok: false, reason: 'rate-limit' });
+  // claude-code hands on in the owner's order — codex, glm, gemini, then qwen.
+  // Take every paid stand-in out and the work must reach the floor.
+  assert.deepEqual(FALLBACKS['claude-code'], ['codex', 'glm', 'gemini', 'qwen']);
+  breaker.record('codex', { ok: false, reason: 'quota' });
+  breaker.record('glm', { ok: false, reason: 'rate-limit' });
+  breaker.record('gemini', { ok: false, reason: 'quota' });
 
   const run = { id: 'run-1', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
   const assignment = { taskId: 't1', provider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
@@ -319,9 +321,8 @@ ok('a cooldown postpones a fallback; it does not burn the chain position', () =>
   });
   const coordinator = new CoreExecutionCoordinator({ taskRunner, breaker,
     registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'f-')) }) });
-  assert.deepEqual(FALLBACKS.glm, ['codex', 'qwen'], 'this test walks glm\'s chain');
-  breaker.record('codex', { ok: false, reason: 'rate-limit' });
-  breaker.record('qwen', { ok: false, reason: 'rate-limit' });
+  assert.deepEqual(FALLBACKS.glm, ['claude-code', 'codex', 'gemini', 'qwen'], 'this test walks glm\'s chain');
+  for (const provider of FALLBACKS.glm) breaker.record(provider, { ok: false, reason: 'rate-limit' });
 
   const run = { id: 'run-3', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
   const assignment = { taskId: 't1', provider: 'glm', role: 'debug', title: 'work', fallbackIndex: 0 };
@@ -329,7 +330,7 @@ ok('a cooldown postpones a fallback; it does not burn the chain position', () =>
   assert.equal(assignment.fallbackIndex, 0, 'so the position must not move');
   time.advance(600000);
   assert.equal(coordinator._fallback(run, assignment), true, 'and once the cooldown is over it recovers');
-  assert.equal(assignment.provider, 'codex');
+  assert.equal(assignment.provider, 'claude-code', 'the top of the owner\'s order takes it');
   assert.equal(assignment.fallbackIndex, 1, 'now it moves, because a provider was actually taken');
 });
 ok('when every fallback is in cooldown the run fails instead of looping', () => {

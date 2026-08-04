@@ -91,7 +91,7 @@ ok('a stand-in returns the role when its owner recovers', () => {
 
   breaker.record('claude-code', { ok: false, reason: 'quota' });
   assert.equal(coordinator._fallback(run, assignment), true);
-  assert.equal(assignment.provider, 'glm', 'someone covers while the owner of the role is limited');
+  assert.equal(assignment.provider, 'codex', 'someone covers while the owner of the role is limited');
 
   breaker.record('claude-code', { ok: true });
   const restored = [];
@@ -99,7 +99,7 @@ ok('a stand-in returns the role when its owner recovers', () => {
   assert.equal(coordinator._fallback(run, assignment), true);
   assert.equal(assignment.provider, 'claude-code', 'and hands it back the moment the limit lifts');
   assert.equal(assignment.fallbackIndex, 0, 'with the chain rewound, so the next outage starts from the top again');
-  assert.deepEqual(restored, [{ runId: 'run-h', role: 'leader', from: 'glm', to: 'claude-code' }],
+  assert.deepEqual(restored, [{ runId: 'run-h', role: 'leader', from: 'codex', to: 'claude-code' }],
     'and the owner is told, because a silent reassignment is indistinguishable from an erratic router');
 });
 ok('the fallback chain belongs to the role, not to the stand-in', () => {
@@ -112,11 +112,70 @@ ok('the fallback chain belongs to the role, not to the stand-in', () => {
   const assignment = { taskId: 't1', provider: 'claude-code', homeProvider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
   breaker.record('claude-code', { ok: false, reason: 'quota' });
   coordinator._fallback(run, assignment);
-  assert.equal(assignment.provider, 'glm');
-  breaker.record('glm', { ok: false, reason: 'quota' });
+  assert.equal(assignment.provider, 'codex');
+  breaker.record('codex', { ok: false, reason: 'quota' });
   coordinator._fallback(run, assignment);
-  assert.equal(assignment.provider, 'codex', 'the next step is claude-code\'s, not glm\'s');
+  // codex's own chain starts with claude-code. Reading the chain from the stand-in
+  // would send it back to the provider that is already in cooldown; reading it from
+  // the role's home provider gives claude-code's third step, GLM.
+  assert.equal(assignment.provider, 'glm', 'the next step is claude-code\'s, not codex\'s');
   assert.equal(assignment.fallbackIndex, 2);
+});
+
+// --- the owner's order (2026-08-05) ------------------------------------------
+ok('a limit hands the work on in the order the owner chose', () => {
+  // 「リミットがかかった場合のaiの優先順位はClaude,codex,glm,gemini,qwenの順番に」
+  //
+  // Pinned literally, not derived from FALLBACKS, because FALLBACKS is the thing
+  // under test: a table that computes its own expectation proves nothing. Before
+  // this the five chains disagreed with each other — claude-code tried GLM before
+  // Codex while codex tried Claude before GLM — and none of them reached Gemini, so
+  // an exhausted Claude and Codex went past a working Gemini to the local model.
+  assert.deepEqual(FALLBACKS['claude-code'], ['codex', 'glm', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.codex, ['claude-code', 'glm', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.glm, ['claude-code', 'codex', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.gemini, ['claude-code', 'codex', 'glm', 'qwen']);
+  assert.deepEqual(FALLBACKS.qwen, [], 'the floor keeps its empty chain');
+  // Every chain is the same list with itself removed — that is what makes them
+  // impossible to drift apart, and it is the property worth guarding.
+  const order = ['claude-code', 'codex', 'glm', 'gemini', 'qwen'];
+  for (const [from, chain] of Object.entries(FALLBACKS)) {
+    if (from === 'qwen') continue;
+    assert.deepEqual(chain, order.filter((p) => p !== from), `${from}'s chain must follow the one order`);
+  }
+});
+
+// A stand-in has to be one that can actually start. `_fallback` checked only the
+// breaker while `_pick` checked the breaker, `isAvailable` and the paid allowlist,
+// so a chain could hand the role to a provider with no key: it fails, the failure
+// costs a repair cycle, and a repair cycle asks the owner to approve again. Harmless
+// while the chains were short and hand-written; the owner's order puts Gemini in
+// every chain, and Gemini is the one most likely to have no key on a given machine.
+ok('a provider with no key is not offered as a stand-in', () => {
+  const planned = [];
+  const breaker = new CircuitBreaker({ threshold: 1, cooldownMs: 600000 });
+  const coordinator = new CoreExecutionCoordinator({ taskRunner: runner(planned), breaker, registry: registry(),
+    available: (provider) => provider !== 'gemini' && provider !== 'glm' });
+  const run = { id: 'run-k', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
+  const assignment = { taskId: 't1', provider: 'claude-code', homeProvider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
+  breaker.record('claude-code', { ok: false, reason: 'quota' });
+  coordinator._fallback(run, assignment);
+  assert.equal(assignment.provider, 'codex', 'the first usable one takes it');
+  breaker.record('codex', { ok: false, reason: 'quota' });
+  coordinator._fallback(run, assignment);
+  assert.equal(assignment.provider, 'qwen', 'GLM and Gemini have no key, so the work falls to the floor');
+});
+
+ok('and neither is one the owner took off the paid allowlist', () => {
+  const planned = [];
+  const breaker = new CircuitBreaker({ threshold: 1, cooldownMs: 600000 });
+  const coordinator = new CoreExecutionCoordinator({ taskRunner: runner(planned), breaker, registry: registry(),
+    settingsProvider: () => ({ routing: { paidAllowlist: ['claude-code', 'glm'] } }) });
+  const run = { id: 'run-l', prompt: 'p', cwd: '/tmp', planHash: 'ph', repairCycle: 1, assignments: [] };
+  const assignment = { taskId: 't1', provider: 'claude-code', homeProvider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
+  breaker.record('claude-code', { ok: false, reason: 'quota' });
+  coordinator._fallback(run, assignment);
+  assert.equal(assignment.provider, 'glm', 'codex is off the allowlist, so the chain steps past it');
 });
 
 // --- R-3: readiness excludes; the floor is local ------------------------------

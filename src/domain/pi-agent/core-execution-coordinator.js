@@ -34,24 +34,31 @@ const ROLE_BLUEPRINT = Object.freeze([
 // cheaper run — it is an unverified one.
 const ROLE_PRIORITY = Object.freeze(['leader', 'debug', 'ui', 'facilitator', 'context']);
 
-// Every chain ends local, and only local. The owner's rule: when billing limits a
-// provider another paid one takes over, and only when none of them work does the
-// work fall to Pi and Ollama.
-//
-// Two chains used to run the other way. `qwen: ['glm']` escalated a failure of the
-// free local model to a paid one — a local failure is the floor, not a reason to
-// spend. And `gemini: ['qwen', 'glm', 'codex']` tried local first and then climbed
-// back up to paid, so an exhausted Gemini quota ended on Codex.
-const FALLBACKS = Object.freeze({
-  'claude-code': ['glm', 'codex', 'qwen'],
-  codex: ['claude-code', 'glm', 'qwen'],
-  gemini: ['glm', 'codex', 'qwen'],
-  glm: ['codex', 'qwen'],
-  qwen: [], // the floor: there is nothing cheaper or more available to climb to
-});
-
 // The provider that needs no key, no quota and no network.
 const LOCAL_PROVIDER = 'qwen';
+
+// When a limit takes a provider out, who covers — one order, decided by the owner
+// (2026-08-05): **Claude → Codex → GLM → Gemini → Qwen**.
+//
+// Written once, as a list, rather than as five hand-maintained chains. The chains it
+// replaces disagreed with each other about the same question: `claude-code` tried GLM
+// before Codex while `codex` tried Claude before GLM, and neither reached Gemini at
+// all, so an exhausted Claude *and* Codex went straight past a working Gemini to the
+// local model. Derived chains cannot drift apart like that.
+//
+// Two rules from before this order still hold, and the derivation preserves both:
+//
+//   - Every chain ends local, and only local. When billing limits a provider another
+//     paid one takes over, and only when none of them work does the work fall to Pi
+//     and Ollama. Qwen is last in the owner's order, so this comes out for free.
+//   - `qwen: []` — a local failure is the floor, not a reason to spend (2026-08-03,
+//     owner). Escalating the free model to a paid one is the wrong direction, so the
+//     floor keeps its empty chain rather than inheriting the list.
+const PROVIDER_PRIORITY = Object.freeze(['claude-code', 'codex', 'glm', 'gemini', LOCAL_PROVIDER]);
+const FALLBACKS = Object.freeze(Object.fromEntries(PROVIDER_PRIORITY.map((provider) => [
+  provider,
+  provider === LOCAL_PROVIDER ? [] : PROVIDER_PRIORITY.filter((other) => other !== provider),
+])));
 const PAID_PROVIDERS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
 // The owner's working budget for one run, and how often it reports once it is past.
@@ -813,14 +820,38 @@ class CoreExecutionCoordinator extends EventEmitter {
     // it past one that was merely cooling burned the position permanently: with a
     // one-entry chain, a sixty second cooldown meant the assignment could never be
     // repaired again, even an hour later.
-    let next = null; const skipped = [];
+    // Cooling is not the only reason a stand-in cannot take the role. `_pick` has
+    // always filtered on three things — the breaker, `isAvailable`, and the owner's
+    // paid allowlist — and this walk only looked at the first. It could therefore hand
+    // an assignment to a provider with no key configured, or to one the owner had
+    // deliberately taken out of rotation. That fails, the failure costs a repair cycle,
+    // and a repair cycle asks the owner to approve again: the same loop a spent
+    // allowance produced before the router learned to recognise one.
+    //
+    // It went unnoticed while the chains were short and hand-written. The owner's
+    // 2026-08-05 order puts Gemini in every chain, and Gemini is the provider most
+    // likely to have no key on a given machine, so the gap would have shown up
+    // immediately.
+    //
+    // Unavailable is NOT the same as cooling, and only the second is worth reporting:
+    // a cooldown ends by itself and the number of seconds is useful, while "no key" is
+    // a standing fact the owner already knows from the settings window.
+    const allowed = this.paidAllowlist();
+    const permitted = (provider) => (!PAID_PROVIDERS.has(provider) || allowed.has(provider))
+      && this.isAvailable(provider);
+    let next = null; const skipped = []; const unusable = [];
     for (let index = assignment.fallbackIndex; index < candidates.length; index += 1) {
       const candidate = candidates[index];
+      if (!permitted(candidate)) { unusable.push(candidate); continue; }
       if (!this.breaker.allow(candidate)) {
         skipped.push(`${candidate} (${Math.round(this.breaker.retryInMs(candidate) / 1000)}s)`);
         continue;
       }
       next = candidate; assignment.fallbackIndex = index + 1; break;
+    }
+    if (unusable.length) {
+      knowledge.recordEvent(run.id, { type: 'fallback-unavailable', status: run.status, provider: assignment.provider,
+        evidence: `no key or not on the paid allowlist: ${unusable.join(', ')}` });
     }
     if (skipped.length) {
       knowledge.recordEvent(run.id, { type: 'fallback-skipped', status: run.status, provider: assignment.provider,

@@ -28,6 +28,7 @@ Rules for this file:
 | 13 | 2026-08-05 | Each cloud becomes a **flat spiral disc**: arm = folder (categorical, assigned from sorted keys), radius = depth then recency (continuous). **Every particle moved once** | owner | 「全粒子の表示動かしても構いません。しっかり繋がりがわかるようにシナプスの固まりを表してください」. Overrides the "do not move placement" half of #8; the deterministic half stands — the new positions are still seeded from the path and never drift |
 | 14 | 2026-08-05 | The console window is **retired**. Every owner-facing door — tray button, tray menu, ⌥⇧Space, the app menu's Settings — goes through one `openWorkspace()` and lands on the Canvas. The renderer is kept and reachable with `BIGKIJI_CONSOLE=1` | claude, on owner decision #1 | The condition #1 set was met and measured: the Canvas carries the approval gate, the per-agent work steps, the changed-file list and the terminal. Keeping the code costs nothing and makes the retirement an env var to undo rather than a revert |
 | 15 | 2026-08-05 | On `paper`, four HUD layers — `#views`, `#popups`, `#crawl`, `#workState` — hide, and ⚡詳細 brings them all back. Studio keeps them | claude | Decision #3, applied to the layers a screenshot found still narrating over the conversation. `#workState` also **contradicted** the header: it means "a bus event arrived within 5 s", the header means "a run is executing", and they were six inches apart reading as one fact |
+| 16 | 2026-08-05 | When a limit takes a provider out, the work is handed on in **one** order: **Claude → Codex → GLM → Gemini → Qwen**. Written as a list, and the five chains derived from it | owner | 「リミットがかかった場合のaiの優先順位はClaude,codex,glm,gemini,qwenの順番に選ばれるようにしてください」. The hand-written chains disagreed with each other — `claude-code` tried GLM before Codex while `codex` tried Claude before GLM — and **none of them reached Gemini**, so an exhausted Claude and Codex went past a working Gemini straight to the local model. Decision #16 does not overturn the 2026-08-03 rule that a local failure is the floor: Qwen is last, and `qwen: []` stands |
 
 ## Open, waiting on the owner
 
@@ -162,6 +163,26 @@ Fixed in `model-router.js` with the same tightness as everything else in that pa
 the limit has to be a *usage* limit, and `tools/circuit-breaker-selftest.js` now pins
 both the real messages and five ordinary sentences containing "limit" that must still be
 penalised.
+
+### The hand-off order, measured
+
+Driven through the real coordinator with the real limit messages, each classified the
+way `task-runner.js` classifies them before the breaker sees them:
+
+```
+claude-code  limit → quota        hands to codex
+codex        limit → quota        hands to glm
+glm          limit → rate-limit   hands to gemini
+gemini       limit → quota        hands to qwen
+```
+
+Adding Gemini to every chain exposed a second gap, fixed in the same change:
+`_fallback` filtered candidates on the **breaker only**, while `_pick` filtered on the
+breaker, `isAvailable` and the owner's paid allowlist. A chain could therefore hand the
+role to a provider with no key — which fails, costs a repair cycle, and asks the owner to
+approve again. Harmless while the chains were short and never mentioned Gemini; Gemini is
+the provider most likely to have no key on a given machine, so the owner's order would
+have hit it on the first outage.
 
 ### Who may approve, and how the demo runs unattended
 
