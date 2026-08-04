@@ -36,6 +36,7 @@ class TaskRunner extends EventEmitter {
     this.tasks = new Map();
     // Per-task JSONL line buffers for the work-step parser. Freed in finish().
     this.stepReaders = new Map();
+    this.usageBuffers = new Map(); // taskId -> the tail of a JSONL line still waiting for its newline
     this.spawnImpl = spawnImpl;
     this.broker = broker;
     this.secretProvider = null;
@@ -190,6 +191,20 @@ class TaskRunner extends EventEmitter {
     // carries the same cleaned string it always has, and captureUsage still runs on it.
     // This only adds a second, structured reading of the same bytes.
     if (!isError && !redacted.blocked && this.stepReaders) this.emitSteps(task, redacted.text);
+    // Usage is read from the same unflattened bytes, and for the same reason.
+    //
+    // It ran on `text` below — i.e. after cleanText() replaced every run of whitespace
+    // with one space. captureUsage() splits on '\n' and JSON.parses each line, and after
+    // that collapse there are no newlines: the whole chunk is one line of several JSON
+    // objects glued together by single spaces, so JSON.parse threw on every call and the
+    // loop `continue`d past all of it. Measured: task.tokens stayed {} for every task
+    // this project has ever run, which is why every token count in the CLI, the HUD and
+    // the run report reads '—', and why pricing.js has never had a number to price.
+    //
+    // Nothing else moves. cleanText, task:log, task.output and the security check below
+    // are byte-for-byte what they were; this is the same reading, done before the one
+    // transformation that destroyed the framing it depends on.
+    if (!isError && !redacted.blocked) this.captureUsage(task, redacted.text);
     const text = knowledge.cleanText(redacted.text, 4000);
     if (!text) return;
     if (redacted.blocked) {
@@ -199,7 +214,6 @@ class TaskRunner extends EventEmitter {
     if (isError) task.error = `${task.error}\n${text}`.trim().slice(-8000);
     else task.output = `${task.output}\n${text}`.trim().slice(-16000);
     task.updatedAt = new Date().toISOString();
-    this.captureUsage(task, text);
     this.emit('log', { taskId: task.id, provider: task.provider, stream: isError ? 'stderr' : 'stdout', text });
   }
 
@@ -219,6 +233,7 @@ class TaskRunner extends EventEmitter {
     for (const task of terminal.slice(0, Math.max(0, terminal.length - keep))) {
       this.tasks.delete(task.id);
       this.stepReaders?.delete?.(task.id);
+      this.usageBuffers?.delete?.(task.id);
       this.completions?.delete?.(task.id);
       this.emit('forgotten', { taskId: task.id });
     }
@@ -238,6 +253,7 @@ class TaskRunner extends EventEmitter {
     if (task.failureReason) task.retryAfterMs = retryAfterMs(task.error);
     task.finishedAt = new Date().toISOString(); task.updatedAt = task.finishedAt; delete task.child;
     this.stepReaders.delete(task.id);
+    this.usageBuffers.delete(task.id);
     if (['qwen', 'ollama'].includes(task.provider)) this.qwenGuardrails.leave({
       durationMs: Math.max(0, new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()), timedOut: !!task.timedOut });
     this.forgetOldTasks();
@@ -441,9 +457,27 @@ class TaskRunner extends EventEmitter {
     return [...task.edits.entries()].map(([path, row]) => ({ path, ...row }));
   }
 
-  captureUsage(task, text) {
-    for (const line of String(text || '').split('\n')) {
-      let value; try { value = JSON.parse(line); } catch (_) { continue; }
+  /**
+   * Token counts, read from the provider's own JSONL.
+   *
+   * Two things were wrong and both had to be fixed for a single number to appear.
+   * First, this ran on the cleaned text, which has had every newline replaced by a
+   * space — see append(). Second, it split whatever single chunk it was handed, and
+   * stdout chunk boundaries fall wherever the pipe decides: a usage line arriving in
+   * two reads was never parseable in either of them. The tail is now held until its
+   * newline turns up, the same way createStepReader() holds its own.
+   */
+  captureUsage(task, chunk) {
+    let buffer = (this.usageBuffers.get(task.id) || '') + String(chunk || '');
+    // A provider that streams something other than JSONL would otherwise grow this
+    // without bound. Drop the head rather than hold it forever.
+    if (buffer.length > 1024 * 1024) buffer = buffer.slice(-1024 * 1024);
+    const lines = buffer.split('\n');
+    this.usageBuffers.set(task.id, lines.pop() ?? '');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] !== '{') continue;
+      let value; try { value = JSON.parse(trimmed); } catch (_) { continue; }
       const flat = JSON.stringify(value);
       const input = +(flat.match(/"(?:input_tokens|inputTokens|promptTokens)":(\d+)/)?.[1] || 0);
       const output = +(flat.match(/"(?:output_tokens|outputTokens|completionTokens)":(\d+)/)?.[1] || 0);

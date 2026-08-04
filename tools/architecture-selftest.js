@@ -19,7 +19,11 @@ const required = [
   'src/domain/pi-agent/pi-bridge.js', 'src/domain/pi-agent/sandbox-policy.js', 'src/domain/pi-agent/skill-registry.js', '.pi/sandbox.json', 'src/domain/pi-agent/context-pruner.js', 'src/domain/pi-agent/pi-knowledge-orchestrator.js',
   'src/domain/pi-agent/components/pi-agents-fleet-box.js', 'src/components/UI/main.html',
   'src/components/UI/audio-engine.js', 'src/components/UI/settings-modal.js',
-  'src/components/UI/console.html', 'src/components/UI/console.js', 'src/components/UI/markdown.js',
+  // The console window is the one renderer built by Vite (vite.console.config.js). Its
+  // entry and root component stand in for the old console.html + console.js pair; the
+  // rest of the window is checked by tools/console-window-selftest.mjs.
+  'src/components/UI/console-app/index.html', 'src/components/UI/console-app/src/main.jsx',
+  'src/components/UI/console-app/src/App.jsx', 'src/components/UI/markdown.js',
   'src/domain/server/daemon.js', 'src/domain/server/daemon-client.js', 'src/domain/server/session-store.js',
   'src/domain/terminal/bigkiji-cli.js', 'src/domain/terminal/cli-theme.js', 'src/domain/terminal/cli-preferences.js',
   'src/cli/tui/monitor.js', 'src/cli/tui/renderer.js', 'src/core/tailscale-remote-access.js',

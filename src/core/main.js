@@ -119,18 +119,27 @@ function spawnShell() {
     broadcast('pty:data', data);
     bus.ingest(data);
   };
+  // The shell inherits the window's colour scheme.
+  //
+  // `bigkiji` writes truecolor: its ink is #f3e8d8, which is unreadable on a light
+  // terminal, and no amount of xterm.js contrast correction reaches a colour the
+  // program chose for itself. cli-theme.js has a light palette; this is how it learns
+  // which one to use. Only the environment of shells spawned AFTER a change picks it
+  // up — a shell already running keeps the value it started with, which is how
+  // environment variables work and is worth knowing rather than pretending otherwise.
+  const shellEnv = { ...process.env, BIGKIJI_COLOR_SCHEME: nativeTheme.shouldUseDarkColors ? 'dark' : 'light' };
   try {
     const nodePty = require('node-pty');
     pty = nodePty.spawn(shell, loginArgs, {
       name: 'xterm-256color', cols: 100, rows: 24,
-      cwd: os.homedir(), env: process.env,
+      cwd: os.homedir(), env: shellEnv,
     });
     pty.onData(onData);
     pty.onExit(() => { if (!quitting) setTimeout(spawnShell, 500); });
     ptyMode = 'pty';
   } catch (err) {
     const { spawn } = require('child_process');
-    const child = spawn(shell, process.platform === 'win32' ? ['-NoLogo'] : ['-i'], { cwd: os.homedir(), env: process.env });
+    const child = spawn(shell, process.platform === 'win32' ? ['-NoLogo'] : ['-i'], { cwd: os.homedir(), env: shellEnv });
     child.stdout.on('data', (d) => onData(d.toString()));
     child.stderr.on('data', (d) => onData(d.toString()));
     child.on('exit', () => { if (!quitting) setTimeout(spawnShell, 500); });
@@ -1492,19 +1501,37 @@ ipcMain.on('pi:abort', () => { if (daemonClient?.connected) daemonClient.post('/
 // Both of these used to resolve against one hardcoded root. They now resolve through
 // the registered workspaces, which is what makes the Settings copy — "adding a folder
 // is what grants access" — actually true.
+// An absolute path, expressed the way resolveWorkspaceFile() expects — or '' when it
+// is not inside any scanned root.
+//
+// This was written inline in `reveal` and nowhere else, which made `reveal` the only
+// entry point that could take an absolute path. `vault:deliverables` broadcasts
+// absolute paths (main.js scans the 成果物 directories), so clicking a deliverable in
+// the console's Results panel called `file:detail`, which strips the leading slash and
+// hands `Users/yuma/...` to the resolver — a relative path under every root, matching
+// none of them, throwing "File is outside every folder BigKiji may read" every time.
+//
+// Converting here rather than in the renderer is deliberate: resolveWorkspaceFile is
+// the only place isSensitivePath() is applied, and doing the subtraction renderer-side
+// would mean shipping that security boundary into a window.
+function toWorkspaceRelative(target) {
+  const value = String(target || '');
+  if (!value || !path.isAbsolute(value)) return value;
+  for (const root of scanRoots()) {
+    const base = path.resolve(root.path) + path.sep;
+    if (value.startsWith(base)) return `${root.prefix || ''}${path.relative(root.path, value)}`;
+  }
+  return '';
+}
 ipcMain.on('reveal', (_e, p) => {
   // One resolver, no absolute shortcut. The shortcut skipped resolveWorkspaceFile, which
   // is the only place isSensitivePath() is applied — allows() checks containment and
   // directory exclusions, so reveal('<registered root>/.env') was honoured.
-  const relative = typeof p === 'string' && path.isAbsolute(p)
-    ? (scanRoots().map((root) => (p.startsWith(path.resolve(root.path) + path.sep)
-      ? `${root.prefix || ''}${path.relative(root.path, p)}` : '')).find(Boolean) || '')
-    : String(p || '');
-  const file = relative && resolveWorkspaceFile(relative);
+  const file = resolveWorkspaceFile(toWorkspaceRelative(p));
   if (file) shell.showItemInFolder(file);
 });
 ipcMain.handle('file:detail', async (_e, relPath) => {
-  const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const rel = toWorkspaceRelative(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
   const absolute = resolveWorkspaceFile(rel);
   if (!absolute || VAULT_EXCLUDE.test(absolute)) throw new Error('File is outside every folder BigKiji may read');
   const st = await fs.promises.stat(absolute);
@@ -1569,9 +1596,44 @@ app.whenReady().then(async () => {
       const channelMap = { task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
         fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status',
         conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status' };
+      // Seven events the daemon has always published and nothing has ever received.
+      //
+      // `channelMap` above covers fourteen of the twenty-one; checkpoint, error,
+      // inventory, reflection, report, review and tools were not in it, so
+      // `broadcast()` was never called for them and no renderer saw them. Measured by
+      // diffing the daemon's publish() sites against the map: the review/reflection
+      // loop, the run report and the local-tools health check all ran, filed their
+      // results to disk, and were invisible in the app.
+      //
+      // They go into the bus rather than getting seven new IPC channels, because the
+      // bus is a stream both surfaces already render — the tray's LIVE PROCESS STREAM
+      // and the CLI's relay — and seven `onSomething` callbacks with no listener would
+      // be API surface pretending to be a feature. Every line below is built only from
+      // fields these payloads really carry (critique.js reviewResult/normalizeReflection,
+      // daemon.js this.tools/this.inventory); a field that is absent is left out rather
+      // than defaulted, and an event with nothing to say returns null and stays quiet.
+      //
+      // `checkpoint` is deliberately absent: daemon.js already publishes a `commentary`
+      // beside it with the same numbers, so relaying it too would say it twice.
+      const DAEMON_NOTES = {
+        error: (d) => (d?.error ? { type: 'warn', text: String(d.error) } : null),
+        tools: (d) => (Array.isArray(d?.tools) && d.tools.length
+          ? { type: 'info', text: `local tools: ${d.connected}/${d.tools.length} connected` } : null),
+        inventory: (d) => (Array.isArray(d?.files)
+          ? { type: 'info', text: `workspace: ${d.files.length} files${d.truncated ? ' (truncated)' : ''}` } : null),
+        report: (d) => (d?.runId
+          ? { type: 'result', text: `run report · ${d.completed ?? '—'}/${d.total ?? '—'} completed${d.tokens ? ` · ${d.tokens} tok` : ''}` } : null),
+        // A clean review says "nothing to add" and sets quiet; that is not worth a line.
+        review: (d) => (d && !d.quiet && d.summary
+          ? { type: 'warn', text: `review · ${d.provider || 'task'}: ${d.summary}` } : null),
+        reflection: (d) => (d?.whatToDoDifferently
+          ? { type: 'info', text: `reflection · ${d.provider || 'agent'}: ${d.whatToDoDifferently}` } : null),
+      };
       daemonClient.on('event', ({ event, data }) => {
         if (event === 'state') { daemonState = data; broadcast('daemon:state', data); return; }
         const channel = channelMap[event]; if (channel) broadcast(channel, data);
+        const note = DAEMON_NOTES[event]?.(data);
+        if (note) bus.push({ source: 'bigkiji', type: note.type, text: note.text });
         if (event === 'run') daemonState = { ...(daemonState || {}), runs: [...(daemonState?.runs || []).filter((run) => run.id !== data.id), data] };
         if (event === 'security') daemonState = { ...(daemonState || {}), security: data };
         if (event === 'idea' && data.draft) daemonState = { ...(daemonState || {}), ideas: [...(daemonState?.ideas || []).filter((idea) => idea.id !== data.draft.id), data.draft] };
@@ -1726,6 +1788,25 @@ app.whenReady().then(async () => {
   });
   if (!ok) console.log('⌥Space registration failed (already used by another app)');
 
+  // ⌥⇧Space = open the console.
+  //
+  // The tray's CONSOLE button has advertised this in its tooltip, and the tray's
+  // context menu has drawn it as an accelerator, since the console window existed.
+  // It was registered nowhere: a tray context-menu accelerator is drawn, not bound,
+  // and an accessory app (app.dock.hide) shows no menu bar, so the application
+  // menu's Cmd-N never reaches the keyboard either. Pressing the advertised keys
+  // did nothing at all. Registering it is the smaller change than un-promising it
+  // in two places.
+  const consoleKeyOk = globalShortcut.register('Alt+Shift+Space', () => {
+    const w = createConsoleWindow();
+    // An accessory app is not frontmost by definition, so show/focus alone can leave
+    // the window behind whatever the owner was reading. Same call the --show-console
+    // path already makes.
+    app.focus({ steal: true });
+    w.show(); w.focus();
+  });
+  if (!consoleKeyOk) console.log('⌥⇧Space registration failed (already used by another app)');
+
   if (process.env.VOICETEST) {
     setTimeout(() => speak('Voice test OK. Hello, owner. BigKiji Universe is live.'), 1500);
   }
@@ -1847,8 +1928,16 @@ app.whenReady().then(async () => {
     consoleWin.webContents.once('did-finish-load', () => { state.consoleLoaded = true; });
     for (const [name, w] of [['tray', trayWin], ['main', mainWin], ['console', consoleWin]]) {
       w.webContents.on('did-fail-load', (_event, code, description) => state.errors.push(`${name}: load ${code} ${description}`));
+      // Electron 43 passes ONE details object and `level` is a string ('error' |
+      // 'warning' | 'info' | 'debug'); it used to be a number where 3 meant error.
+      // `Number('error') >= 3` is `NaN >= 3` — false — so this gate silently passed
+      // everything for as long as it has been written this way. It reported
+      // `rendererErrors=0` while tray.html was failing to parse and every button in
+      // the tray was dead. Measured against this Electron; both forms accepted.
       w.webContents.on('console-message', (event) => {
-        if (Number(event?.level) >= 3) state.errors.push(`${name}: ${event.message}`);
+        const level = event?.level;
+        const isError = level === 'error' || Number(level) >= 3 || Number(event?._level) >= 3;
+        if (isError) state.errors.push(`${name}: ${event.message}`);
       });
     }
     setTimeout(() => {

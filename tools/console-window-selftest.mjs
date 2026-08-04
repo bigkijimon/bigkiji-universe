@@ -1,0 +1,430 @@
+// The console window's contract, checked statically and by running the real functions.
+//
+// HISTORY — read this before changing anything below.
+//
+// This file replaces the CommonJS console-window-selftest.js that guarded console.html +
+// console.js. That window was markup in one file and behaviour in another, joined only by
+// string ids, so the old test swept every $('id') and asserted the markup declared it. The
+// window is now React (src/components/UI/console-app), where that particular failure mode
+// does not exist — but the failure mode it stood for does: a renamed *IPC method* still
+// fails silently, because preload.js is the join now instead of element ids. So that sweep
+// became the bk.* sweep below rather than being dropped.
+//
+// Two assertions were deliberately retired. They are named here rather than deleted in
+// silence, because a test that vanishes without explanation reads like an oversight:
+//
+//   - `bubble.textContent = text`  — pinned that the owner's own text was never parsed.
+//     JSX interpolation escapes by construction; there is no longer a code path that could
+//     parse it. Replaced by the stronger check that dangerouslySetInnerHTML appears in
+//     exactly one file.
+//   - `CSS.escape`                 — pinned that task ids were escaped before reaching a
+//     selector. React keys the panes by taskId; no selector is built from one.
+//
+// Everything else was carried across. Where the old test grepped for a literal, this one
+// imports the function and runs it, which is strictly harder to fool.
+
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+const APP = 'src/components/UI/console-app';
+const DIST = 'src/components/UI/console-dist';
+
+const main = read('src/core/main.js');
+const preload = read('src/core/preload.js');
+
+// Every source file of the window, so the sweeps below cannot miss one by being written
+// before it existed.
+function walk(dir, out = []) {
+  for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) walk(rel, out);
+    else out.push(rel);
+  }
+  return out;
+}
+const sources = walk(APP).filter((file) => /\.(jsx?|mjs|css|html)$/.test(file));
+const code = Object.fromEntries(sources.map((file) => [file, read(file)]));
+const jsFiles = sources.filter((file) => /\.(jsx?|mjs)$/.test(file));
+const cssFiles = sources.filter((file) => file.endsWith('.css'));
+
+assert.ok(jsFiles.length > 8, 'the source sweep should be finding the real file set');
+assert.ok(cssFiles.length >= 1, 'and the stylesheet');
+
+// Prose about a rule is not the rule. The old test learned this for backdrop-filter: a
+// check that cannot tell a comment from code forbids documenting the reason for itself.
+const stripComments = (text) => text
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+// ---- the join between the window and the main process ----------------------
+// Every bk.* the app calls must exist in preload.js. This is the React-era equivalent of
+// the old id sweep: rename a method on one side and nothing throws until a user clicks it.
+{
+  const exposed = new Set([...preload.matchAll(/^\s{2}([A-Za-z0-9_]+):/gm)].map((m) => m[1]));
+  assert.ok(exposed.size > 60, 'the preload sweep should be finding the real API surface');
+  const used = new Set();
+  for (const file of jsFiles) {
+    for (const [, name] of stripComments(code[file]).matchAll(/\bbk\.([A-Za-z0-9_]+)/g)) used.add(name);
+  }
+  assert.ok(used.size > 10, 'the window should be using a real slice of the IPC surface');
+  for (const name of used) {
+    assert.ok(exposed.has(name), `the console calls bk.${name}, which preload.js does not expose`);
+  }
+}
+
+// ---- IPC subscriptions happen exactly once ---------------------------------
+// preload.js has no off/removeListener on any on* helper, so a subscription made from a
+// component effect is permanent and remounting stacks another. That is how one terminal
+// becomes two. lib/ipc.js owns every subscription; nothing else may take one.
+{
+  const offenders = jsFiles.filter((file) => file !== `${APP}/src/lib/ipc.js`
+    && /\bbk\.on[A-Z]/.test(stripComments(code[file])));
+  assert.deepStrictEqual(offenders, [],
+    'only lib/ipc.js may subscribe to bk.on* — preload exposes no way to unsubscribe, so a '
+    + 'subscription taken in a component is duplicated on every remount');
+  assert.ok(/const ptySinks = new Set\(\)/.test(code[`${APP}/src/lib/ipc.js`]),
+    'pty bytes fan out through a Set the terminal can leave, not through a second ipcRenderer handler');
+  // Comments, not code: main.jsx explains at length why StrictMode is absent, and a check
+  // that cannot tell prose from code would forbid documenting the reason for itself.
+  assert.ok(!/StrictMode/.test(stripComments(code[`${APP}/src/main.jsx`])),
+    'StrictMode double-invokes effects; the xterm instance and the pty behind it are real');
+}
+
+// ---- model output is escaped before it is marked up ------------------------
+{
+  const raw = jsFiles.filter((file) => /dangerouslySetInnerHTML/.test(stripComments(code[file])));
+  assert.deepStrictEqual(raw, [`${APP}/src/components/AssistantMarkdown.jsx`],
+    'exactly one file may assign HTML, and it must be the one that runs BKMarkdown first');
+  assert.ok(/renderMarkdown/.test(code[`${APP}/src/components/AssistantMarkdown.jsx`]),
+    'assistant replies go through the escaping renderer');
+  assert.ok(/import '\.\.\/\.\.\/markdown\.js'/.test(code[`${APP}/src/main.jsx`]),
+    'markdown.js is imported for its side effect and never forked — tools/markdown-selftest.js '
+    + 'require()s the same file, so it must stay CommonJS-loadable');
+}
+
+// ---- house rules ------------------------------------------------------------
+{
+  const css = cssFiles.map((file) => stripComments(code[file])).join('\n');
+  // Matches the declaration, not the word. backdrop-filter and vibrancy destroy each other
+  // (electron#39529, measured in glass-lab); this window is opaque and sets no vibrancy.
+  assert.ok(!/(?:^|[;{\s])(?:-webkit-)?backdrop-filter\s*:/im.test(css),
+    'the console stylesheet must not use backdrop-filter');
+  assert.ok(!/(?:^|[;{\s])(?:-webkit-)?backdrop-filter\s*:/im.test(stripComments(read(`${DIST}/index.html`))),
+    'nor may it reach the built output');
+  assert.ok(/prefers-reduced-motion/.test(css), 'the OS reduced-motion setting is honoured');
+  assert.ok(/reduce-motion/.test(css), "and so is the app's own appearance.reduceMotion");
+  assert.ok(jsFiles.some((file) => /reduce-motion/.test(code[file])),
+    'which something has to actually set on the body');
+  assert.ok(/button:active\s*\{\s*transform:\s*scale\(\.97\)/.test(css), 'buttons acknowledge the press');
+
+  // The window is a column of flex children and every one of them has to agree to shrink,
+  // or the transcript stops filling the space and the composer floats mid-screen above a
+  // band of empty background.
+  //
+  // This is here because it actually happened: inserting .shell between body and .body
+  // broke the chain, and `npm test` and SMOKE both stayed green while the bottom half of
+  // the window was blank. Neither can see layout. A screenshot caught it, and this keeps
+  // it caught.
+  const rule = (selector) => {
+    const match = css.match(new RegExp(`(?:^|[},])\\s*${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
+    return match ? match[1] : '';
+  };
+  // #root is in this list because it is where the chain actually broke: React mounts into
+  // <div id="root">, so body's flex column has exactly one child, and giving .shell flex:1
+  // does nothing while #root is still a plain block. The symptom was a window whose bottom
+  // half was empty; the cause was one box nobody had styled.
+  for (const selector of ['#root', '.shell', '.body']) {
+    const body = rule(selector);
+    assert.ok(body, `${selector} must be styled — it is a load-bearing box in the window's flex column`);
+    assert.ok(/min-height:\s*0/.test(body),
+      `${selector} needs min-height:0 or it refuses to shrink and its children overflow instead of scrolling`);
+  }
+  assert.ok(/position:\s*relative/.test(rule('.body')),
+    '.body is the positioning context the results panel slides in against');
+
+  // Opening the drawer must not animate a layout property. transform and opacity are the
+  // only two the compositor can do without a reflow, and this window's rule is both.
+  const shell = rule('.shell');
+  assert.ok(/transition:\s*transform/.test(shell) && !/transition:[^;]*\b(width|margin|left|padding)\b/.test(shell),
+    'the session drawer opens by transform — animating width would reflow the transcript every frame');
+
+  const consoleWindow = main.slice(main.indexOf('function createConsoleWindow'),
+    main.indexOf('function createConsoleWindow') + 1600);
+  assert.ok(!/vibrancy/.test(consoleWindow),
+    'the console window is opaque on purpose — adding vibrancy would break its stylesheet');
+}
+
+// ---- the built page, which is what actually ships ---------------------------
+// The dev server needs 'unsafe-eval' and a websocket back to a loopback port. That
+// relaxation lives in an apply:'serve' plugin so it cannot reach a build — and this is
+// where that claim gets checked rather than assumed.
+{
+  const html = read(`${DIST}/index.html`);
+  const shipped = stripComments(html);
+  const csp = (shipped.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/) || [])[1];
+  assert.ok(csp, 'the window that renders model output needs a CSP');
+  assert.ok(!/unsafe-eval/.test(csp), "the dev server's unsafe-eval must never ship");
+  assert.ok(!/127\.0\.0\.1|localhost/.test(shipped), 'nor may a dev server address');
+  assert.ok(!/script-src[^;]*unsafe-inline/.test(csp),
+    'the built page has no inline script, so script-src stays at self — stricter than the window it replaced');
+  assert.deepStrictEqual([...shipped.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/g)].map((m) => m[0]), [],
+    'and therefore carries no inline script at all');
+
+  // base:'./' in vite.console.config.js. With Vite's default of '/', every asset resolves
+  // to the filesystem root under file:// and the window renders an empty body.
+  const assets = [...shipped.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(assets.length >= 2, 'the built page should reference its bundle and stylesheet');
+  for (const asset of assets) {
+    assert.ok(asset.startsWith('./'),
+      `built asset ${asset} must be a relative reference — the window is opened with loadFile()`);
+    assert.ok(fs.existsSync(path.join(root, DIST, asset)), `built page references a missing asset: ${asset}`);
+  }
+}
+
+// ---- main process wiring ----------------------------------------------------
+assert.ok(/function createConsoleWindow\(\)/.test(main), 'main.js creates the console window');
+assert.ok(/consoleWin\.loadFile\(path\.join\(UI_ROOT, 'console-dist', 'index\.html'\)\)/.test(main),
+  'and loads the built renderer');
+assert.ok(/BKU_CONSOLE_DEV_URL/.test(main), 'with a dev-server escape hatch for hot reload');
+assert.ok(/for \(const w of \[trayWin, mainWin, consoleWin\]\)/.test(main),
+  'the console window must receive broadcasts, or it shows a frozen snapshot of a live system');
+assert.ok(/ipcMain\.on\('open-console'/.test(main), 'something has to be able to open it');
+assert.ok(/openConsole: \(\) => ipcRenderer\.send\('open-console'\)/.test(preload), 'and the renderer needs the door');
+assert.ok(/Open Console/.test(main), 'the tray menu offers it');
+{
+  // Closing hides rather than destroys, matching the other windows: a destroyed window
+  // would drop the broadcast target and take the terminal mirror with it.
+  const block = main.slice(main.indexOf('function createConsoleWindow'));
+  assert.ok(/consoleWin\.on\('close'.*e\.preventDefault\(\); consoleWin\.hide\(\)/s.test(block.slice(0, 1700)),
+    'close hides the console window instead of destroying it');
+}
+
+// ---- the switch the owner asked for ----------------------------------------
+{
+  const { KEYMAP, matches } = await import(`../${APP}/src/lib/keymap.mjs`);
+  assert.equal(KEYMAP.viewChat.key, '1', 'the conversation is one keystroke away');
+  assert.equal(KEYMAP.viewTerminal.key, '2', 'and so is the terminal');
+  assert.ok(KEYMAP.viewChat.meta && KEYMAP.viewTerminal.meta, 'both are accelerators, not bare digits');
+  assert.ok(matches({ key: '1', metaKey: true }, KEYMAP.viewChat), 'and the matcher agrees');
+  assert.ok(!matches({ key: '1' }, KEYMAP.viewChat), 'a bare 1 typed into the composer is not a view switch');
+  // ⌘N is taken by the app menu (New Console Window). A menu accelerator fires before any
+  // renderer keydown, so binding it here would produce a control that silently never runs.
+  assert.ok(!Object.values(KEYMAP).some((b) => b.key === 'n'),
+    '⌘N belongs to the application menu and cannot be rebound in the renderer');
+
+  const app = stripComments(code[`${APP}/src/App.jsx`]);
+  assert.ok(/setView\('terminal'\)/.test(app) && /setView\('chat'\)/.test(app), 'both views are reachable');
+  const terminal = stripComments(code[`${APP}/src/components/TerminalView.jsx`]);
+  assert.ok(/api\.ptyInput/.test(terminal) && /onPtyData/.test(terminal), 'the terminal is wired to the real pty');
+  assert.ok(/openMain\(\)/.test(app), 'the 3D scene is one button away rather than underneath');
+}
+
+// ---- specialist panes and the approval gate ---------------------------------
+// A pane per assignment is only worth having if it shows the real process. These pin that
+// it is fed by the live run/task channels rather than a mock, and that the approval echoes
+// the exact hashes the coordinator demands — approve() throws STALE_RUN_REVISION /
+// STALE_PLAN_HASH / STALE_DISCLOSURE_HASH otherwise, and an approval button that always
+// fails is worse than none.
+{
+  const ipc = stripComments(code[`${APP}/src/lib/ipc.js`]);
+  assert.ok(/onRunEvent/.test(ipc) && /onTaskLog/.test(ipc) && /onTaskEvent/.test(ipc),
+    'panes are driven by the live run and task channels');
+  assert.ok(/listRuns/.test(stripComments(code[`${APP}/src/App.jsx`])),
+    'a run already waiting when the window opens is picked up');
+
+  // Run the real payload builder rather than grepping the component for field names.
+  const { buildApprovalPayload, approvalSummary, isAwaitingDecision, isBlocked } =
+    await import(`../${APP}/src/lib/approval-payload.mjs`);
+
+  const run = {
+    id: 'run-7', revision: 3, planHash: 'plan0123456789abcdef',
+    disclosureHash: 'disc0123456789abcdef', status: 'AWAITING_APPROVAL',
+    assignments: [{ taskId: 't1' }],
+  };
+  const payload = buildApprovalPayload(run);
+  assert.equal(payload.id, 'run-7');
+  assert.equal(payload.revision, 3, 'approval echoes the revision');
+  assert.equal(payload.planHash, 'plan0123456789abcdef', 'and the plan hash');
+  assert.equal(payload.disclosureHash, 'disc0123456789abcdef', 'and the disclosure hash');
+  assert.equal(payload.idempotencyKey, 'console-run-7-3',
+    'and carries an idempotency key so a double click is not a double start');
+  assert.notEqual(buildApprovalPayload({ ...run, revision: 4 }).idempotencyKey, payload.idempotencyKey,
+    'a new revision is a different thing to approve, so it gets a different key');
+
+  // Both waiting states are surfaced — a blocked run must not look approvable.
+  assert.ok(isAwaitingDecision({ ...run, status: 'SECURITY_BLOCKED' }), 'a sandbox refusal is still shown');
+  assert.ok(isBlocked({ ...run, status: 'SECURITY_BLOCKED' }));
+  assert.equal(buildApprovalPayload({ ...run, status: 'SECURITY_BLOCKED' }), null,
+    'but it can never produce an approval payload');
+  assert.equal(buildApprovalPayload({ ...run, status: 'EXECUTING' }), null,
+    'and neither can a run that is already going');
+  assert.ok(/refused/.test(approvalSummary({ ...run, status: 'SECURITY_BLOCKED' }).title),
+    'the copy says the sandbox refused it rather than inviting a click');
+  assert.ok(/rev 3/.test(approvalSummary(run).detail), 'the owner is shown what they are agreeing to');
+
+  const bar = stripComments(code[`${APP}/src/components/ApprovalBar.jsx`]);
+  assert.ok(/disabled=\{blocked/.test(bar), 'a sandbox refusal disables the button rather than failing on click');
+}
+
+// ---- raw provider output ----------------------------------------------------
+{
+  const { stripAnsi, appendBounded, LOG_LINES } = await import(`../${APP}/src/lib/ansi.mjs`);
+  assert.equal(stripAnsi('\x1b[31mred\x1b[0m'), 'red',
+    'provider output is stripped of escape sequences before it reaches the DOM');
+  assert.equal(stripAnsi('\x1b[2Kplain'), 'plain', 'including cursor control, not just colour');
+
+  // The log is bounded; a long run must not grow the DOM without limit.
+  let lines = [];
+  for (let i = 0; i < LOG_LINES + 50; i += 1) lines = appendBounded(lines, `line ${i}`);
+  assert.equal(lines.length, LOG_LINES, 'the log is capped');
+  assert.equal(lines[lines.length - 1], `line ${LOG_LINES + 49}`, 'and keeps the newest, not the oldest');
+
+  const panes = stripComments(code[`${APP}/src/components/SpecialistPanes.jsx`]);
+  assert.ok(!/dangerouslySetInnerHTML/.test(panes), 'raw CLI output is set as text, never parsed');
+}
+
+// ---- the change counter ------------------------------------------------------
+// #diffStat sat empty from the day this window was built while the CLI rendered real
+// diffs, so the surface the owner approves from showed less than the one they do not. It
+// is a counter, not a diff view, and these pin the two properties that make the number
+// trustworthy rather than decorative.
+//
+// The old test lifted this function out of console.js by slicing the source between two
+// string offsets and rebuilding it with new Function(). It is now an ordinary module, so
+// the test imports it — same six cases, checked against the same arithmetic.
+{
+  const { createDiffCounter } = await import(`../${APP}/src/lib/diff-count.mjs`);
+  const { countDiff, totals, clear } = createDiffCounter();
+  const tally = (id, text) => {
+    const e = countDiff(id, text);
+    return { added: e.added || 0, removed: e.removed || 0 };
+  };
+
+  assert.deepEqual(tally('a', '+ this is prose\n- and so is this'), { added: 0, removed: 0 },
+    'text before any hunk header is not a patch');
+  assert.deepEqual(tally('b', 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+one\n+two\n-gone'),
+    { added: 2, removed: 1 }, 'file headers between diff --git and the first @@ are not content');
+  assert.deepEqual(tally('c', '@@ -1,0 +1,2 @@\n+++i;\n+count++;'), { added: 2, removed: 0 },
+    'inside a hunk, +++i; is a line somebody added — not a file header');
+  assert.deepEqual(tally('d', '@@ -1,1 +0,0 @@\n----'), { added: 0, removed: 1 },
+    'and a removed markdown rule is a removed line');
+  assert.deepEqual(tally('e', '@@ -1,0 +1,1 @@\n+real\nsummary:\n- updated x\n- ran tests\n- all green'),
+    { added: 1, removed: 0 },
+    'a hunk ends at the first line that is not diff-shaped; what the provider narrates afterwards is prose');
+  assert.deepEqual(tally('f', '@@ -1,0 +1,1 @@\n+real\n\nFAIL x\n- Expected\n+ Received'), { added: 1, removed: 0 },
+    'including jest output, which is full of leading + and -');
+
+  // b(+2 −1) + c(+2) + d(−1) + e(+1) + f(+1); a contributed nothing because it was prose.
+  assert.deepEqual(totals(), { added: 6, removed: 2 }, 'the status bar sums every task in the run');
+  clear();
+  assert.deepEqual(totals(), { added: 0, removed: 0 },
+    'a new run starts a new count; carrying the last one forward overstates what is about to happen');
+
+  assert.ok(/cleanText/.test(read(`${APP}/src/lib/diff-count.mjs`)),
+    'and the module records why this counter reads 0/0 against the live task:log stream');
+}
+
+// ---- session history ---------------------------------------------------------
+// The drawer replaced a strip that showed at most eight of 53 sessions and could not
+// search. These pin the two things that make it a history rather than a prefix.
+{
+  const { groupSessions, filterSessions, sessionLabel } = await import(`../${APP}/src/lib/sessions.mjs`);
+
+  // A fixed clock, so the day boundaries are checked rather than hoped for.
+  //
+  // Offsets are built from local midnight rather than written as UTC literals: the buckets
+  // are defined in the owner's own day, so a UTC fixture would pass in London and fail here
+  // in JST, where 23:50Z is already the following morning.
+  const now = new Date('2026-08-03T12:00:00Z').getTime();
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  const MIN = 60000;
+  const at = (offsetMs, tag) => {
+    const iso = new Date(midnight.getTime() + offsetMs).toISOString();
+    return { id: tag, updatedAt: iso, promptSummary: tag };
+  };
+  const groups = groupSessions([
+    at(9 * 60 * MIN, 'today'),        // 09:00 this morning
+    at(-10 * MIN, 'yesterday'),       // ten minutes before midnight
+    at(-4 * 1440 * MIN, 'week'),
+    at(-20 * 1440 * MIN, 'month'),
+    at(-200 * 1440 * MIN, 'older'),
+  ], now);
+  assert.deepEqual(groups.map((g) => g.key), ['today', 'yesterday', 'week', 'month', 'older'],
+    'sessions are bucketed by day, and empty buckets do not appear');
+  // Ten minutes before midnight is yesterday's work, not "within the last 24 hours".
+  assert.equal(groups[1].items[0].id, 'yesterday', 'the boundary is local midnight, not a rolling day');
+
+  assert.equal(filterSessions([{ promptSummary: 'Fix the CSP' }, { promptSummary: 'other' }], 'csp').length, 1,
+    'search is case-insensitive over what the owner actually typed');
+  assert.equal(filterSessions([{ id: 'a' }, { id: 'b' }], '').length, 2, 'an empty query hides nothing');
+
+  // Falling back to the generated id produced a list of "session-msb1cu3c-e744b1", which
+  // tells the owner nothing about which one to click.
+  assert.equal(sessionLabel({ promptSummary: 'Rebuild the console  window' }), 'Rebuild the console window',
+    'the label is what was asked, whitespace-collapsed');
+  assert.ok(sessionLabel({ promptSummary: 'x'.repeat(80) }).length <= 34, 'and it is capped');
+  assert.ok(!/^session-/.test(sessionLabel({ id: 'session-abc', updatedAt: '2026-08-03T09:00:00Z' })),
+    'with a time rather than an id when there is no summary');
+
+  // The drawer is only honest if it asks for more than the route's default of 40.
+  const client = read('src/domain/server/daemon-client.js');
+  assert.ok(/\/api\/sessions\?limit=/.test(client),
+    'the console asks for the full history — the route defaults to 40 and there are more than that on disk');
+}
+
+// ---- the work timeline --------------------------------------------------------
+{
+  const { foldSteps, progressOf, changedFiles } = await import(`../${APP}/src/lib/steps.mjs`);
+
+  const events = [
+    { taskId: 't1', toolUseId: 'a', phase: 'start', tool: 'Read', target: '/r/x.js', at: '2026-08-03T00:00:00Z' },
+    { taskId: 't1', toolUseId: 'a', phase: 'end', ok: true, at: '2026-08-03T00:00:01Z' },
+    { taskId: 't1', toolUseId: 'b', phase: 'start', tool: 'Edit', target: '/r/y.css', added: 12, removed: 3, at: '2026-08-03T00:00:02Z' },
+    { taskId: 't1', toolUseId: 'b', phase: 'end', ok: true, at: '2026-08-03T00:00:03Z' },
+    { taskId: 't1', toolUseId: 'c', phase: 'start', tool: 'Bash', target: 'npm test', at: '2026-08-03T00:00:04Z' },
+  ];
+  const steps = foldSteps([], events);
+  assert.equal(steps.length, 3, 'an end updates its start rather than adding a row');
+  assert.deepEqual(steps.map((s) => s.status), ['ok', 'ok', 'running'],
+    'a step that has started and not returned is the running one');
+  assert.equal(steps[0].durationMs, 1000, 'and a returned one knows how long it took');
+
+  // An end with no matching start is dropped rather than invented.
+  assert.equal(foldSteps([], [{ taskId: 't1', toolUseId: 'zz', phase: 'end', ok: true }]).length, 0,
+    'a step nobody watched begin is not drawn');
+
+  const progress = progressOf(steps);
+  assert.equal(progress.done, 2);
+  assert.equal(progress.total, 3, 'the denominator is work actually seen — the provider never announces a total');
+  assert.equal(progress.added, 12, 'only completed steps count toward the change totals');
+  assert.ok(progress.running, 'and the running step is identified');
+
+  // Failures are visible, not swallowed.
+  const failed = foldSteps(steps, [{ taskId: 't1', toolUseId: 'c', phase: 'end', ok: false, errorText: 'exit 1' }]);
+  assert.equal(progressOf(failed).failed, 1, 'a failed tool is counted as failed');
+  assert.equal(failed[2].errorText, 'exit 1', 'with the reason kept');
+
+  // Only successful writes become results — proposing a file that was never written, or
+  // one an Edit failed on, would be a claim the run did not earn.
+  const files = changedFiles(failed);
+  assert.deepEqual(files.map((f) => f.path), ['/r/y.css'], 'reads and failed steps are not results');
+  assert.equal(files[0].added, 12);
+
+  const timeline = stripComments(code[`${APP}/src/components/WorkTimeline.jsx`]);
+  assert.ok(!/dangerouslySetInnerHTML/.test(timeline), 'tool output reaches the timeline as text');
+  const panes = stripComments(code[`${APP}/src/components/SpecialistPanes.jsx`]);
+  assert.ok(/pane-log/.test(panes),
+    'the raw log panes survive alongside the timeline — if the parser goes quiet the owner '
+    + 'must still be able to see what a run is doing before approving it');
+}
+
+console.log('console window selftest: PASS · every bk.* the window calls exists in preload · only lib/ipc.js '
+  + 'subscribes · one file may assign HTML · opaque with no backdrop-filter · the built page ships no inline '
+  + 'script, no unsafe-eval and only relative assets · broadcasts reach it · chat and terminal both reachable · '
+  + 'one pane per real assignment · approval echoes the exact hashes and refuses to build one for a blocked run · '
+  + 'the change counter counts patches, not prose');

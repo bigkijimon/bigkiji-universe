@@ -1,0 +1,210 @@
+/* ============================================================================
+   tokens.css — the console window's colour system, in two layers.
+
+   Layer 1 (lamps): raw ramps measured from claude.ai (Claude.app app.asar).
+   HSL triplets, consumed as hsl(var(--bg-100)) / hsl(var(--border-100) / .15).
+   What we borrow from Claude is the *shape* of the ramp — an oat-warm light
+   theme, a charcoal dark theme, borders as one lamp used at low alpha — never
+   its colours of identity. The accent stays BigKiji orange, matching the ANSI
+   palette in src/domain/terminal/cli-theme.js (orange rgb(242,140,40), brown
+   rgb(107,66,38)): the CLI and this window are the same product.
+
+   Layer 2 (semantics): the names console.css already uses. Aliases whose
+   formula is identical in both themes live in the shared :root block at the
+   bottom; aliases whose polarity flips (cards get darker in light, lighter in
+   dark) live inside each theme block.
+
+   Theme switching: the OS/nativeTheme drives prefers-color-scheme, so Auto is
+   free. :root[data-theme="light"/"dark"] repeats the same values as an escape
+   hatch for future per-window overrides — attribute specificity (0,2,0) beats
+   the media-query :root (0,1,0) regardless of source order.
+
+   ⚠ The dark values appear twice (media query + [data-theme="dark"]).
+     Keep the two blocks byte-identical when editing.
+   ========================================================================== */
+
+/* ---------- LIGHT (default + forced) ---------- */
+:root,
+:root[data-theme="light"] {
+  /* Without this, <select> popups and native scroll UI stay dark. */
+  color-scheme: light;
+
+  /* Layer 1 — lamps */
+  --bg-000: 0 0% 100%;
+  --bg-100: 48 33.3% 97.1%;
+  --bg-200: 53 28.6% 94.5%;
+  --bg-300: 48 25% 92.2%;
+  --bg-400: 50 20.7% 88.6%;
+  --text-000: 60 2.6% 7.6%;
+  --text-200: 60 2.5% 23.3%;
+  --text-400: 51 3.1% 43.7%;
+  --border-100: 30 3.3% 11.8%;
+
+  /* Layer 2 — polarity-dependent semantics.
+     In light, "stronger" means deeper into the ramp. */
+  --card: hsl(var(--bg-200));
+  --card-strong: hsl(var(--bg-300));
+  --accent: #c2600f;        /* BKU orange, AA on the oat background */
+  --accent-wash: #fdf1e3;
+  --ok: #1a7f4b;
+  --danger: #b83a18;        /* = cli-theme error */
+  --brown-ink: var(--brown);            /* cli brown reads as-is on the oat surfaces */
+  --accent-sheen: rgba(194, 96, 15, .08); /* running-step sweep — --accent at low alpha */
+
+  /* Terminal. Consumed by the xterm wiring, not by CSS rules here.
+     Light aims for git/npm/jest output that survives a paper-white page:
+     yellow and cyan are the classic casualties, so both are pulled down to
+     amber/teal ink weights. White/bright-white follow the VS Code Light+
+     convention (mid grays) instead of vanishing near the background. */
+  --term-bg: #faf9f5;
+  --term-fg: #29261b;
+  --term-cursor: #c2600f;
+  --term-selection: rgba(194, 96, 15, .22);
+  --term-ansi-0: #29261b;   /* black */
+  --term-ansi-1: #b83a18;   /* red — = --danger */
+  --term-ansi-2: #1a7f4b;   /* green — = --ok */
+  --term-ansi-3: #9a6a03;   /* yellow → dark amber, readable on white */
+  --term-ansi-4: #2569b0;   /* blue */
+  --term-ansi-5: #8a4fa3;   /* magenta */
+  --term-ansi-6: #0e7c72;   /* cyan → dark teal, readable on white */
+  --term-ansi-7: #66604f;   /* white → warm mid gray (VS Code Light+ style) */
+  --term-ansi-8: #8d8371;   /* bright black — dim/comment gray */
+  --term-ansi-9: #c9431f;   /* bright red */
+  --term-ansi-10: #23935c;  /* bright green */
+  --term-ansi-11: #b07d0a;  /* bright yellow — stays amber, never flashes out */
+  --term-ansi-12: #3b7fc4;  /* bright blue */
+  --term-ansi-13: #a05fbd;  /* bright magenta */
+  --term-ansi-14: #199186;  /* bright cyan */
+  /* bright white — measured at 4.59:1 on --term-bg by tools/contrast-selftest.js.
+     The obvious value for "bright white" on a paper-white terminal is a pale gray, and
+     the first attempt (#99917f) came out at 2.97:1: present, but not readable, which is
+     the failure mode this whole palette exists to avoid. It stays lighter than ANSI 7
+     (#66604f, 5.95:1) so bright still reads as brighter than normal. */
+  --term-ansi-15: #79715f;
+}
+
+/* ---------- DARK (via OS / nativeTheme.themeSource) ---------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    /* Layer 1 — lamps */
+    --bg-000: 60 2.1% 18.4%;
+    --bg-100: 60 2.7% 14.5%;
+    --bg-200: 30 3.3% 11.8%;
+    --bg-300: 60 2.6% 7.6%;
+    --bg-400: 0 0% 0%;
+    --text-000: 48 33.3% 97.1%;
+    --text-200: 50 9% 73.7%;
+    --text-400: 48 4.8% 59.2%;
+    --border-100: 51 16.5% 84.5%;
+
+    /* Layer 2 — in dark, raised things get lighter, so cards climb toward
+       bg-000 and the hover state is the light border lamp at low alpha. */
+    --card: hsl(var(--bg-000));
+    --card-strong: hsl(var(--border-100) / .12);
+    --accent: #f28c28;      /* BKU orange = cli-theme orange rgb(242,140,40) */
+    --accent-wash: #33240f;
+    --ok: #3fae6a;          /* brightened from light's #1a7f4b to read on charcoal */
+    --danger: #e0563a;      /* brightened cli error for the same reason */
+    --brown-ink: #c9905f;   /* cli brown lifted the same way — #6b4226 is ~1.5:1 here */
+    --accent-sheen: rgba(242, 140, 40, .10); /* running-step sweep — --accent at low alpha */
+
+    /* Terminal — current production values, unchanged by design. */
+    --term-bg: #0b0a08;
+    --term-fg: #f3e8d8;
+    --term-cursor: #f28c28;
+    --term-selection: rgba(242, 140, 40, .28);
+    --term-ansi-0: #2e2924;   /* black — near-bg warm charcoal */
+    --term-ansi-1: #e0563a;   /* red — = --danger (dark) */
+    --term-ansi-2: #3fae6a;   /* green — = --ok (dark) */
+    --term-ansi-3: #d9a03e;   /* yellow — warm amber */
+    --term-ansi-4: #5d9bd4;   /* blue — muted, defers to the warm base */
+    --term-ansi-5: #b784c9;   /* magenta */
+    --term-ansi-6: #4bb0a8;   /* cyan */
+    --term-ansi-7: #d8d0c2;   /* white — a step below the ink fg */
+    --term-ansi-8: #7a6f60;   /* bright black — dim/comment gray */
+    --term-ansi-9: #ff7a5c;   /* bright red */
+    --term-ansi-10: #62c98b;  /* bright green */
+    --term-ansi-11: #ffb347;  /* bright yellow — = cli-theme orangeBright */
+    --term-ansi-12: #82b6e8;  /* bright blue */
+    --term-ansi-13: #d3a6e0;  /* bright magenta */
+    --term-ansi-14: #72ccc4;  /* bright cyan */
+    --term-ansi-15: #f3e8d8;  /* bright white — = terminal fg ink */
+  }
+}
+
+/* ---------- DARK (forced; byte-identical to the media block above) ---------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-000: 60 2.1% 18.4%;
+  --bg-100: 60 2.7% 14.5%;
+  --bg-200: 30 3.3% 11.8%;
+  --bg-300: 60 2.6% 7.6%;
+  --bg-400: 0 0% 0%;
+  --text-000: 48 33.3% 97.1%;
+  --text-200: 50 9% 73.7%;
+  --text-400: 48 4.8% 59.2%;
+  --border-100: 51 16.5% 84.5%;
+
+  --card: hsl(var(--bg-000));
+  --card-strong: hsl(var(--border-100) / .12);
+  --accent: #f28c28;
+  --accent-wash: #33240f;
+  --ok: #3fae6a;
+  --danger: #e0563a;
+  --brown-ink: #c9905f;
+  --accent-sheen: rgba(242, 140, 40, .10);
+
+  --term-bg: #0b0a08;
+  --term-fg: #f3e8d8;
+  --term-cursor: #f28c28;
+  --term-selection: rgba(242, 140, 40, .28);
+  --term-ansi-0: #2e2924;
+  --term-ansi-1: #e0563a;
+  --term-ansi-2: #3fae6a;
+  --term-ansi-3: #d9a03e;
+  --term-ansi-4: #5d9bd4;
+  --term-ansi-5: #b784c9;
+  --term-ansi-6: #4bb0a8;
+  --term-ansi-7: #d8d0c2;
+  --term-ansi-8: #7a6f60;
+  --term-ansi-9: #ff7a5c;
+  --term-ansi-10: #62c98b;
+  --term-ansi-11: #ffb347;
+  --term-ansi-12: #82b6e8;
+  --term-ansi-13: #d3a6e0;
+  --term-ansi-14: #72ccc4;
+  --term-ansi-15: #f3e8d8;
+}
+
+/* ---------- Layer 2, theme-independent ----------
+   Same formula in both themes: these point at lamps that flip per theme,
+   so the alias itself never has to. */
+:root {
+  --bg: hsl(var(--bg-100));
+  --surface: hsl(var(--bg-000));
+  --ink: hsl(var(--text-000));
+  --ink-soft: hsl(var(--text-200));
+  --ink-faint: hsl(var(--text-400));
+  /* One border lamp, two alphas — the claude.ai trick. The lamp is dark in
+     light mode and light in dark mode, so the same alpha works everywhere. */
+  --line: hsl(var(--border-100) / .15);
+  --line-soft: hsl(var(--border-100) / .08);
+
+  --accent-bright: #f28c28; /* cli-theme orange; identical in both themes */
+  --brown: #6b4226;         /* cli-theme brown rgb(107,66,38) */
+
+  --radius: 12px;
+  --rail-w: 268px;          /* session drawer track width */
+
+  /* Motion. --ease is the house curve: ease-out family, for anything that
+     moves (enter/exit/press). --ease-std is Claude's measured standard curve —
+     an ease-in-out, so it is ONLY for direction-less state changes such as
+     colour or opacity crossfades. Never use --ease-std on transform. */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-std: cubic-bezier(.4, 0, .2, 1);
+  --fast: 140ms;
+  --base: 200ms;
+}

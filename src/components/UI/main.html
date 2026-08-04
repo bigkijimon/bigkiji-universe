@@ -20,6 +20,13 @@
     --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
     --dur-fast: 110ms; --dur-base: 170ms; --dur-state: 240ms;
 
+    /* Terminal palette, read by src/domain/terminal/xterm-theme.js.
+       The Synapse Canvas is a dark 3D scene with no light theme, so these do not change
+       with the colour scheme — the console window resolves the same variable names to its
+       own warm palette. Values are the ones this terminal has always had. */
+    --term-bg: #060b12; --term-fg: #d7efe4; --term-cursor: #34d399;
+    --term-selection: rgba(52,211,153,0.3);
+
     /* Surfaces */
     --bg-0: #17191b; --bg-1: #1e2124; --bg-2: #262a2d; --bg-3: #2f3438;
     --hairline: rgba(255,255,255,.085); --hairline-2: rgba(255,255,255,.17);
@@ -789,7 +796,7 @@
       <section id="taskPanel" class="paneOff" aria-live="polite"><header class="session-panel-head"><div><h2>SESSIONS</h2><span>PiAgent-selected models and owner actions</span></div><button id="taskPanelClose" type="button" aria-label="Close sessions">×</button></header><div id="taskList"></div></section>
       <section id="previewPane" class="paneOff" aria-label="Live game preview">
         <header><div><b>LIVE PREVIEW</b><span id="previewState">Starting local workspace…</span></div><nav><button data-preview-viewport="desktop">Desktop</button><button data-preview-viewport="tablet">Tablet</button><button data-preview-viewport="mobile">Mobile</button><button id="previewReload">Reload</button></nav></header>
-        <div id="previewFrameWrap" data-viewport="desktop"><iframe id="previewFrame" title="BigKiji game live preview" sandbox="allow-scripts allow-pointer-lock"></iframe></div>
+        <div id="previewFrameWrap" data-viewport="desktop"><iframe id="previewFrame" title="BigKiji game live preview" sandbox="allow-scripts allow-pointer-lock allow-same-origin"></iframe></div>
       </section>
       <div id="taskStreams" class="paneOff" aria-live="polite"></div>
         </div><!-- /.term -->
@@ -839,14 +846,19 @@
   <script src="../../domain/terminal/components/multi-terminal-manager.js"></script>
   <script src="../../domain/terminal/components/terminal-resizer.js"></script>
   <script src="../../domain/terminal/components/cmux-terminal-mirror.js"></script>
+  <script src="../../domain/terminal/xterm-theme.js"></script>
   <script>
     document.getElementById('mark').innerHTML = window.BIGKIJI_MARK;
     // ---- 統合ターミナル（xterm.js ⇄ node-pty） ----
+    // Colours come from this window's own --term-* variables via the shared module, so the
+    // palette is no longer duplicated in two files that could drift. The Synapse Canvas
+    // keeps its green identity — it is a dark 3D scene and does not have a light theme —
+    // while the console window resolves the same variable names to its own warm palette.
     const term = new Terminal({
       fontFamily: '"SF Mono", Menlo, monospace', fontSize: 12.5, cursorBlink: true,
-      theme: { background: '#060b12', foreground: '#d7efe4', cursor: '#34d399',
-               selectionBackground: 'rgba(52,211,153,0.3)' },
+      theme: window.BKXtermTheme.themeFor(),
     });
+    window.BKXtermTheme.watchTheme(term);
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(document.getElementById('terminal'));

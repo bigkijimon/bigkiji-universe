@@ -90,6 +90,16 @@ ok('the pruner sends whole definitions', () => {
       `${range} opens mid-body: ${JSON.stringify(first)}`);
   }
   const owning = bodies.find((item) => /function workSegment/.test(item.body));
+  // This used to pass by a margin of one slot, and that is worth remembering.
+  //
+  // `prepare()` keeps `indexes.slice(0, 4)` — the first four lines matching ANY search
+  // term — and the terms here include "fix", which also matches `toFixed` and the word
+  // "fixed" in a comment. On 2026-08-04 adding one ordinary comment containing "fixed
+  // width" to footer.js pushed `function workSegment` from the fourth match to the
+  // fifth, and the function the prompt named became the one thing not sent. The pruner
+  // now hoists definition lines ahead of mentions, so the budget is spent on what was
+  // asked about rather than on wherever the words happened to fall. If this ever fails
+  // again, check that hoist before blaming the fixture.
   assert.ok(owning, `the function the prompt named has to be one of them: ${slice.ranges.join(', ')}`);
   assert.ok(/^\}/m.test(owning.body), 'and its closing brace comes with it — a fragment is worse than a smaller whole');
   fs.rmSync(root, { recursive: true, force: true });

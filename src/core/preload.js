@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('bigkiji', {
   onCmuxError: (cb) => ipcRenderer.on('cmux:error', (_e, s) => cb(s)),
   onTaskEvent: (cb) => ipcRenderer.on('task:event', (_e, task) => cb(task)),
   onTaskLog: (cb) => ipcRenderer.on('task:log', (_e, log) => cb(log)),
+  onTaskStep: (cb) => ipcRenderer.on('task:step', (_e, step) => cb(step)),
   onFleet: (cb) => ipcRenderer.on('pi:fleet', (_e, fleet) => cb(fleet)),
   fleetSnapshot: () => ipcRenderer.invoke('fleet:snapshot'),
   onModelStatus: (cb) => ipcRenderer.on('model:status:update', (_e, status) => cb(status)),

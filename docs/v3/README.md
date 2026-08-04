@@ -19,11 +19,33 @@ as if they were being extended.
 | Question | Decision |
 |---|---|
 | Platform | **Hybrid.** Electron + Three.js stays the product; a SwiftUI helper owns Settings, notifications and permissions only. RealityKit and Metal are not adopted — see `06-rendering.md` and `07-native-shell.md` for why, and where the boundary would go. |
-| Dependencies | **No new npm dependencies.** Embeddings run over Ollama HTTP, vectors are `Float32Array` in a flat file. |
+| Dependencies | **No new *runtime* dependencies.** Embeddings run over Ollama HTTP, vectors are `Float32Array` in a flat file. Amended 2026-08-03 by the owner for the console rebuild — see below. |
+| Console renderer | **React + Vite, for that one window only.** The tray, the Synapse Canvas and the setup wizard stay plain scripts loaded by `<script src>`. |
 | Embedding model | **bge-m3** — MIT, official Ollama, 100+ languages, 8K context. Pulled 2026-08-02. Before that no embedding model was installed at all and `/api/embed` refused every model. |
 | MCP | **stdio and 127.0.0.1 only.** No external MCP servers, no OAuth 2.1, no Streamable HTTP. The `mcp__` denial for spawned providers stays. |
 | A2A | **Not adopted.** |
 | GraphRAG | **Not adopted** at this corpus size; BM25 + RRF + rerank instead. |
+
+## Amendment — 2026-08-03, the console renderer
+
+The original table said "No new npm dependencies" without qualification. The owner amended
+it when the conversation window was rebuilt, having been shown both options and their
+costs. Recorded here because this document's rule is that decisions carry their source.
+
+**What changed.** `react`, `react-dom`, `vite` and `@vitejs/plugin-react` were added as
+**devDependencies**. Vite bundles them into the built output, so they are not resolved from
+`node_modules` at runtime and electron-builder does not package them.
+
+**What did not change.** The shipped `dependencies` list is still the same eight packages
+(`@xterm/*`, `three`, `node-pty`, `ws`, `dotenv`, `dotenv-expand`, `qrcode`). The app is
+still `main: src/core/main.js` built by electron-builder, and the signing and notarisation
+pipeline is untouched — Vite is used as a static output tool for one window, not as a build
+system for the app. `electron-forge` and `electron-vite` were both declined for that reason.
+
+**Scope.** `src/components/UI/console-app/` is the only React source in the repository.
+`tray.html`, `main.html` and `setup.html` remain plain scripts, and shared code between them
+(`markdown.js`, `settings-modal.js`, `xterm-theme.js`) is written so both worlds can load it:
+a guarded dual export that works under `require()` and as a side-effect `import`.
 
 ## Contents
 

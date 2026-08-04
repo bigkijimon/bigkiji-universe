@@ -61,16 +61,49 @@ function screenWidth(output = process.stdout) { return Math.max(40, Math.min(200
 // The old banner also drew five permanently lit model dots; they were
 // decoration, not state — every dot was on regardless of whether the model was
 // reachable — so they are gone and the panel counts what is really connected.
-function header(state = {}, width = screenWidth()) {
+function header(state = {}, width = screenWidth(), frame = 0) {
   const mark = glyphs();
-  const panel = modelPanel(state, { width, theme: A, label: ` bigkiji universe v${APP_VERSION} ` });
-  const facts = truncateToWidth(
-    `${lower(shortenPath(state.workspace || process.cwd()))} ${mark.note} pi-orchestrator ${mark.note} core 8777 ${mark.note} pid ${state.pid || '—'}`, width);
-  return [...panel, `${A.muted}${facts}${A.reset}`].join('\n');
+  // The workspace moved inside the panel — it is the third row now, beside the cat's
+  // nose — so repeating it here would be the same fact twice in four rows.
+  const panel = modelPanel({ workspace: process.cwd(), ...state },
+    { width, theme: A, label: ` bigkiji universe v${APP_VERSION} `, frame });
+  const facts = truncateToWidth(`pi-orchestrator ${mark.note} core 8777 ${mark.note} pid ${state.pid || '—'}`, width);
+  return [...panel, `${A.dim}${facts}${A.reset}`].join('\n');
 }
 
-const HINTS = '/help commands · /status fleet · /approve start waiting run · /pi talk to pi · /gpu off free vram · /exit';
-function hintLine(width = screenWidth()) { return `${A.dim}${truncateToWidth(HINTS, width)}${A.reset}`; }
+// The commands, as pairs, so the command itself can carry the accent and its
+// description can stay quiet. It was one dim string in which `/approve` and the words
+// "start waiting run" were the same colour, so the row read as a sentence rather than
+// as a list of things you can type.
+const HINTS = Object.freeze([
+  ['/help', 'commands'], ['/status', 'fleet'], ['/approve', 'start waiting run'],
+  ['/pi', 'talk to pi'], ['/gpu off', 'free vram'], ['/exit', ''],
+]);
+
+// Wrapped at the separator, never mid-token.
+//
+// This was `truncateToWidth(HINTS, width)` — a single line, cut. In the owner's 63
+// column pane it did not even cut: the header is built once at startup and never
+// rebuilt (fixed in repl(), below), so a line measured for a wide terminal was still
+// on screen after the pane got narrower, and the terminal wrapped it itself — mid
+// token, at `· /` / `pi talk to pi`. Both halves of that are fixed: the header is a
+// function of the live width now, and this packs whole pairs into whole lines.
+function hintLines(width = screenWidth()) {
+  const room = Math.max(20, width);
+  const lines = []; let current = ''; let plainWidth = 0;
+  for (const [command, detail] of HINTS) {
+    const text = detail ? `${command} ${detail}` : command;
+    const painted = `${A.accent}${command}${A.reset}${detail ? ` ${A.muted}${detail}${A.reset}` : ''}`;
+    const separator = current ? '  ' : '';
+    if (plainWidth + separator.length + text.length > room && current) {
+      lines.push(`${current}${A.reset}`); current = painted; plainWidth = text.length;
+      continue;
+    }
+    current += `${A.dim}${separator}${A.reset}${painted}`; plainWidth += separator.length + text.length;
+  }
+  if (current) lines.push(`${current}${A.reset}`);
+  return lines;
+}
 
 async function ensureClient() {
   const client = new DaemonClient({ appRoot: APP_ROOT }); const health = await client.health();
@@ -157,7 +190,10 @@ async function repl(client) {
     sticky.setFooter(lines, { paint: false });
     process.stdout.write('\x1b[?25l'); refreshPrompt(); process.stdout.write('\x1b[?25h');
   };
-  const stickyOn = sticky.start({ header: [...header(live, sticky.cols).split('\n'), hintLine(sticky.cols)], onLayout: () => paintFooter(true) });
+  // A function, not an array: StickyScreen re-evaluates it on every layout, so a
+  // resize re-renders the panel and the hints at the new width instead of repainting
+  // lines measured for the old one.
+  const stickyOn = sticky.start({ header: (cols) => [...header(live, cols, frameIndex).split('\n'), ...hintLines(cols)], onLayout: () => paintFooter(true) });
   const say = (value) => {
     const text = typeof value === 'string' ? value : util.inspect(value, { colors: process.env.NO_COLOR === undefined, depth: 4 });
     if (sticky.active) sticky.print(text); else console.log(text);
@@ -179,7 +215,7 @@ async function repl(client) {
     if (seenRuns.size > 200) seenRuns.delete(seenRuns.values().next().value);
     seenRuns.add(key); emit(renderEvent('run', run, view()));
   };
-  if (!stickyOn) { console.log(header(live)); console.log(hintLine()); }
+  if (!stickyOn) { console.log(header(live)); hintLines().forEach((line) => console.log(line)); }
   // Animates the loading cat + elapsed clock, repainting only when the footer
   // actually changed. Three deliberate limits, all of them measured problems in
   // other terminal agents rather than hypotheticals:
@@ -193,7 +229,15 @@ async function repl(client) {
   //   - the interval is the frame set's own (67ms ≈ 15fps), which is the floor
   //     of the 15–30fps range terminal UIs are expected to stay inside.
   const ticker = stickyOn
-    ? setInterval(() => { if (turnStartedAt) frameIndex += 1; paintFooter(); }, frameSet.frameMs)
+    ? setInterval(() => {
+      if (!turnStartedAt) { paintFooter(); return; }
+      frameIndex += 1;
+      // Header first, then the footer: paintFooter() ends by restoring the cursor to
+      // readline's input row, and anything written after that would land on it.
+      const head = sticky.restoreHeader();
+      if (head) process.stdout.write(head);
+      paintFooter();
+    }, frameSet.frameMs)
     : null;
   ticker?.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.

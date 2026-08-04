@@ -58,8 +58,25 @@ class PreviewServer extends EventEmitter {
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) { res.writeHead(404); res.end('Preview is waiting for generated files.'); return; }
     const ext = path.extname(target).toLowerCase(); let body = fs.readFileSync(target);
     if (ext === '.html') body = Buffer.from(injectReload(body.toString('utf8')));
-    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', 'cache-control': 'no-store',
-      'access-control-allow-origin': `http://${this.bind}:${this.port}` }); res.end(body);
+    // No access-control-allow-origin, deliberately.
+    //
+    // It used to send its own origin — `http://127.0.0.1:4317` — which is the one value
+    // that can never be needed, because a same-origin request does not consult CORS at
+    // all. Meanwhile the real consumer, the preview iframe in main.html, was sandboxed
+    // WITHOUT allow-same-origin, so its origin was opaque (`null`) and every subresource
+    // it fetched was cross-origin. The module script and the live-reload EventSource
+    // were both blocked, every run, and nothing reported it: the SMOKE renderer-error
+    // gate was comparing a string level to a number and never fired.
+    //
+    // The fix is on the consumer side (main.html now grants the frame allow-same-origin,
+    // so it runs on this server's own origin and needs no CORS), which means this server
+    // can stop advertising anything. Sending `null` here instead would have "worked" and
+    // been the wrong trade: an opaque origin is indistinguishable from any other opaque
+    // origin — measured, `Sec-Fetch-Site` reads `cross-site` for our own frame's
+    // subresources — so `access-control-allow-origin: null` lets any web page read these
+    // files through a sandboxed iframe pointed at this port.
+    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', 'cache-control': 'no-store' });
+    res.end(body);
   }
   _signature() {
     const rows = [];

@@ -7,302 +7,353 @@
   { "imports": { "three": "../../../node_modules/three/build/three.module.js" } }
 </script>
 <style>
+  /* ---- 階調=claude.ai実測トークン(HSL) / アクセント=BKUオレンジ(cli-theme.js実測) ---- */
   :root {
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-    --dur-fast: 120ms; --dur-base: 200ms; --dur-state: 280ms;
-    --em: #34d399; --ink: rgba(233,246,240,.94); --dim: rgba(226,240,234,.55);
-    --faint: rgba(226,240,234,.34); --hairline: rgba(255,255,255,.08);
+    --dur-fast: 120ms; --dur-base: 200ms;
+    --bg-000: hsl(60 2.1% 18.4%);   /* elevated card */
+    --bg-100: hsl(60 2.7% 14.5%);   /* panel */
+    --bg-200: hsl(30 3.3% 11.8%);   /* recessed well / field */
+    --ink:   hsl(48 33.3% 97.1%);   /* text-100 */
+    --ink-2: hsl(50 9% 73.7%);      /* text-200 */
+    --ink-4: hsl(48 4.8% 59.2%);    /* text-400 */
+    --hairline: hsl(51 16.5% 84.5% / .10);
+    --line-ctl: hsl(51 16.5% 84.5% / .18);
+    --accent: #f28c28;
+    --accent-strong: #ffb347;
+    --accent-line: hsl(29 88% 55% / .40);
+    --warn: #f2a583;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; background: transparent; overflow: hidden;
-    font-family: -apple-system, "Hiragino Sans", sans-serif; user-select: none; }
-  .shell {
-    height: 100%; display: flex; flex-direction: column; position: relative;
-    /* すりガラスはウィンドウのvibrancyが担う。CSS backdrop-filterは絶対に使わない
-       （vibrancyと併用すると効果層が壊れて透けるだけになる — glass-lab実測/electron#39529） */
-    background: linear-gradient(165deg, rgba(18,28,38,.22), rgba(8,14,22,.34));
-    border: 1px solid rgba(255,255,255,.12); border-radius: 11px; overflow: hidden;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
-  }
-  .grain { position: absolute; inset: 0; pointer-events: none; opacity: .04; mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E"); }
+    font-family: -apple-system, "Hiragino Sans", sans-serif; user-select: none;
+    -webkit-font-smoothing: antialiased; }
 
-  header { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; position: relative; }
-  .bkMark { width: 15px; height: 15px; filter: drop-shadow(0 0 6px rgba(52,211,153,.7)); }
-  .bkMark .bkP { stroke-dasharray: 16; stroke-dashoffset: 16;
-    animation: draw 900ms var(--ease-out) forwards; }
-  .bkMark .bkP:nth-child(2) { animation-delay: 120ms; }
-  .bkMark .bkP:nth-child(3) { animation-delay: 240ms; }
-  .bkMark .bkP:nth-child(4) { animation-delay: 360ms; }
-  @keyframes draw { to { stroke-dashoffset: 0; } }
-  header .title { color: var(--ink); font-size: 12.5px; font-weight: 600; letter-spacing: .04em; }
-  header .status { margin-left: auto; display: flex; align-items: center; gap: 5px;
-    color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-  header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--em);
-    box-shadow: 0 0 8px rgba(52,211,153,.9); animation: dotBreath 4s ease-in-out infinite; }
-  @keyframes dotBreath { 0%,100% { opacity: .75; } 50% { opacity: 1; } }
-  .hbtn { flex: none; display: inline-flex; align-items: center; gap: 4px;
-    border: 1px solid var(--hairline); background: rgba(255,255,255,.045); color: var(--dim);
-    font-size: 9.5px; font-weight: 700; letter-spacing: .08em; border-radius: 7px;
-    padding: 3px 8px; cursor: pointer;
+  /* 単一パネル。面を浮かせず区切りは1pxヘアラインのみ。
+     すりガラスはウィンドウ側の責務 — CSS backdrop-filterは使わない（electron#39529/glass-lab実測） */
+  .shell { height: 100%; display: flex; flex-direction: column; position: relative;
+    background: hsl(60 2.7% 14.5% / .98);
+    border: 1px solid hsl(51 16.5% 84.5% / .16); border-radius: 12px; overflow: hidden;
+    box-shadow: inset 0 1px 0 hsl(51 16.5% 84.5% / .05); }
+
+  /* ---- header: 1段目=識別/状態 2段目=窓の操作 3段目=履歴 ---- */
+  header { flex: none; border-bottom: 1px solid var(--hairline); }
+  .idRow { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px 7px; }
+  #mark { flex: none; display: inline-flex; }
+  .bkMark { width: 15px; height: 15px; stroke: var(--accent); }
+  .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink); font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
+  .securityBadge { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+    border: 1px solid var(--line-ctl); border-radius: 999px; white-space: nowrap;
+    color: var(--ink-4); background: hsl(51 16.5% 84.5% / .04);
+    font: 700 9.5px var(--mono); letter-spacing: .05em; }
+  .securityBadge::before { content: '◇'; color: var(--accent); font-weight: 400; }
+  .securityBadge.blocked { color: var(--warn); border-color: hsl(18 75% 60% / .35); background: hsl(18 75% 45% / .10); }
+  .securityBadge.blocked::before { content: '!'; color: var(--warn); }
+  .status { flex: none; display: flex; align-items: center; gap: 5px; white-space: nowrap;
+    color: var(--ink-4); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: dotBreath 4s ease-in-out infinite; }
+  @keyframes dotBreath { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+
+  /* Same reasoning as the composer: Gemini's chrome has no boxes in it. Four bordered
+     rectangles in a 350px window is most of the window's line weight spent on buttons
+     nobody is looking at. Borderless, pill radius, and the fill only appears on hover —
+     so the row reads as four words until you reach for one. */
+  .toolRow { display: flex; align-items: center; gap: 2px; padding: 0 8px 9px; }
+  .hbtn { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px;
+    border: 0; background: none; color: var(--ink-2);
+    font-size: 9.5px; font-weight: 700; letter-spacing: .05em; border-radius: 999px; cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out); }
+  .hbtn:hover { background: hsl(51 16.5% 84.5% / .07); color: var(--ink); }
+  .hbtn:active { transform: scale(.97); }
+  #remoteQR { margin-left: auto; }
+
+  .utilityRow { padding: 0 10px 10px; }
+  #sessionPicker { width: 100%; -webkit-appearance: none; appearance: none; cursor: pointer;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239c9a92' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center / 8px;
+    border: 0; border-radius: 999px; color: var(--ink-2);
+    font: 500 10.5px -apple-system, "Hiragino Sans", sans-serif; padding: 7px 28px 7px 10px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
-  .hbtn:hover { background: rgba(52,211,153,.12); color: var(--em); }
-  .hbtn:active { transform: scale(0.97); }
-  .securityBadge { display:inline-flex; align-items:center; gap:4px; padding:3px 6px; border:1px solid rgba(143,212,180,.18); border-radius:999px;
-    color:rgba(168,215,194,.72); background:rgba(34,73,57,.12); font:700 8px "SF Mono",Menlo,monospace; letter-spacing:.06em; }
-  .securityBadge::before { content:'◇'; color:#8fd4b4; }.securityBadge.blocked{color:#e9a18d;border-color:rgba(233,161,141,.3);background:rgba(112,42,30,.12)}.securityBadge.blocked::before{content:'!';color:#e9a18d}
+  #sessionPicker:hover { background-color: hsl(51 16.5% 84.5% / .07); color: var(--ink); }
 
-  #orbWrap { position: relative; height: 148px; flex: none; cursor: text; overflow: hidden; }
+  /* ---- 中段スタック: 極小ウィンドウでは切らずに静かにスクロール ---- */
+  .stack { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto;
+    overscroll-behavior: contain; }
+  .stack::-webkit-scrollbar { width: 0; }
+
+  /* ---- orbヒーロー: 余った空間はすべてここが引き受ける（空白ではなく目的のある面） ---- */
+  #orbWrap { position: relative; flex: 1 1 auto; min-height: 120px; cursor: text; overflow: hidden; }
   #orbWrap .bgHero { position: absolute; inset: -12px; background: url("./assets/nebula.png") center/cover;
-    mix-blend-mode: screen; opacity: .38; pointer-events: none;
-    -webkit-mask-image: radial-gradient(ellipse 66% 84% at 50% 46%, black 28%, transparent 78%);
-            mask-image: radial-gradient(ellipse 66% 84% at 50% 46%, black 28%, transparent 78%); }
-  #orbWrap .hint { position: absolute; left: 0; right: 0; bottom: 5px; text-align: center;
-    color: var(--faint); font-family: "SF Mono", Menlo, monospace; font-size: 9px;
-    letter-spacing: .1em; pointer-events: none;
-    animation: hintBreath 3.2s ease-in-out infinite; }
-  @keyframes hintBreath { 0%,100% { opacity: .4; } 50% { opacity: .66; } }
-  #orbWrap::after { content:""; position:absolute; left:50%; top:50%; width:18px; height:18px; border:1px solid rgba(255,255,255,0); border-radius:50%; transform:translate(-50%,-50%) scale(.1); pointer-events:none; }
-  #orbWrap.core-awakening::after { animation:trayGenesis 1.25s cubic-bezier(.18,.75,.2,1) forwards; }
-  @keyframes trayGenesis { 0%{opacity:0;border-color:#fff;box-shadow:0 0 24px #fff;transform:translate(-50%,-50%) scale(.1)} 18%{opacity:1;border-color:#34d399;box-shadow:0 0 34px #34d399} 100%{opacity:0;border-color:rgba(245,202,105,.2);box-shadow:0 0 8px rgba(245,202,105,.15);transform:translate(-50%,-50%) scale(15)} }
+    mix-blend-mode: screen; opacity: .3; pointer-events: none;
+    filter: grayscale(1) sepia(.85) saturate(2.4) brightness(.92); /* シアン星雲を琥珀へ静的変換 */
+    -webkit-mask-image: radial-gradient(ellipse 70% 88% at 50% 44%, black 26%, transparent 78%);
+            mask-image: radial-gradient(ellipse 70% 88% at 50% 44%, black 26%, transparent 78%); }
+  #orbWrap .hint { position: absolute; left: 12px; right: 12px; bottom: 8px; text-align: center;
+    color: var(--ink-4); font: 600 9.5px var(--mono); letter-spacing: .07em; line-height: 1.6;
+    pointer-events: none; }
+  #orbWrap::after { content: ""; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px;
+    border: 1px solid var(--accent-strong); border-radius: 50%; opacity: 0;
+    transform: translate(-50%, -50%) scale(.2); pointer-events: none; }
+  #orbWrap.core-awakening::after { animation: trayGenesis 280ms var(--ease-out) forwards; }
+  @keyframes trayGenesis { from { opacity: .85; transform: translate(-50%, -50%) scale(.2); }
+    to { opacity: 0; transform: translate(-50%, -50%) scale(9); } }
 
-  .composer { flex: none; display: flex; gap: 6px; align-items: center;
-    padding: 9px 12px; border-top: 1px solid var(--hairline); }
-  #cmd { flex: 1; min-width: 0; background: rgba(8,14,22,.38); border: 1px solid var(--hairline);
-    border-radius: 9px; padding: 7px 10px; color: var(--ink);
-    font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; outline: none; caret-color: var(--em);
-    transition: border-color var(--dur-fast) var(--ease-out); }
-  #cmd::placeholder { color: var(--faint); }
-  #cmd:focus { border-color: rgba(52,211,153,.4); }
-  .cbtn { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
-    border: 1px solid var(--hairline); background: rgba(255,255,255,.045); border-radius: 9px;
-    color: var(--dim); cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
-  .cbtn svg { width: 13px; height: 13px; }
-  .cbtn:hover { background: rgba(52,211,153,.12); color: var(--em); }
-  .cbtn:active { transform: scale(0.97); }
-  /* v12 ライブ音声状態（transform+opacityのみ） */
-  @keyframes liveP { 0%, 100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
-  .cbtn.listen, .cbtn.capture, .cbtn.think, .cbtn.speak {
-    color: var(--lc); border-color: color-mix(in srgb, var(--lc) 45%, transparent);
-    background: color-mix(in srgb, var(--lc) 13%, transparent);
-    animation: liveP var(--lp, 1.8s) ease-in-out infinite; }
-  .cbtn.listen { --lc: #00f3ff; --lp: 1.8s; }
-  .cbtn.capture { --lc: #00ff9d; --lp: .8s; }
-  .cbtn.think { --lc: #FFE81F; --lp: 1.1s; }
-  .cbtn.speak { --lc: #f472b6; --lp: .7s; }
-  .cbtn.pion { color: #FFE81F; border-color: rgba(255,232,31,.45); background: rgba(255,232,31,.10); }
+  /* ---- エージェント発話バブル（オーバーレイ・操作は塞がない） ---- */
+  #agentBubbles { position: absolute; z-index: 18; top: 118px; right: 12px;
+    width: min(248px, calc(100% - 24px)); display: flex; flex-direction: column; align-items: flex-end;
+    gap: 6px; pointer-events: none; }
+  .agentBubble { display: flex; align-items: flex-end; gap: 6px; max-width: 100%;
+    opacity: 0; transform: translateY(4px); animation: bubbleIn 220ms var(--ease-out) forwards; }
+  .agentBubble.leaving { animation: bubbleOut 260ms var(--ease-out) forwards; }
+  @keyframes bubbleIn { to { opacity: 1; transform: translateY(0); } }
+  @keyframes bubbleOut { to { opacity: 0; transform: translateY(-4px); } }
+  .agentAvatar { flex: none; width: 24px; height: 24px; display: grid; place-items: center;
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); border-radius: 8px 8px 3px 8px;
+    color: var(--c); background: var(--bg-000); font: 800 10px var(--mono);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .28); }
+  .agentSay { min-width: 0; max-width: 204px; padding: 6px 9px 7px;
+    border: 1px solid var(--line-ctl); border-radius: 10px 10px 3px 10px;
+    color: var(--ink); background: var(--bg-000); box-shadow: 0 2px 8px rgba(0, 0, 0, .28); }
+  .agentSay b { display: block; margin-bottom: 2px; color: var(--c);
+    font: 750 9px -apple-system, sans-serif; letter-spacing: .04em; }
+  .agentSay span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    color: var(--ink-2); font: 10.5px/1.45 -apple-system, "Hiragino Sans", sans-serif; }
 
-  /* Piストリーミング応答（ローカル¥0） */
-  #piAnswer { display: none; margin: 0 12px 4px; padding: 7px 10px; max-height: 120px; overflow-y: auto;
-    background: rgba(8,14,22,.5); border: 1px solid rgba(255,232,31,.18); border-radius: 9px;
-    font-size: 11px; line-height: 1.65; color: var(--dim); white-space: pre-wrap; }
-  #piAnswer.on { display: block; }
-  #piAnswer::-webkit-scrollbar { width: 0; }
-  /* SYNAPSE FEED: キャンバスと連動する進行カード（ポップ→●進行→✓解決→退場・実イベント駆動） */
-  #feed { display: flex; flex-direction: column; gap: 4px; margin: 0 12px 4px; }
-  .fcd { display: flex; align-items: center; gap: 6px; padding: 4px 9px;
-    font: 10.5px "SF Mono", Menlo, monospace; color: rgba(226,240,234,.85);
-    background: rgba(255,255,255,.045);
-    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
-    border-left: 2px solid var(--c); border-radius: 8px;
-    transform: translate(var(--fx,0px), -4px) rotate(var(--fr,0deg)) scale(.98); opacity: 0;
-    animation: fcdIn .22s cubic-bezier(.2,.8,.2,1) forwards; }
-  @keyframes fcdIn { to { transform: translate(var(--fx,0px), 0) rotate(var(--fr,0deg)); opacity: 1; } }
-  .fcd .fi { flex: none; }
+  /* ---- ローカル・アイデア草稿 ---- */
+  #ideaDraft { display: none; flex: none; padding: 10px 12px; border-top: 1px solid var(--hairline);
+    background: var(--bg-000); }
+  #ideaDraft.on { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+    animation: sectionIn 240ms var(--ease-out) both; }
+  @keyframes sectionIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .ideaCopy { min-width: 0; }
+  .ideaEyebrow { color: var(--accent-strong); font: 750 9px var(--mono); letter-spacing: .13em; }
+  #ideaDraft strong { display: block; margin-top: 3px; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 650 11.5px -apple-system, "Hiragino Sans", sans-serif; }
+  #ideaDraft small { display: block; margin-top: 2px; color: var(--ink-4); font: 9.5px var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ideaActions { display: flex; flex-wrap: wrap; gap: 5px; }
+  .ideaActions button { border: 0; border-radius: 999px; padding: 6px 11px;
+    color: var(--ink-2); background: hsl(51 16.5% 84.5% / .06); cursor: pointer;
+    font: 600 10.5px -apple-system, sans-serif;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out); }
+  .ideaActions button:hover { color: var(--ink); background: hsl(51 16.5% 84.5% / .11); }
+  .ideaActions button:active { transform: scale(.97); }
+  .ideaActions button.confirm { color: var(--bg-200); background: var(--accent); font-weight: 700; }
+  .ideaActions button.confirm:hover { color: var(--bg-200); background: var(--accent-strong); }
+  .ideaActions button:disabled { opacity: .4; cursor: default; }
+  #ideaDisclosure { display: none; padding-top: 8px; border-top: 1px solid var(--hairline);
+    color: var(--ink-4); font: 9.5px/1.5 var(--mono); }
+  #ideaDisclosure.on { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #ideaDisclosure span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #ideaDisclosure button { flex: none; border: 1px solid var(--accent-line); border-radius: 6px; padding: 5px 9px;
+    color: var(--accent-strong); background: hsl(29 88% 53% / .08); font: 700 10px -apple-system, sans-serif;
+    cursor: pointer; }
+  #ideaDisclosure button:disabled { opacity: .4; cursor: default; }
+
+  /* ---- SYNAPSE FEED: 実イベント駆動の進行カード ---- */
+  #feed { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  #feed:not(:empty) { padding: 8px 12px; border-top: 1px solid var(--hairline); }
+  .fcd { flex: none; display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    font: 10.5px var(--mono); color: var(--ink-2); background: var(--bg-000);
+    border: 1px solid var(--hairline); border-left: 2px solid var(--c, var(--accent)); border-radius: 6px;
+    opacity: 0; transform: translateY(-3px); animation: fcdIn 200ms var(--ease-out) forwards; }
+  @keyframes fcdIn { to { opacity: 1; transform: translateY(0); } }
+  .fcd .fi { flex: none; font-size: 10px; }
   .fcd .ft { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fcd .st { flex: none; color: var(--c); }
+  .fcd .st { flex: none; color: var(--c, var(--accent)); }
   .fcd.running .st { animation: fcdPulse 1.1s ease-out infinite; }
   @keyframes fcdPulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-  .fcd.done { opacity: .75; }
-  .fcd.gone { opacity: 0; transform: translateY(-3px); transition: opacity .3s, transform .3s; }
+  .fcd.done { opacity: .72; }
+  .fcd.gone { animation: fcdOut 250ms var(--ease-out) forwards; }
+  @keyframes fcdOut { to { opacity: 0; transform: translateY(-3px); } }
 
-  /* エージェント別アクティビティ・ミニカード（それぞれの動きを小さく表示） */
-  /* 不規則配置: 均等グリッドをやめ2種幅の非対称カラム。散らしはJSがseedから--tx/--ty/--rxを決定的に割当てる */
-  #cards { flex: none; display: grid; grid-template-columns: 1.18fr .82fr; gap: 5px;
-    padding: 8px 12px 9px; border-top: 1px solid var(--hairline); }
+  /* ---- モデル艦隊ミニカード（整列グリッド・散らし/漂いは廃止） ---- */
+  #cards { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+    padding: 9px 12px; border-top: 1px solid var(--hairline); }
   .acard { display: flex; align-items: center; gap: 5px; min-width: 0;
-    background: rgba(255,255,255,.05); border: 1px solid var(--hairline);
-    border-radius: 8px; padding: 4px 7px; }
+    background: hsl(51 16.5% 84.5% / .045); border: 0; border-radius: 9px; padding: 6px 9px; }
+  .acard .apip { display: none; }
+  .acard .apip.on { display: grid; place-items: center; flex: none; width: 13px; height: 13px;
+    border: 1px solid hsl(292 76% 61% / .5); border-radius: 50%;
+    color: #e9d5ff; background: hsl(292 76% 61% / .12); font: 800 8px var(--mono); }
   .acard .ai { flex: none; display: inline-flex; }
   .acard .ai svg { width: 10px; height: 10px; }
-  .acard .an { flex: 1; min-width: 0; font-size: 9.5px; font-weight: 600; color: var(--dim);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .acard .ac { flex: none; font-family: "SF Mono", Menlo, monospace; font-size: 9.5px;
-    color: var(--faint); font-variant-numeric: tabular-nums; }
+  .acard .an { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 10px; font-weight: 600; color: var(--ink-2); }
+  .acard .ac { flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font: 9.5px var(--mono); color: var(--ink-4); font-variant-numeric: tabular-nums; }
   .acard .ad { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--c);
-    opacity: .22; transition: opacity var(--dur-base) var(--ease-out); }
-  .acard.hot .ad { opacity: 1; box-shadow: 0 0 6px var(--c); }
-  .acard.hot .ac { color: var(--c); }
-  /* Pi mini orb: which Pi agent is instructing this model — overlaps the card top edge */
-  .apip { position: absolute; z-index: 3; top: -7px; left: 50%; display: grid; place-items: center;
-    width: 14px; height: 14px; border: 1px solid rgba(217,70,239,.55); border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, rgba(217,70,239,.24), rgba(5,9,17,.96) 62%);
-    color: #e9d5ff; font: 800 8px "SF Mono", Menlo, monospace;
-    transform: translate(-50%,0) scale(.95); opacity: .35;
-    transition: transform .22s var(--ease-out), opacity .22s var(--ease-out); }
-  .apip.on { transform: translate(-50%,0) scale(1); opacity: 1; }
-  .apip::after { content: ""; position: absolute; inset: -1px; border-radius: 50%;
-    box-shadow: 0 0 9px rgba(217,70,239,.8); opacity: 0; transition: opacity .25s var(--ease-out); }
-  .apip.on::after { opacity: 1; animation: apipBreath 2.3s ease-in-out infinite; }
-  @keyframes apipBreath { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    opacity: .25; transition: opacity var(--dur-base) var(--ease-out); }
+  .acard.hot { border-color: var(--line-ctl); }
+  .acard.hot .an { color: var(--ink); }
+  .acard.hot .ad { opacity: 1; }
 
-  .logHead { display: flex; align-items: baseline; padding: 5px 14px 5px;
-    border-top: 1px solid var(--hairline); }
-  .logHead span { color: var(--faint); font-family: "SF Mono", Menlo, monospace;
-    font-size: 9.5px; font-weight: 700; letter-spacing: .12em; }
-  .logHead em { margin-left: auto; font-style: normal; color: rgba(52,211,153,.7);
-    font-size: 10px; font-variant-numeric: tabular-nums; }
-  #log { flex: 1; overflow-y: auto; padding: 2px 12px 12px;
-    font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; line-height: 1.75;
-    -webkit-mask-image: linear-gradient(to bottom, transparent, black 14px); }
-  #log::-webkit-scrollbar { width: 0; }
-  .row { display: flex; gap: 6px; align-items: baseline; white-space: nowrap;
-    opacity: 0; transform: translateY(4px);
-    animation: enter var(--dur-base) var(--ease-out) forwards; }
+  /* ---- LIVE PROCESS STREAM ---- */
+  .streamCard { flex: none; padding: 9px 12px 10px; border-top: 1px solid var(--hairline); }
+  .logHead { display: flex; align-items: baseline; gap: 8px; }
+  .logHead span { color: var(--ink-4); font: 700 10px var(--mono); letter-spacing: .1em; white-space: nowrap; }
+  #count { margin-left: auto; font-style: normal; color: var(--accent); font: 600 10.5px var(--mono);
+    font-variant-numeric: tabular-nums; }
+  #tvitals { display: block; margin-top: 3px; font-style: normal; color: var(--ink-4); font: 9.5px var(--mono);
+    font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #log { margin-top: 4px; overflow: hidden; font-family: var(--mono); font-size: 10.5px; line-height: 1.7; }
+  #log:empty::before { content: "Quiet — model and tool activity will land here."; color: var(--ink-4);
+    font: 10px var(--mono); }
+  .row { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; min-width: 0;
+    opacity: 0; transform: translateY(3px); animation: enter var(--dur-base) var(--ease-out) forwards; }
   #log.noanim .row { animation-duration: 1ms; }
   @keyframes enter { to { opacity: 1; transform: translateY(0); } }
-  .row time { color: rgba(226,240,234,.3); font-size: 9.5px; flex: none;
-    font-variant-numeric: tabular-nums; }
+  .row time { flex: none; color: var(--ink-4); font-size: 9.5px; font-variant-numeric: tabular-nums; }
   .row .chip { flex: none; display: inline-flex; align-items: center; gap: 3px;
     font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 4px; }
   .row .chip svg { width: 9px; height: 9px; }
-  .row .txt { color: rgba(226,240,234,.66); overflow: hidden; text-overflow: ellipsis; }
-  .row.sys .txt { color: var(--faint); }
+  .row .txt { min-width: 0; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+  .row.sys .txt { color: var(--ink-4); }
 
-  /* v2 floating HUD: the Electron surface is fully transparent; only useful controls cast a shadow. */
-  .shell { padding: 8px; gap: 7px; overflow: hidden; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
-  .shell::before,.shell::after { content:""; position:absolute; z-index:-1; pointer-events:none; border-radius:50%; filter:blur(28px); opacity:.2; }
-  .shell::before { width:150px;height:150px;left:-58px;top:112px;background:rgba(52,211,153,.32);animation:decorDrift 12s ease-in-out infinite; }
-  .shell::after { width:130px;height:130px;right:-48px;bottom:82px;background:rgba(168,85,247,.25);animation:decorDrift 15s ease-in-out -5s infinite reverse; }
-  @keyframes decorDrift { 0%,100%{transform:translate3d(0,0,0) scale(.96)}50%{transform:translate3d(9px,-12px,0) scale(1.05)} }
-  header, #orbWrap, .composer, #cards, .streamCard, .utilityRow, #piAnswer, #ideaDraft, #feed > .fcd {
-    border: 1px solid rgba(255,255,255,.10); border-radius: 12px;
-    background: rgba(15,23,42,.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
-    box-shadow: 0 20px 25px -5px rgba(0,0,0,.7), 0 0 15px rgba(0,255,200,.15);
-  }
-  header { min-height: 44px; padding: 9px 11px; }
-  header .title { color:#fff; text-shadow:0 0 12px rgba(0,243,255,.28); }
-  #orbWrap { height: 142px; }
-  .composer { padding: 7px; border-top:1px solid rgba(255,255,255,.10); }
-  .utilityRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:7px; }
-  .utilityRow select,.utilityRow button { min-width:0; border:1px solid rgba(255,255,255,.10); border-radius:8px; color:#fff; background:rgba(4,10,18,.7); padding:6px 8px; font:9px "SF Mono",Menlo,monospace; }
-  .utilityRow button { color:#00f3ff; cursor:pointer; font-weight:700; }
-  #cards { padding:12px 15px 13px; border-top:1px solid rgba(255,255,255,.1); gap:12px 8px; overflow:visible; }
-  .acard { min-height:38px; padding:6px 8px; border-color:color-mix(in srgb,var(--c) 35%,transparent); background:rgba(2,7,15,.62); box-shadow:inset 0 0 15px color-mix(in srgb,var(--c) 5%,transparent); }
-  /* 散らし: --tx/--ty/--rx はJSがカードIDのseedハッシュから決定的に割当（枚数可変・Math.random不使用）
-     漂い: --amp(会話余韻で3.5→10px) を body から継承し、周期--dp・位相--dd はカード毎に別 */
-  .acard { position:relative; transform:translate(var(--tx,0px),var(--ty,0px)) rotate(var(--rx,0deg));
-    animation:cardDrift var(--dp,9s) ease-in-out var(--dd,0s) infinite; }
-  .acard::after{content:"";position:absolute;right:8px;bottom:-4px;width:20px;height:1px;background:linear-gradient(90deg,transparent,var(--c));opacity:.42}
-  @keyframes cardDrift {
-    0%,100% { transform:translate(var(--tx,0px),var(--ty,0px)) rotate(var(--rx,0deg)); }
-    33% { transform:translate(calc(var(--tx,0px) + var(--amp,4px)*.7), calc(var(--ty,0px) - var(--amp,4px))) rotate(calc(var(--rx,0deg) + .35deg)); }
-    66% { transform:translate(calc(var(--tx,0px) - var(--amp,4px)*.6), calc(var(--ty,0px) + var(--amp,4px)*.6)) rotate(calc(var(--rx,0deg) - .3deg)); }
-  }
-  .acard .an { color:#fff; text-shadow:0 0 8px color-mix(in srgb,var(--c) 45%,transparent); }
-  .acard .ac { color:var(--c); font-size:8px; text-transform:uppercase; }
-  .acard .ad { opacity:.55; }
-  .streamCard { min-height:88px; padding:7px 8px 8px; overflow:hidden; }
-  .streamCard .logHead { padding:0 3px 5px; border:0; }
-  .streamCard .logHead span { color:#00f3ff; }
-  .streamCard #log { height:58px; padding:0 3px; overflow:hidden; -webkit-mask-image:none; line-height:1.7; }
-  .streamCard .row time { color:#ec4899; } .streamCard .row .txt { color:#fff; }
-  /* 「積み木がわずかに崩れた」交互の微オフセット（--sx/--sy/--sr）。headerと入力欄は基準線として水平のまま */
-  .utilityRow { --sx:-4px; --sy:1px; --sr:-.5deg; }
-  #orbWrap { --sx:3px; --sy:-2px; --sr:.4deg; }
-  #piAnswer { --sx:4px; --sy:0px; --sr:.4deg; }
-  #feed { --sx:-3px; --sy:0px; --sr:-.35deg; }
-  .streamCard { --sx:-5px; --sy:2px; --sr:-.45deg; }
-  .utilityRow, #feed, .streamCard, #piAnswer {
-    transform:translate(var(--sx,0px),var(--sy,0px)) rotate(var(--sr,0deg));
-    animation:shellSway var(--dp,13s) ease-in-out var(--dd,0s) infinite; }
-  #feed { --dp:15s; --dd:-6s; } .utilityRow { --dp:17s; --dd:-3s; } #piAnswer { --dp:14s; --dd:-9s; }
-  @keyframes shellSway {
-    0%,100% { transform:translate(var(--sx,0px),var(--sy,0px)) rotate(var(--sr,0deg)); }
-    50% { transform:translate(calc(var(--sx,0px) + 2px), calc(var(--sy,0px) - var(--amp,4px)*.5)) rotate(var(--sr,0deg)); }
-  }
-  /* 入力欄は画面最下部に固定（DOMも最後へ移動済み）。Pi応答は入力欄の直上に寄り添う */
-  .composer { margin-top:auto; }
-  #piAnswer.on { margin-top:auto; }
-  #piAnswer.on + .composer { margin-top:0; }
-  #agentBubbles { position:absolute; z-index:18; top:118px; right:14px; width:min(240px,calc(100% - 28px)); display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
-  .agentBubble { display:flex; align-items:flex-end; gap:7px; max-width:100%; opacity:0; transform:translate3d(12px,7px,0) scale(.96); animation:bubbleIn .28s var(--ease-out) forwards; }
-  .agentBubble.leaving { animation:bubbleOut .62s var(--ease-out) forwards; }
-  .agentAvatar { flex:none; width:26px; height:26px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--c) 48%,transparent); border-radius:9px 9px 4px 9px; color:var(--c); background:rgba(8,13,20,.9); box-shadow:0 8px 22px rgba(0,0,0,.42),0 0 13px color-mix(in srgb,var(--c) 20%,transparent); font:800 11px "SF Mono",Menlo,monospace; }
-  .agentSay { min-width:0; max-width:198px; padding:7px 9px; border:1px solid color-mix(in srgb,var(--c) 25%,rgba(255,255,255,.08)); border-radius:12px 12px 3px 12px; color:#f5faf7; background:rgba(9,15,24,.9); box-shadow:0 14px 30px rgba(0,0,0,.48); }
-  .agentSay b { display:block; margin-bottom:3px; color:var(--c); font:750 8px -apple-system,sans-serif; letter-spacing:.04em; }
-  .agentSay span { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; font:10px/1.42 -apple-system,"Hiragino Sans",sans-serif; }
-  #ideaDraft { display:none; margin:0 12px 4px; padding:9px 10px; border-color:rgba(234,179,8,.24); background:linear-gradient(110deg,rgba(24,22,12,.88),rgba(15,23,42,.78)); }
-  #ideaDraft.on { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px 10px; align-items:center; animation:draftReveal .32s var(--ease-out) both; }
-  #ideaDraft .ideaCopy { min-width:0; }.ideaEyebrow { color:#eab308; font:750 7px "SF Mono",Menlo,monospace; letter-spacing:.14em; }
-  #ideaDraft strong { display:block; margin-top:3px; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:650 10.5px -apple-system,"Hiragino Sans",sans-serif; }
-  #ideaDraft small { display:block; margin-top:2px; color:rgba(226,240,234,.48); font:7.5px "SF Mono",Menlo,monospace; }
-  .ideaActions { display:flex; gap:4px; }.ideaActions button { border:1px solid rgba(255,255,255,.12); border-radius:7px; padding:5px 7px; color:#dce8e1; background:rgba(255,255,255,.035); cursor:pointer; font:700 7px -apple-system,sans-serif; }
-  .ideaActions button[data-action="enhance"] { color:#b8a1ff; border-color:rgba(168,85,247,.28); }.ideaActions button[data-action="plan"] { color:#8ed3b2; border-color:rgba(16,185,129,.28); }
-  .ideaActions button.confirm { color:#111827; background:#eab308; border-color:#eab308; }.ideaActions button:disabled { opacity:.35; cursor:default; }
-  #ideaDisclosure { display:none; grid-column:1/-1; padding-top:7px; border-top:1px solid rgba(255,255,255,.08); color:#aebbb4; font:7.5px/1.5 "SF Mono",Menlo,monospace; }
-  #ideaDisclosure.on { display:flex; justify-content:space-between; gap:8px; align-items:center; } #ideaDisclosure button { flex:none; border:1px solid rgba(168,85,247,.4); border-radius:7px; padding:5px 8px; color:#fff; background:rgba(168,85,247,.15); font:700 7px -apple-system,sans-serif; cursor:pointer; }
-  @keyframes draftReveal { from{opacity:0;transform:translateY(5px) rotate(-.2deg)}to{opacity:1;transform:translateY(0) rotate(-.2deg)} }
-  @keyframes bubbleIn { to{opacity:1;transform:translate3d(0,0,0) scale(1)} } @keyframes bubbleOut { to{opacity:0;transform:translate3d(6px,-9px,0) scale(.97)} }
-  #remotePanel { position:absolute; inset:8px; z-index:20; display:none; padding:16px; border:1px solid rgba(0,243,255,.35); border-radius:16px; background:rgba(4,9,18,.94); box-shadow:0 24px 60px rgba(0,0,0,.75),0 0 24px rgba(0,243,255,.16); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
-  #remotePanel.on { display:flex; flex-direction:column; align-items:center; gap:10px; }
-  #remotePanel img { width:220px; height:220px; border-radius:12px; background:#f4fff9; padding:5px; }
-  #remotePanel h2 { color:#00f3ff; font:700 13px -apple-system,sans-serif; }
-  #remotePanel p { color:#cbd5e1; font:10px/1.55 -apple-system,sans-serif; text-align:center; }
-  #remotePanel code { max-width:100%; overflow:hidden; text-overflow:ellipsis; color:#eab308; font:8px "SF Mono",monospace; white-space:nowrap; }
-  #remotePanel a { display:none; border:1px solid rgba(0,243,255,.32); border-radius:8px; color:#00f3ff; background:rgba(0,243,255,.08); padding:7px 11px; font:700 9px -apple-system,sans-serif; text-decoration:none; }
-  #remotePanel a.on { display:inline-flex; }
-  #remotePanel button { border:1px solid rgba(255,255,255,.14); border-radius:8px; color:#fff; background:rgba(255,255,255,.06); padding:7px 11px; cursor:pointer; }
-  .grain { display:none; }
+  /* ---- Piストリーミング応答（入力欄の直上・ローカル¥0） ---- */
+  #piAnswer { display: none; flex: 0 1 auto; min-height: 34px; max-height: 150px; overflow-y: auto;
+    padding: 8px 12px 8px 10px; border-top: 1px solid var(--hairline); border-left: 2px solid var(--accent);
+    background: var(--bg-200); color: var(--ink-2); font-size: 11.5px; line-height: 1.6;
+    white-space: pre-wrap; user-select: text; overscroll-behavior: contain; }
+  #piAnswer.on { display: block; }
+  #piAnswer::-webkit-scrollbar { width: 0; }
 
-  header, #orbWrap, .composer, .logHead, #log { opacity: 0;
-    transform: translate(var(--sx,0px), calc(var(--sy,0px) + 5px)) rotate(var(--sr,0deg));
-    animation: boot 420ms var(--ease-out) forwards; }
-  #orbWrap { animation-delay: 80ms; } .composer { animation-delay: 300ms; }
-  .logHead { animation-delay: 210ms; } #log { animation-delay: 260ms; }
-  @keyframes boot { to { opacity: 1; transform: translate(var(--sx,0px), var(--sy,0px)) rotate(var(--sr,0deg)); } }
+  /* ---- コンポーザー（この画面の主役） ----
+     One pill, no chrome on the controls.
+
+     Copied from Gemini's floating composer (owner, 2026-08-04): a single fully rounded
+     field, the controls sitting INSIDE it as bare glyphs — no border, no fill, no box
+     — and no rule separating it from the content above. What was here was a rectangle
+     with a 1px border, three more bordered rectangles beside it and a hairline across
+     the window: five boxes to say one thing.
+
+     The house rules still bind: only transform and opacity animate, easing is ease-out,
+     everything is under 300ms, and a button still takes scale(.97) on :active. */
+  .composer { flex: none; display: flex; padding: 8px 10px 11px; }
+  .pill { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px;
+    height: 40px; padding: 0 5px 0 14px; border-radius: 999px;
+    background: var(--bg-200); border: 1px solid var(--hairline);
+    transition: border-color var(--dur-fast) var(--ease-out); }
+  .pill:focus-within { border-color: hsl(29 88% 55% / .45); }
+  #cmd { flex: 1; min-width: 0; height: 100%; background: none; border: 0; padding: 0;
+    color: var(--ink); font: 12.5px var(--mono); outline: none; caret-color: var(--accent); }
+  #cmd::placeholder { color: var(--ink-4); }
+  #cmd:placeholder-shown { text-overflow: ellipsis; }
+  .cbtn { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    border: 0; background: none; border-radius: 50%;
+    color: var(--ink-2); cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out); }
+  .cbtn svg { width: 14px; height: 14px; }
+  .cbtn:hover { background: hsl(51 16.5% 84.5% / .07); color: var(--ink); }
+  .cbtn:active { transform: scale(.97); }
+  /* The destination toggle is Gemini's "Pro" slot: a label that names where the next
+     Enter goes, not a button that looks pressable. */
+  #piToggle { width: auto; min-width: 26px; padding: 0 8px; border-radius: 999px;
+    font: 800 13px var(--mono); letter-spacing: .02em; }
+  #nudge { font-size: 13px; }
+  .cbtn.pion { color: var(--accent-strong); background: hsl(29 88% 53% / .12); }
+  .cbtn.pion:hover { background: hsl(29 88% 53% / .18); }
+  /* ライブ音声状態（状態表示のためのopacity/scaleパルスのみ） */
+  @keyframes liveP { 0%, 100% { opacity: .65; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+  /* The live states lost their border along with every other button here, so the tint
+     carries them alone and has to be strong enough to read on its own. */
+  .cbtn.listen, .cbtn.capture, .cbtn.think, .cbtn.speak {
+    color: var(--lc);
+    background: color-mix(in srgb, var(--lc) 20%, transparent);
+    animation: liveP var(--lp, 1.8s) ease-in-out infinite; }
+  .cbtn.listen { --lc: #6ec8f0; --lp: 1.8s; }
+  .cbtn.capture { --lc: #57d9a3; --lp: .9s; }
+  .cbtn.think { --lc: #ffd166; --lp: 1.1s; }
+  .cbtn.speak { --lc: #f08bb8; --lp: .8s; }
+
+  /* ---- Tailscaleリモート接続パネル（不透明サーフェス・backdrop-filterなし） ---- */
+  #remotePanel { position: absolute; inset: 0; z-index: 20; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; padding: 20px 16px;
+    background: hsl(30 3.3% 11.8% / .99); text-align: center; }
+  #remotePanel.on { display: flex; animation: sectionIn 220ms var(--ease-out) both; }
+  #remotePanel h2 { color: var(--ink); font: 700 13px -apple-system, sans-serif; letter-spacing: .06em; }
+  #remotePanel img { width: 200px; height: 200px; border-radius: 10px; background: #fff; padding: 6px; }
+  #remotePanel p { color: var(--ink-2); font: 11px/1.6 -apple-system, "Hiragino Sans", sans-serif; max-width: 260px; }
+  #remotePanel code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--accent-strong); font: 9.5px var(--mono); }
+  #remotePanel a { display: none; border: 1px solid var(--accent-line); border-radius: 7px;
+    color: var(--accent-strong); background: hsl(29 88% 53% / .08); padding: 7px 12px;
+    font: 700 10.5px -apple-system, sans-serif; text-decoration: none; }
+  #remotePanel a.on { display: inline-flex; }
+  #remotePanel button { border: 1px solid var(--line-ctl); border-radius: 7px; color: var(--ink-2);
+    background: hsl(51 16.5% 84.5% / .04); padding: 7px 12px; font: 600 10.5px -apple-system, sans-serif;
+    cursor: pointer; }
+
+  /* ---- 起動フェード（transform/opacityのみ・240ms） ---- */
+  header, .stack, .composer { opacity: 0; transform: translateY(4px);
+    animation: boot 240ms var(--ease-out) forwards; }
+  .stack { animation-delay: 60ms; } .composer { animation-delay: 120ms; }
+  @keyframes boot { to { opacity: 1; transform: translateY(0); } }
+
+  button:focus-visible, select:focus-visible, a:focus-visible {
+    outline: 1.5px solid var(--accent-line); outline-offset: 1px; }
 
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important; }
   }
+  body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; }
 </style>
 </head>
 <body>
   <div class="shell">
     <header>
-      <span id="mark"></span><span class="title">BigKiji Universe</span>
-      <button id="openConsole" class="hbtn" title="Conversation and terminal (⌥⇧Space)">▤ CONSOLE</button>
-      <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
-      <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
-      <span id="securityBadge" class="securityBadge" title="BigKiji egress security status">SECURE</span>
-      <span class="status"><span class="dot"></span><span id="mode">…</span></span>
+      <div class="idRow">
+        <span id="mark"></span><span class="title">BigKiji Universe</span>
+        <span id="securityBadge" class="securityBadge" title="BigKiji egress security status">SECURE</span>
+        <span class="status"><span class="dot"></span><span id="mode">…</span></span>
+      </div>
+      <div class="toolRow">
+        <button id="openConsole" class="hbtn" title="Conversation and terminal (⌥⇧Space)">▤ CONSOLE</button>
+        <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
+        <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
+        <button id="remoteQR" class="hbtn" type="button">QR · PHONE</button>
+      </div>
+      <div class="utilityRow"><select id="sessionPicker" aria-label="Session history"><option value="">Session history</option></select></div>
     </header>
     <div id="agentBubbles" aria-live="polite" aria-label="Live AI messages"></div>
-    <div class="utilityRow"><select id="sessionPicker" aria-label="Session history"><option value="">Session history</option></select><button id="remoteQR" type="button">QR · PHONE</button></div>
-    <div id="orbWrap">
-      <div class="bgHero"></div>
-      <div class="hint" data-i18n="hint">…</div>
+    <div class="stack">
+      <div id="orbWrap">
+        <div class="bgHero"></div>
+        <div class="hint" data-i18n="hint">…</div>
+      </div>
+      <div id="ideaDraft" aria-live="polite"><div class="ideaCopy"><span class="ideaEyebrow">LOCAL IDEA DRAFT</span><strong id="ideaTitle"></strong><small id="ideaMeta"></small></div><div class="ideaActions"><button data-action="enhance">Gemini polish</button><button data-action="plan">Make plan</button><button data-action="promote">Adopt</button><button data-action="archive">×</button></div><div id="ideaDisclosure"><span></span><button type="button">Review &amp; send</button></div></div>
+      <div id="feed"></div>
+      <div id="cards"></div>
+      <div class="streamCard">
+        <div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span><em id="count">0</em></div>
+        <em id="tvitals">–</em>
+        <div id="log"></div>
+      </div>
     </div>
-    <div id="ideaDraft" aria-live="polite"><div class="ideaCopy"><span class="ideaEyebrow">LOCAL IDEA DRAFT</span><strong id="ideaTitle"></strong><small id="ideaMeta"></small></div><div class="ideaActions"><button data-action="enhance">Gemini polish</button><button data-action="plan">Make plan</button><button data-action="promote">Adopt</button><button data-action="archive">×</button></div><div id="ideaDisclosure"><span></span><button type="button">Review &amp; send</button></div></div>
-    <div id="feed"></div>
-    <div id="cards"></div>
-    <div class="streamCard"><div class="logHead"><span data-i18n="stream">LIVE PROCESS STREAM</span>
-      <em id="tvitals" style="margin-left:8px;color:rgba(226,240,234,.4);letter-spacing:0">–</em>
-      <em id="count">0</em></div><div id="log"></div></div>
     <div id="piAnswer"></div>
     <div class="composer">
-      <input id="cmd" type="text" spellcheck="false"
-        data-i18n-ph="ph_ai" placeholder="" />
-      <button id="piToggle" class="cbtn pion" title="Toggle destination: AI ⇄ terminal"
-        style="font-weight:800;font-size:13px">π</button>
-      <button id="nudge" class="cbtn" title="Ask the orb to suggest the next move" style="font-size:12px">💡</button>
-      <button id="mic" class="cbtn" data-live-icon="1" title="Live voice — one tap for hands-free conversation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
-      </button>
+      <div class="pill">
+        <input id="cmd" type="text" spellcheck="false"
+          data-i18n-ph="ph_ai" placeholder="" />
+        <button id="piToggle" class="cbtn pion" title="Toggle destination: AI ⇄ terminal">π</button>
+        <button id="nudge" class="cbtn" title="Ask the orb to suggest the next move">💡</button>
+        <button id="mic" class="cbtn" data-live-icon="1" title="Live voice — one tap for hands-free conversation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+        </button>
+      </div>
     </div>
     <div id="remotePanel" role="dialog" aria-live="polite"><h2>TAILSCALE PHONE LINK</h2><img id="remoteQRImage" alt="BigKiji Tailscale connection QR code"><p id="remoteHelp">Checking Tailscale…</p><code id="remoteURL"></code><a id="remoteSetup" target="_blank" rel="noreferrer">Enable Tailscale Serve</a><button id="remoteClose" type="button">Close</button></div>
-    <div class="grain"></div>
   </div>
 
   <script src="./agents.js"></script>
@@ -329,13 +380,20 @@
     // owner's PiAgent name arrives here the same way every other setting does.
     window.bigkiji?.settingsGet?.().then((s) => applyPiAgentName(s?.piAgent?.displayName)).catch(() => {});
     window.bigkiji?.onSettingsChanged?.((s) => applyPiAgentName(s?.piAgent?.displayName));
+    // `label` is not a cosmetic rename. This function took a parameter called `name`
+    // and then declared `const name` in the same scope, which is a SyntaxError — and a
+    // SyntaxError in an inline script does not fail that statement, it discards the
+    // WHOLE <script> element before a line of it runs. Every listener registered below
+    // (CONSOLE, CANVAS, the composer, the session picker) was therefore never attached,
+    // so the tray rendered perfectly and no button in it did anything. See
+    // tools/inline-script-selftest.js, which now parses every inline script we ship.
     function applyPiAgentName(name) {
       const clean = String(name || '').trim().slice(0, 32);
       MODEL_CARDS['pi-agent-core'].short = clean || 'PiAgent';
       // cardMap is filled synchronously below; both callers here resolve after that.
       const card = cardMap['pi-agent-core'];
-      const name = card?.el?.querySelector('.an');
-      if (name) name.textContent = MODEL_CARDS['pi-agent-core'].short;
+      const label = card?.el?.querySelector('.an');
+      if (label) label.textContent = MODEL_CARDS['pi-agent-core'].short;
     }
     const CHAT_MODELS = {
       'claude-code': MODEL_CARDS['claude-code'], claude: MODEL_CARDS['claude-code'], codex: MODEL_CARDS.codex,

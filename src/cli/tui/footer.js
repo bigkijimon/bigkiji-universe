@@ -21,7 +21,7 @@
 
 const path = require('path');
 const { stripAnsi, themeFor } = require('../../domain/terminal/cli-theme');
-const { bar, clip, phaseChip, phaseName, progressOf } = require('./renderer');
+const { bar, clip, phaseChips, phaseName, progressOf } = require('./renderer');
 const { lower, phrase, stringWidth } = require('./transcript');
 const { LOADING_TEXT, frameRows, loadingFrames } = require('./loading-frames');
 
@@ -124,12 +124,23 @@ function buildFooter(options = {}) {
   lines.push(MARGIN + spread(left, right, inner, leftPlain, rightPlain).text);
 
   // Row n+1 — PHASE VECTOR + real progress meter
+  //
+  // The chip row was a fixed width whatever the terminal was, so in the owner's split
+  // pane (63 columns) `spread()` ran out of room and fell through to its clip branch,
+  // which printed `phase vector ●1 preflight ○2 execute ○3 verify ———…` — the meter and
+  // the percentage, the two things the row exists for, cut off mid-glyph. `phaseChip`
+  // has had a `compact` mode since it was written and nothing ever passed it. Under
+  // pressure the names go and the numbered dots stay, exactly as the monitor already
+  // does, because which step is lit is the part worth keeping.
   const percent = progressOf(state, phase);
-  const chips = `${phaseChip('PREFLIGHT', phase, 1, C)}  ${phaseChip('EXECUTE', phase, 2, C)}  ${phaseChip('VERIFY', phase, 3, C)}`;
-  const vectorLeft = `${C.bold}${C.ink}phase vector${C.reset}  ${chips}`;
-  const vectorLeftPlain = `phase vector  ${plain(chips)}`; // measured by spread() in display columns
+  const chipRow = (compact) => phaseChips(phase, C, { compact }).join('  ');
   const meterPlain = `${bar(percent, METER_WIDTH)} ${String(percent).padStart(3)}%`;
   const meter = `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${String(percent).padStart(3)}%${C.reset}`;
+  const fits = (compact) => stringWidth(`phase vector  ${plain(chipRow(compact))}`) + stringWidth(meterPlain) + 2 <= inner;
+  const compactChips = !fits(false);
+  const chips = chipRow(compactChips);
+  const vectorLeft = `${C.bold}${C.ink}phase vector${C.reset}  ${chips}`;
+  const vectorLeftPlain = `phase vector  ${plain(chips)}`; // measured by spread() in display columns
   lines.push(MARGIN + spread(vectorLeft, meter, inner, vectorLeftPlain, meterPlain).text);
 
   // Rows n+2 / n+4 — the rules that frame the input line
@@ -145,18 +156,36 @@ function buildFooter(options = {}) {
   // terminal, and the transcript is what the owner is actually reading. When there
   // is no run in flight the segment is absent entirely — an idle machine reporting
   // its idleness every 67ms is the kind of chrome that stops being read.
+  // Segments are dropped whole, in order of what is worth least here, and only the
+  // last resort clips. This row used to go straight from "everything" to
+  // `clip(everything)`, which on a 63 column pane printed
+  // `mode: plan  shell: zsh(48460)  agent: pi-agent-core ●i…` — the agent's *state*,
+  // the only changing value on the row, truncated to one letter and an ellipsis,
+  // while `shell:` kept all seventeen of its columns. Dropping a segment says "not
+  // shown"; clipping a value says something false about it.
+  //
+  // Order, least valuable first: `work` (repeated in the phase row above), then
+  // `shell` (constant for the life of the process), then `mode` (visible in the
+  // prompt colour). `agent` is never dropped — it is the only line that says which
+  // model is answering.
   const agent = agentLabel(state, C);
   const work = workSegment(state);
-  const statusRow = `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`
-    + (work ? `    ${C.muted}work:${C.reset} ${C.ink}${work}${C.reset}` : '');
-  const statusRowPlain = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`
-    + (work ? `    work: ${work}` : '');
-  // Narrow terminals drop `work` before they drop anything else on this row: it is
-  // the newest thing here and the only one repeated elsewhere on screen.
-  const withoutWork = `mode: ${lower(mode)}    shell: ${lower(shellLabel())}    agent: ${agent.text}`;
-  if (stringWidth(statusRowPlain) <= inner) lines.push(MARGIN + statusRow);
-  else if (stringWidth(withoutWork) <= inner) lines.push(MARGIN + `${C.muted}mode:${C.reset} ${C.strong}${lower(mode)}${C.reset}    ${C.muted}shell:${C.reset} ${C.ink}${lower(shellLabel())}${C.reset}    ${C.muted}agent:${C.reset} ${agent.colored}`);
-  else lines.push(MARGIN + clip(withoutWork, inner));
+  // The mode gets the violet the rest of this palette did not have. Claude Code puts
+  // its mode in violet for the same reason: it is the one value on the row that
+  // changes what the next Enter will DO, and it read as ordinary text.
+  const modeSeg = { plain: `mode: ${lower(mode)}`, colored: `${C.muted}mode:${C.reset} ${C.violet}${C.bold}${lower(mode)}${C.reset}` };
+  const shellSeg = { plain: `shell: ${lower(shellLabel())}`, colored: `${C.muted}shell:${C.reset} ${C.dim}${lower(shellLabel())}${C.reset}` };
+  const agentSeg = { plain: `agent: ${agent.text}`, colored: `${C.muted}agent:${C.reset} ${agent.colored}` };
+  const workSeg = work ? { plain: `work: ${work}`, colored: `${C.muted}work:${C.reset} ${C.info}${work}${C.reset}` } : null;
+  const candidates = [
+    [modeSeg, shellSeg, agentSeg, workSeg],
+    [modeSeg, shellSeg, agentSeg],
+    [modeSeg, agentSeg],
+    [agentSeg],
+  ];
+  const join = (segments, key) => segments.filter(Boolean).map((segment) => segment[key]).join('    ');
+  const chosen = candidates.find((segments) => stringWidth(join(segments, 'plain')) <= inner);
+  lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([agentSeg], 'plain'), inner)));
 
   return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };
 }

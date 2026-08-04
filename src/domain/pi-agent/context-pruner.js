@@ -118,8 +118,27 @@ class ContextPruner {
       // two. When the file has no symbols the window is what is left, so this is an
       // improvement where it applies and never a regression where it does not.
       const symbols = symbolsOf(item.text, item.relative);
-      const ranges = indexes.length
-        ? symbolRanges(symbols, indexes.slice(0, 4), lines.length)
+      // A line that DEFINES what the prompt named outranks a line that mentions it.
+      //
+      // `indexes` is file order and only the first four survive, so which four you get
+      // depended on where in the file the words happened to fall. Measured on
+      // 2026-08-04: for the prompt "fix the workSegment calculation", footer.js matched
+      // on `toFixed` twice and on the word "fixed" in a comment before it ever reached
+      // `function workSegment` — so the four slots filled with mentions and the
+      // definition of the function being asked about was the one thing not sent. Adding
+      // a single comment was enough to cause that, which is not a property a context
+      // budget should have.
+      //
+      // Definition lines are hoisted ahead of mentions; ties keep file order, so a
+      // prompt that names nothing behaves exactly as before.
+      const named = new Set(terms.map((term) => String(term).toLowerCase()));
+      const defining = new Set(symbols.filter((symbol) => named.has(String(symbol.name).toLowerCase()))
+        .map((symbol) => symbol.startLine));
+      const ordered = defining.size
+        ? [...indexes].sort((a, b) => (defining.has(b) ? 1 : 0) - (defining.has(a) ? 1 : 0) || a - b)
+        : indexes;
+      const ranges = ordered.length
+        ? symbolRanges(symbols, ordered.slice(0, 4), lines.length)
         : [[0, Math.min(lines.length, 80)]];
       const slice = ranges.map(([a, b]) => `L${a + 1}-L${b}:\n${lines.slice(a, b).join('\n')}`).join('\n…\n');
       const sliceTokens = estimateTokens(slice) + estimateTokens(item.relative) + 12;

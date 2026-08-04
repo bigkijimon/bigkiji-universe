@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Stricter than the window this replaces.
+
+  console.html needed script-src 'unsafe-inline' because its behaviour was an inline
+  <script> block. Vite emits the app as an external module and modulePreload.polyfill is
+  off, so nothing inline is left and 'unsafe-inline' comes out of script-src entirely.
+
+  style-src keeps it: xterm injects a <style> element at runtime to size its rows.
+
+  While `vite` serves this page the policy is swapped for a looser one by a plugin that is
+  apply:'serve' only — it cannot reach a build, and console-window-selftest asserts the
+  built HTML contains neither 'unsafe-eval' nor a loopback address.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
+<title>BigKiji Console</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./src/main.jsx"></script>
+</body>
+</html>

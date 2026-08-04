@@ -2,7 +2,8 @@
 
 const { themeFor } = require('../../domain/terminal/cli-theme');
 const {
-  DASH, count, glyphs, lower, metric, padToWidth, phrase, renderNote, renderToolCall, stringWidth, truncateToWidth,
+  DASH, count, glyphs, lower, metric, padToWidth, phrase, renderNote, renderToolCall, shortenPath, stringWidth,
+  truncateToWidth,
 } = require('./transcript');
 const { catMark } = require('./loading-frames');
 const APP_VERSION = require('../../../package.json').version;
@@ -51,7 +52,7 @@ const PHASE_STEMS = Object.freeze({
   VERIFY: ['VERIF', 'COMPLETED', 'ENFORCED'],
 });
 
-function phaseChip(name, current, index, C = themeFor('plan'), { compact = false } = {}) {
+function phaseChip(name, current, index, C = themeFor('plan'), { compact = false, done = false } = {}) {
   const normalized = phaseName(current).toUpperCase();
   const active = (PHASE_STEMS[name] || [name]).some((stem) => normalized.includes(stem));
   // `name` stays the uppercase table key. PHASE_STEMS is keyed on it, so folding
@@ -59,7 +60,24 @@ function phaseChip(name, current, index, C = themeFor('plan'), { compact = false
   // three chips dark for the whole of every run — the exact bug the comment above
   // records being fixed once already.
   const text = compact ? String(index) : `${index} ${phrase(name)}`;
-  return active ? `${C.strong}●${text}${C.reset}` : `${C.muted}○${text}${C.reset}`;
+  if (active) return `${C.strong}●${text}${C.reset}`;
+  // A step the run has already passed is not the same as one it has not reached, and
+  // both rendered as the same grey ○. `done` is only ever set by phaseChips() below,
+  // from the position of the live step — never guessed from a percentage.
+  if (done) return `${C.success}✓${text}${C.reset}`;
+  return `${C.muted}○${text}${C.reset}`;
+}
+
+const PHASE_ORDER = Object.freeze(['PREFLIGHT', 'EXECUTE', 'VERIFY']);
+/** Which of the three steps is live, or -1 when the daemon is idle. */
+function activePhaseIndex(current) {
+  const normalized = phaseName(current).toUpperCase();
+  return PHASE_ORDER.findIndex((name) => (PHASE_STEMS[name] || [name]).some((stem) => normalized.includes(stem)));
+}
+/** The three chips, with everything before the live one marked done. */
+function phaseChips(current, C = themeFor('plan'), { compact = false } = {}) {
+  const active = activePhaseIndex(current);
+  return PHASE_ORDER.map((name, index) => phaseChip(name, current, index + 1, C, { compact, done: active > index }));
 }
 
 // The one box in the whole CLI.
@@ -76,7 +94,7 @@ function phaseChip(name, current, index, C = themeFor('plan'), { compact = false
 // daemon's `conversation` snapshot, the counts from its fleet; a field the
 // daemon did not send renders as '—' rather than a plausible default.
 function modelPanel(state = {}, options = {}) {
-  const { width = 80, theme = themeFor('plan'), label = ' model ' } = options;
+  const { width = 80, theme = themeFor('plan'), label = ' model ', frame = 0 } = options;
   const conversation = state.conversation || {};
   const fleet = state?.models?.models || state?.models || [];
   const bits = [lower(conversation.model) || DASH];
@@ -91,6 +109,13 @@ function modelPanel(state = {}, options = {}) {
   // nothing, so there was no way to see from here whether they were up.
   const tools = state?.tools;
   if (tools?.tools?.length) bits.push(`${tools.connected}/${tools.tools.length} tools`);
+  // Row three. The cat is three terminal rows now (it was two, and two rows of this
+  // sprite is a brown rectangle — see loading-frames.js HEAD_ROWS), so the panel has a
+  // row it did not have before. Claude Code's header spends the equivalent row on the
+  // working directory, and so does this: which directory the engine is pointed at is
+  // the fact most worth having beside the model, and it was previously muted text
+  // below the box where it read as chrome.
+  const where = state.workspace ? lower(shortenPath(state.workspace)) : '';
 
   // The cat is pixels, and pixels are colour. `truncateToWidth` returns plain
   // text — it strips ANSI even when it has nothing to trim — so the mark is
@@ -101,7 +126,7 @@ function modelPanel(state = {}, options = {}) {
   // rows, and the two that carry the face are almost entirely opaque, so the
   // mark rendered as a brown rectangle on the owner's screen. Rows 2-5 of the
   // sprite are ears over eyes, and that reads.
-  const mark = catMark();
+  const mark = catMark({ frame });
   const markWidth = mark.length ? stringWidth(mark[0]) + 2 : 0;
   const room = Math.max(8, width - 2);
   // The label rides the top border, so it has to fit the terminal too. It is
@@ -111,17 +136,22 @@ function modelPanel(state = {}, options = {}) {
   // The model is the fact worth reading first, so it gets the row beside the
   // ears; everything else follows underneath.
   const factRoom = Math.max(1, room - 2 - markWidth);
-  const facts = [truncateToWidth(bits[0], factRoom), truncateToWidth(bits.slice(1).join(' · '), factRoom)];
+  const facts = [truncateToWidth(bits[0], factRoom), truncateToWidth(bits.slice(1).join(' · '), factRoom),
+    truncateToWidth(where, factRoom)];
   const rows = Math.max(mark.length, 1);
   const bodyWidth = Math.max(...facts.map((line) => markWidth + stringWidth(line)));
   const inner = Math.min(room, Math.max(stringWidth(heading) + 1, bodyWidth + 2));
 
   const out = [`${theme.border}╭─${theme.reset}${theme.muted}${heading}${theme.reset}${theme.border}${'─'.repeat(Math.max(0, inner - stringWidth(heading) - 1))}╮${theme.reset}`];
+  // Three facts, three weights. Flat `ink` on every row made the panel one block of
+  // text where the model, the readiness counts and the directory all looked equally
+  // important; the model is the one you read first, so it is the one that is bright.
+  const tones = [`${theme.bold}${theme.ink}`, theme.muted, theme.dim];
   for (let index = 0; index < rows; index += 1) {
     const art = mark[index] ? `${mark[index]}  ` : ' '.repeat(markWidth);
     const text = facts[index] || '';
     const used = markWidth + stringWidth(text);
-    out.push(`${theme.border}│${theme.reset} ${art}${theme.ink}${text}${theme.reset}${' '.repeat(Math.max(0, inner - used - 2))} ${theme.border}│${theme.reset}`);
+    out.push(`${theme.border}│${theme.reset} ${art}${tones[index] || theme.ink}${text}${theme.reset}${' '.repeat(Math.max(0, inner - used - 2))} ${theme.border}│${theme.reset}`);
   }
   out.push(`${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`);
   return out;
@@ -173,12 +203,16 @@ class TUIRenderer {
     const header = [
       narrow ? truncateToWidth(`bigkiji v${APP_VERSION}`, width) : spread(title, facts, width),
       `${C.muted}${truncateToWidth(`pi-orchestrator ${mark.note} ${lower(mode)} ${mark.note} models wake only when assigned`, width)}${C.reset}`,
-      // The panel costs three rows, and the relay's floor is three. Below 18 rows
-      // there is not enough screen for both: the sections came to 17 on a 16 row
-      // terminal, draw() wrote a relay line into the footer's row, and the footer's
-      // own ESC[2K erased it. On a short screen the live relay is worth more than a
-      // restatement of facts /status can print on demand.
-      ...(rows >= 18 ? modelPanel(state, { width, theme: C }) : []),
+      // The panel costs five rows — border, three facts, border — and the relay's floor
+      // is three. Below 19 rows there is not enough screen for both: the sections came
+      // to 17 on a 16 row terminal, draw() wrote a relay line into the footer's row,
+      // and the footer's own ESC[2K erased it. On a short screen the live relay is
+      // worth more than a restatement of facts /status can print on demand.
+      //
+      // The threshold moved 18 -> 19 when the cat went from two rows to three. It is
+      // the panel's height plus the rest of the sections, so it has to move with it;
+      // leaving it at 18 put 19 rows on an 18 row terminal, which the self test caught.
+      ...(rows >= 19 ? modelPanel(state, { width, theme: C }) : []),
       '',
     ];
 
@@ -188,7 +222,7 @@ class TUIRenderer {
     // terminal was, so it ran off the right edge below 45 columns — measured, and
     // true before this file was last touched. Under pressure the names go and the
     // numbered dots stay, because which step is lit is the part worth keeping.
-    const chipRow = (compact) => `${this.phase('PREFLIGHT', phase, 1, C, { compact })}  ${this.phase('EXECUTE', phase, 2, C, { compact })}  ${this.phase('VERIFY', phase, 3, C, { compact })}`;
+    const chipRow = (compact) => phaseChips(phase, C, { compact }).join('  ');
     const chips = stringWidth(chipRow(false)) + 5 <= width ? chipRow(false) : chipRow(true);
     const meterWidth = Math.max(8, Math.min(24, width - 46));
     header.push(`     ${chips}${narrow ? '' : `   ${C.accent}${bar(pct, meterWidth)}${C.reset} ${C.strong}${String(pct).padStart(3)}%${C.reset}`}`);
@@ -261,7 +295,7 @@ class TUIRenderer {
 // readline input row, which readline itself owns.
 class StickyScreen {
   constructor({ output = process.stdout, footerHeight = 1 } = {}) {
-    this.output = output; this.header = []; this.footer = []; this.active = false; this.onLayout = null; this._resize = null;
+    this.output = output; this.header = []; this.headerFn = null; this.footer = []; this.active = false; this.onLayout = null; this._resize = null;
     this.used = 0; this.laidOutRows = 0;
     this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
     this.columns = this.cols; this.lines = this.rows;
@@ -278,10 +312,20 @@ class StickyScreen {
     this.footerHeight = next; if (this.active) { this.output.write(WIPE); this.layout(); }
     return true;
   }
+  // `header` may be a function of the column count.
+  //
+  // It could only be an array, resolved once, and layout() repainted that same array
+  // forever. Resize a pane narrower and the header still held lines measured for the
+  // old width: the model panel's box and the command hints were both wider than the
+  // terminal, so the terminal wrapped them itself, mid-token. That is the split-pane
+  // screenshot the owner sent. A function is re-evaluated on every layout, which is
+  // exactly when the width can have changed.
   start({ header = [], footer = [], footerHeight, onLayout } = {}) {
     if (!this.output.isTTY) return false;
     if (footerHeight !== undefined) this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
-    this.header = header; this.footer = footer; this.onLayout = onLayout || null; this.active = true;
+    this.headerFn = typeof header === 'function' ? header : null;
+    this.header = this.headerFn ? (this.headerFn(this.cols) || []) : header;
+    this.footer = footer; this.onLayout = onLayout || null; this.active = true;
     this.columns = this.cols; this.lines = this.rows;
     this.output.write(WIPE); this.layout();
     this._resize = () => { if (!this.active) return; this.columns = this.cols; this.lines = this.rows; this.output.write(WIPE); this.layout(); };
@@ -313,7 +357,23 @@ class StickyScreen {
     const out = this.footerPaint();
     return out ? `${ESC}7${out}${ESC}8` : '';
   }
+  /**
+   * Repaint the header in place, same contract as restoreFooter().
+   *
+   * The header is not decoration that gets drawn once: it holds the cat, and a cat
+   * that never moves is a photograph. It lives outside the scroll region and is
+   * addressed absolutely, exactly like the footer, so repainting it costs the same as
+   * repainting the footer and cannot damage the transcript.
+   */
+  restoreHeader() {
+    if (!this.active || !this.headerFn) return '';
+    this.header = this.headerFn(this.cols) || [];
+    let out = '';
+    this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
+    return out ? `${ESC}7${out}${ESC}8` : '';
+  }
   layout() {
+    if (this.headerFn) this.header = this.headerFn(this.cols) || [];
     let out = `${ESC}[r${ESC}[H`;
     this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
     out += this.footerPaint();
@@ -367,4 +427,4 @@ class StickyScreen {
   }
 }
 
-module.exports = { TUIRenderer, StickyScreen, clip, pad, bar, phaseName, phaseChip, progressOf, keywordProgress, modelPanel, APP_VERSION };
+module.exports = { TUIRenderer, StickyScreen, clip, pad, bar, phaseName, phaseChip, phaseChips, activePhaseIndex, progressOf, keywordProgress, modelPanel, APP_VERSION };

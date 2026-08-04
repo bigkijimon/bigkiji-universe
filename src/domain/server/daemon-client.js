@@ -123,7 +123,11 @@ class DaemonClient extends EventEmitter {
   piCompact() { return this.post('/api/pi/compact', {}); }
   piStop() { return this.post('/api/pi/stop', {}); }
   piStatus() { return this.get('/api/pi/status'); }
-  sessions() { return this.get('/api/sessions'); }
+  // The route's own default is 40 and there are already more sessions than that on disk,
+  // so the console's history drawer would have silently shown a prefix and called it the
+  // history. 200 is SessionStore.list()'s own hard cap, so this asks for everything it is
+  // willing to give rather than inventing a new ceiling.
+  sessions(limit = 200) { return this.get(`/api/sessions?limit=${Number(limit) || 200}`); }
   session(id) { return this.get(`/api/session?id=${encodeURIComponent(id)}`); }
   ideas(limit = 40) { return this.get(`/api/ideas?limit=${encodeURIComponent(limit)}`); }
   idea(id) { return this.get(`/api/idea?id=${encodeURIComponent(id)}`); }

@@ -22,7 +22,7 @@ const { stripAnsi } = require('../src/domain/terminal/cli-theme');
 const T = require('../src/cli/tui/transcript');
 const { TUIRenderer, StickyScreen, modelPanel } = require('../src/cli/tui/renderer');
 const { buildFooter, footerHeightFor } = require('../src/cli/tui/footer');
-const { loadingFrames, frameRows, FRAME_SETS, SHADES } = require('../src/cli/tui/loading-frames');
+const { loadingFrames, frameRows, FRAME_SETS, SHADES, catMark, catMarkFrames } = require('../src/cli/tui/loading-frames');
 
 // The corners and tees named in the brief, plus every other framing glyph and
 // the vertical bar that used to cost two columns on every single line.
@@ -325,7 +325,11 @@ ok('the local tools are on screen at all', () => {
   assert.ok(!/tools\(/.test(without), 'no tools known is no tools section');
   // And the panel counts them without growing a row.
   const panel = modelPanel(state, { width: 60, theme: require('../src/domain/terminal/cli-theme').themeFor('plan'), label: ' bigkiji ' });
-  assert.equal(panel.length, 4, 'the header box stays four rows');
+  // Five: a border, three content rows and a border. The cat is three terminal rows
+  // as of 2026-08-04 — two rows of this sprite rendered as a brown bar with a dot in
+  // it, because the ears live in pixel rows 0-1 and a two-row crop cannot hold ears
+  // and eyes at once. The third row is not empty: it carries the working directory.
+  assert.equal(panel.length, 5, 'the header box is five rows: border, three facts, border');
   assert.match(panel.join(' ').replace(/\x1b\[[0-9;]*m/g, ''), /2\/3 tools/);
 });
 
@@ -334,12 +338,12 @@ ok('the header carries exactly one box, and it is the model panel', () => {
     const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });
     const { header } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
     const boxed = plainLines(header).filter((line) => BOX.test(line));
-    // Four rows: a border, two content rows and a border. The cat needs two,
-    // because one terminal row is two pixel rows and no cat fits in two.
-    assert.equal(boxed.length, 4, `one box, four rows, at ${cols}x${rows}: ${boxed.length}`);
+    // Five rows: a border, three content rows and a border. The cat needs three —
+    // ears, eyes, nose — and two of anything smaller renders as a coloured bar.
+    assert.equal(boxed.length, 5, `one box, five rows, at ${cols}x${rows}: ${boxed.length}`);
     assert.ok(boxed[0].startsWith('╭─') && boxed[0].endsWith('╮'), `top: ${boxed[0]}`);
     for (const line of boxed.slice(1, -1)) assert.ok(line.startsWith('│') && line.endsWith('│'), `content: ${line}`);
-    assert.ok(boxed[3].startsWith('╰') && boxed[3].endsWith('╯'), `bottom: ${boxed[3]}`);
+    assert.ok(boxed.at(-1).startsWith('╰') && boxed.at(-1).endsWith('╯'), `bottom: ${boxed.at(-1)}`);
     const widths = boxed.map(T.stringWidth);
     assert.ok(widths.every((value) => value === widths[0]), `the three rows must align: ${widths.join(',')}`);
     assert.ok(widths[0] <= cols, `the panel must fit ${cols}: ${widths[0]}`);
@@ -367,7 +371,10 @@ ok('nothing overflows between 24 and 200 columns, including the phase chips', ()
   const narrow = new TUIRenderer({ output: { columns: 24, rows: 24, write() {} } });
   const chips = plainLines(narrow.sections(MONITOR_STATE, MONITOR_RELAY).header).find((line) => /○\d/.test(line));
   assert.ok(chips && !/preflight/.test(chips), `at 24 columns the names go: ${chips}`);
-  assert.ok(/[●○]1/.test(chips) && /[●○]2/.test(chips) && /[●○]3/.test(chips), `but all three steps stay: ${chips}`);
+  // ✓ as well as ● and ○ since 2026-08-04: a step the run has already passed reads
+  // differently from one it has not reached yet, which is a distinction the row
+  // could not make when both were the same grey circle.
+  assert.ok(/[●○✓]1/.test(chips) && /[●○✓]2/.test(chips) && /[●○✓]3/.test(chips), `but all three steps stay: ${chips}`);
 });
 ok('the sections fit the screen vertically too, down to 16 rows', () => {
   // The panel costs three rows and the relay has a floor of three, so on a short
@@ -445,10 +452,63 @@ ok('the loading cat is a shape, not a filled bar, and it fits in one column', ()
     assert.ok(new Set(set.frames).size >= 2, `${name} does not animate`);
   }
 
-  // The header mark has room for a real head, so it stays two rows — but it must
-  // not be one uniform block either.
-  assert.equal(mark.length, 2, 'the header mark is two rows, because one is not a cat');
+  // The header mark has room for a real head, so it is three rows — ears, eyes,
+  // nose — and it must not be one uniform block either. It was two, and two rows of
+  // this sprite is a brown rectangle with a dot in it: the ears live in pixel rows
+  // 0-1 and a two-row crop starting below them has no shape left to show.
+  assert.equal(mark.length, 3, 'the header mark is three rows: ears, eyes, nose');
   assert.ok(/\s/.test(mark[0].trim()), `the ears need a gap: |${mark[0]}|`);
+
+  // Everything above ran under NO_COLOR, where the default falls back to the braille
+  // cell. The colour default is a different set and is what the owner actually looks
+  // at, so it gets checked too — and it is checked for a DIFFERENT bound, because the
+  // owner's complaint changed: "small, one column" became "that does not look like a
+  // cat". Five columns is the budget; a cat face does not fit in fewer.
+  const colour = require('child_process').spawnSync(process.execPath, ['-e', `
+    const L = require(${JSON.stringify(require.resolve('../src/cli/tui/loading-frames'))});
+    process.stdout.write(JSON.stringify({ id: L.DEFAULT_FRAME_SET_ID, set: L.loadingFrames(), mark: L.catMark() }));
+  `], { env: { ...process.env, NO_COLOR: undefined, TERM: 'xterm-256color' }, encoding: 'utf8' });
+  assert.equal(colour.status, 0, colour.stderr);
+  const painted = JSON.parse(colour.stdout);
+  assert.equal(painted.set.rows, 1, 'the footer still reserves exactly one row for the cat');
+  for (const [index, frame] of painted.set.frames.entries()) {
+    assert.ok(T.stringWidth(frame) <= 5,
+      `frame ${index} of "${painted.id}" is ${T.stringWidth(frame)} columns; the footer budget is 5`);
+  }
+  assert.ok(new Set(painted.set.frames).size >= 2, 'the colour default has to animate too');
+  // A transparent pixel must be transparent. Emitting the upper-half glyph for a cell
+  // whose upper pixel is transparent paints that half in the terminal's DEFAULT
+  // foreground — near-white on a dark theme — which is what put two white squares on
+  // the cat's ears in the owner's screenshot.
+  const whiteOverColour = /\x1b\[39m\x1b\[48;2;/;
+  assert.ok(!whiteOverColour.test(painted.mark.join('')),
+    'a transparent upper pixel must not be painted in the default foreground');
+});
+
+ok('the header cat animates, and is still a cat in every pose', () => {
+  // The mark is drawn once per tick while a turn is in flight, so every pose is on
+  // screen for 67ms and every pose has to hold up. Two ways this has already broken:
+  //
+  //   width drift — cropping each pose to its own bounding box made the box breathe
+  //   once per loop and slid every fact beside it sideways.
+  //
+  //   the bob — half the poses move the whole animal down a pixel (the reference bakes
+  //   its bob into the art), and cropping at fixed sprite rows pushed the nose out of
+  //   the window and pulled a blank row in at the top. Three of six poses stopped being
+  //   a face. Nothing measured it; it was caught by rendering the poses and looking.
+  const frames = catMarkFrames();
+  assert.ok(frames >= 4, `a loading animation needs poses: ${frames}`);
+  const marks = Array.from({ length: frames }, (_, frame) => catMark({ frame }));
+  const widths = new Set(marks.map((rows) => T.stringWidth(stripAnsi(rows[0]))));
+  assert.equal(widths.size, 1, `every pose must be the same width or the panel jumps: ${[...widths].join(',')}`);
+  for (const [index, rows] of marks.entries()) {
+    assert.equal(rows.length, 3, `pose ${index} is ${rows.length} rows`);
+    // Ears: the top row has to have a gap in it. A pose cropped to the wrong rows
+    // arrives here as a solid bar, which is exactly the failure being guarded.
+    assert.ok(/\s/.test(stripAnsi(rows[0]).trim()), `pose ${index} has no gap between the ears: |${stripAnsi(rows[0])}|`);
+  }
+  assert.ok(new Set(marks.map((rows) => rows.join(''))).size >= 3,
+    'the poses have to actually differ, or the ticker is repainting a photograph');
 });
 ok('the transcript fills from the top of the scroll region, not the bottom', () => {
   // What the owner saw: a fifty row terminal with the header at the top, the
@@ -488,7 +548,7 @@ ok('the monitor key hints are lowercase like everything else', () => {
 });
 ok('the model panel invents nothing when the daemon said nothing', () => {
   const boxed = plainLines(modelPanel({}, { width: 80 }));
-  assert.equal(boxed.length, 4);
+  assert.equal(boxed.length, 5);
   const facts = boxed.slice(1, -1).join(' ');
   assert.ok(facts.includes('—'), `an unknown model is an em dash, not a default: ${facts}`);
   assert.ok(!/ctx/.test(facts), `no context window was reported, so none is shown: ${facts}`);
