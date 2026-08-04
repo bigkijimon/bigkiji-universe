@@ -113,6 +113,9 @@ const DEFAULTS = Object.freeze({
     colorScheme: 'auto',
     // Console session drawer. Open by default — there is already a real history to show.
     consoleSidebar: true,
+    // Where the owner last dragged the menu-bar window. null means "never moved", which
+    // is not the same as 0,0 — an unmoved window still opens under the menu-bar icon.
+    trayBounds: null,
     density: 'comfortable',
     textScale: 1,
     reducedGlow: true,
@@ -288,6 +291,14 @@ class SettingsStore {
     next.appearance.colorScheme = COLOR_SCHEMES.includes(next.appearance.colorScheme)
       ? next.appearance.colorScheme : 'auto';
     next.appearance.consoleSidebar = next.appearance.consoleSidebar !== false;
+    // Four finite numbers or nothing. A half-written bounds object would place the window
+    // at NaN, which on macOS is a window the owner can never find again.
+    const bounds = next.appearance.trayBounds;
+    next.appearance.trayBounds = bounds && ['x', 'y', 'width', 'height']
+      .every((key) => Number.isFinite(Number(bounds[key])))
+      ? { x: Math.round(bounds.x), y: Math.round(bounds.y),
+        width: Math.round(bounds.width), height: Math.round(bounds.height) }
+      : null;
     next.appearance.textScale = clamp(next.appearance.textScale, 0.85, 1.25, 1);
     next.appearance.renderPriority = RENDER_PRIORITIES.includes(next.appearance.renderPriority)
       ? next.appearance.renderPriority : 'auto';

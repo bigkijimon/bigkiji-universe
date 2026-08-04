@@ -39,7 +39,22 @@
 
   /* ---- header: 1段目=識別/状態 2段目=窓の操作 3段目=履歴 ---- */
   header { flex: none; border-bottom: 1px solid var(--hairline); }
-  .idRow { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px 7px; }
+  .idRow { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px 7px;
+    /* The owner asked for a small window that can be moved. main.js makes the window
+       movable; a frameless window is only draggable where the PAGE says so, and this
+       title row is that handle. Everything clickable inside the header opts back out
+       below, or it stops responding to the pointer entirely. */
+    -webkit-app-region: drag; }
+  header button, header select, header input { -webkit-app-region: no-drag; }
+  /* With hide-on-blur gone (the window is resident now, by owner decision) this and the
+     menu-bar icon are the only two ways to close it. It cannot be left out. */
+  #trayClose { margin-left: 2px; width: 21px; height: 21px; flex: none; border: 0; padding: 0;
+    background: none; color: var(--ink-4); font-size: 13px; line-height: 1; cursor: pointer;
+    border-radius: 50%;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out); }
+  #trayClose:hover { background: hsl(51 16.5% 84.5% / .07); color: var(--ink); }
+  #trayClose:active { transform: scale(.94); }
   #mark { flex: none; display: inline-flex; }
   .bkMark { width: 15px; height: 15px; stroke: var(--accent); }
   .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -197,6 +212,20 @@
 
   /* ---- LIVE PROCESS STREAM ---- */
   .streamCard { flex: none; padding: 9px 12px 10px; border-top: 1px solid var(--hairline); }
+  /* ── 小さい対話の窓 ──────────────────────────────────────────────────────
+     The owner asked for a small conversation window. What was here was a fleet
+     dashboard with a text field at the bottom: six model cards and a scrolling
+     process log stacked above the composer, so the reply had to fight for room.
+
+     Nothing is deleted. Every id stays in the DOM, because tray.html's inline
+     script grabs them at load and one missing element takes the whole window's
+     listeners down with it — the exact failure test:inline-scripts exists to
+     catch. They are hidden, and ⚡ brings them back. Same rule as the Canvas's
+     ⚡詳細 drawer, so the two windows behave the same way. */
+  #cards, .streamCard { display: none; }
+  body.tray-detail #cards { display: grid; }
+  body.tray-detail .streamCard { display: block; }
+  #trayDetail[aria-expanded="true"] { color: var(--ink); background: hsl(51 16.5% 84.5% / .09); }
   .logHead { display: flex; align-items: baseline; gap: 8px; }
   .logHead span { color: var(--ink-4); font: 700 10px var(--mono); letter-spacing: .1em; white-space: nowrap; }
   #count { margin-left: auto; font-style: normal; color: var(--accent); font: 600 10.5px var(--mono);
@@ -317,11 +346,14 @@
         <span id="mark"></span><span class="title">BigKiji Universe</span>
         <span id="securityBadge" class="securityBadge" title="BigKiji egress security status">SECURE</span>
         <span class="status"><span class="dot"></span><span id="mode">…</span></span>
+        <button id="trayClose" type="button" title="閉じる（メニューバーのアイコンで戻せます）" aria-label="閉じる">×</button>
       </div>
       <div class="toolRow">
         <button id="openConsole" class="hbtn" title="Conversation and terminal (⌥⇧Space)">▤ CONSOLE</button>
         <button id="openCanvas" class="hbtn" data-i18n="canvasBtn">⛶ CANVAS</button>
         <button id="voiceBtn" class="hbtn" title="Speech output ON/OFF (auto EN/JA/TH voice)">🔊</button>
+        <button id="trayDetail" class="hbtn" type="button" aria-expanded="false"
+          title="艦隊とプロセスログ">⚡ 詳細</button>
         <button id="remoteQR" class="hbtn" type="button">QR · PHONE</button>
       </div>
       <div class="utilityRow"><select id="sessionPicker" aria-label="Session history"><option value="">Session history</option></select></div>
@@ -669,6 +701,17 @@
     window.bigkiji.onComposerFocus(() => { cmd.focus(); cmd.select(); });
     document.getElementById('openConsole').addEventListener('click', () => window.bigkiji.openConsole());
     document.getElementById('openCanvas').addEventListener('click', () => window.bigkiji.openMain());
+    // main.js intercepts 'close' and hides instead of destroying, so the window comes
+    // back with its conversation, its position and its size intact.
+    document.getElementById('trayClose').addEventListener('click', () => window.close());
+    // The numbers stay reachable, not resident. Remembered per window rather than in
+    // settings: this is a "show me for a second" affordance, not a preference.
+    const trayDetail = document.getElementById('trayDetail');
+    trayDetail.addEventListener('click', () => {
+      const on = !document.body.classList.contains('tray-detail');
+      document.body.classList.toggle('tray-detail', on);
+      trayDetail.setAttribute('aria-expanded', String(on));
+    });
     document.getElementById('nudge').addEventListener('click', () => {
       piAnswer.textContent = '';
       piAnswer.classList.add('on');

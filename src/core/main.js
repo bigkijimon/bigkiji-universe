@@ -415,17 +415,52 @@ function createTrayWindow() {
     // Owner requirement: allow the tray dashboard to be resized with the cursor
     // while keeping it a compact, usable control surface.
     resizable: true, minWidth: 324, minHeight: 420,
-    movable: false, fullscreenable: false, minimizable: false,
+    // Movable, and it stays. Both were owner decisions on 2026-08-04: 「ミニウィンドウの
+    // UIも小さい対話の窓にして移動できるようにして欲しい」. A window that hides itself
+    // the moment you click anywhere else cannot be dragged anywhere useful, and it
+    // cannot be talked to while you look at something else — which is the entire point
+    // of a small conversation window. Closing is now the × and the menu-bar icon only.
+    movable: true, fullscreenable: false, minimizable: false,
     skipTaskbar: true, alwaysOnTop: true, hasShadow: false, roundedCorners: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: false }, // 非表示中もメニューバー・ダッシュボード描画を継続
   });
   trayWin.loadFile(path.join(UI_ROOT, 'tray.html'));
-  trayWin.on('blur', () => { if (!SMOKE && !SNAP && trayWin.isVisible()) trayWin.hide(); });
   trayWin.on('close', (e) => { if (!quitting) { e.preventDefault(); trayWin.hide(); } });
+  // Remember where it was put. Debounced because 'move' fires per pixel of a drag and
+  // this writes a file; 'moved'/'resized' are macOS-only, so the timer is the portable
+  // half and the settling delay also means a drag in progress is not persisted mid-way.
+  let saveTimer = null;
+  const remember = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!trayWin || trayWin.isDestroyed() || !settingsStore) return;
+      try { settingsStore.update({ appearance: { trayBounds: trayWin.getBounds() } }); } catch (_) { /* disk */ }
+    }, 500);
+  };
+  trayWin.on('move', remember);
+  trayWin.on('resize', remember);
 }
 
+/**
+ * Put the window under the menu-bar icon — but only where the owner has not already
+ * decided otherwise. A remembered position is clamped back onto a display that still
+ * exists, so unplugging the second monitor cannot leave the window off-screen.
+ */
 function positionTrayWindow() {
+  const saved = settingsStore?.get()?.appearance?.trayBounds;
+  if (saved) {
+    const display = screen.getDisplayNearestPoint({ x: saved.x, y: saved.y });
+    const area = display.workArea;
+    const width = Math.max(324, Math.min(saved.width, area.width));
+    const height = Math.max(420, Math.min(saved.height, area.height));
+    trayWin.setBounds({
+      width, height,
+      x: Math.max(area.x, Math.min(saved.x, area.x + area.width - width)),
+      y: Math.max(area.y, Math.min(saved.y, area.y + area.height - height)),
+    }, false);
+    return;
+  }
   const tb = tray.getBounds();
   const display = screen.getDisplayNearestPoint({ x: tb.x, y: tb.y });
   const width = trayWin?.getBounds().width || 350;
