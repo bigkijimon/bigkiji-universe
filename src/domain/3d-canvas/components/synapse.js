@@ -13,7 +13,7 @@ import { SmoothFocusController, zoomAroundPoint } from './camera-controls.js';
 import { TelemetryStore } from '../../telemetry/components/telemetry-store.js';
 import { RightTelemetryPanel } from '../../telemetry/components/right-telemetry-panel.js';
 import { SynapseSparkShedder } from '../shaders/synapse-spark-shedder.js';
-import { radialShellPoint, fibonacciLeafPoint } from './radial-folder-geometry.js';
+import { spiralArmPoint } from './radial-folder-geometry.js';
 import { ActiveAIModelsFleet } from '../../hud/components/active-ai-models-fleet.js';
 import { HybridOrbitController } from './hybrid-orbit-controller.js';
 import { RelationshipField } from './relationship-field.js';
@@ -289,19 +289,23 @@ function buildFileGalaxy(files) {
 const galaxyUniforms = { uTime: { value: 0 }, uMotion: { value: 1 } };
 const ORBIT_GLSL = /* glsl */ `
 uniform float uTime; uniform float uMotion;
-attribute vec3 aHub;    // the file's real parent-folder hub, in cloud-local space
 attribute vec3 aOrbit;  // phase, angular speed, swing amplitude in radians
 vec3 bkOrbit() {
-  vec3 r = position - aHub;
-  if (uMotion < 1e-4 || dot(r, r) < 1e-8) return position;
-  // Rodrigues about the hub's own direction. Files under one hub therefore share
-  // an axis and sweep as one body; a hub at the origin falls back to +Y, which is
-  // the disc rotation the galaxy reference shows (docs/reference-analysis.md §2).
-  float a = aOrbit.z * uMotion * sin(uTime * aOrbit.y + aOrbit.x);
-  vec3 axis = normalize(aHub + vec3(0.0, 0.31, 0.0));
-  vec3 rot = r * cos(a) + cross(axis, r) * sin(a) + axis * dot(axis, r) * (1.0 - cos(a));
-  float breath = 1.0 + aOrbit.z * uMotion * 0.42 * sin(uTime * aOrbit.y * 0.61 + aOrbit.x * 1.7);
-  return aHub + rot * breath;
+  float radius = length(position.xz);
+  if (uMotion < 1e-4 || radius < 1e-5) return position;
+  // In the plane of the disc, about the disc's own axis. Rotating about each file's
+  // hub (what this did before the layout became a disc) tilted particles out of the
+  // plane and the arms lost their edge; a disc turns as a disc.
+  //
+  // Inner rings swing further than outer ones — differential rotation, which is what
+  // a self-gravitating disc actually does and what makes arms look like arms rather
+  // than like spokes. Bounded, so the arms shear and return instead of winding shut.
+  float a = aOrbit.z * uMotion * (0.55 + 0.75 / (1.0 + radius))
+          * sin(uTime * aOrbit.y + aOrbit.x);
+  float c = cos(a), s = sin(a);
+  vec3 p = vec3(position.x * c - position.z * s, position.y, position.x * s + position.z * c);
+  p.y += aOrbit.z * uMotion * 0.22 * sin(uTime * aOrbit.y * 0.61 + aOrbit.x * 1.7);
+  return p;
 }`;
 
 /**
@@ -312,24 +316,16 @@ vec3 bkOrbit() {
  * they are drawn to. It is called at the arcs' own throttled cadence (~9/s), not per
  * frame, which is why moving the per-frame work to the GPU actually bought something.
  */
-function orbitPoint(base, j, hub, orbit, time, motion, out, k) {
-  const rx = base[j] - hub[j], ry = base[j + 1] - hub[j + 1], rz = base[j + 2] - hub[j + 2];
-  if (motion < 1e-4 || (rx * rx + ry * ry + rz * rz) < 1e-8) {
-    out[k] = base[j]; out[k + 1] = base[j + 1]; out[k + 2] = base[j + 2];
-    return;
-  }
-  const a = orbit[j + 2] * motion * Math.sin(time * orbit[j + 1] + orbit[j]);
-  let ax = hub[j], ay = hub[j + 1] + 0.31, az = hub[j + 2];
-  const al = Math.hypot(ax, ay, az) || 1;
-  ax /= al; ay /= al; az /= al;
-  const c = Math.cos(a), s = Math.sin(a), d = (ax * rx + ay * ry + az * rz) * (1 - c);
-  const px = rx * c + (ay * rz - az * ry) * s + ax * d;
-  const py = ry * c + (az * rx - ax * rz) * s + ay * d;
-  const pz = rz * c + (ax * ry - ay * rx) * s + az * d;
-  const breath = 1 + orbit[j + 2] * motion * 0.42 * Math.sin(time * orbit[j + 1] * 0.61 + orbit[j] * 1.7);
-  out[k] = hub[j] + px * breath;
-  out[k + 1] = hub[j + 1] + py * breath;
-  out[k + 2] = hub[j + 2] + pz * breath;
+function orbitPoint(base, j, orbit, time, motion, out, k) {
+  const x = base[j], y = base[j + 1], z = base[j + 2];
+  const radius = Math.hypot(x, z);
+  if (motion < 1e-4 || radius < 1e-5) { out[k] = x; out[k + 1] = y; out[k + 2] = z; return; }
+  const a = orbit[j + 2] * motion * (0.55 + 0.75 / (1 + radius))
+    * Math.sin(time * orbit[j + 1] + orbit[j]);
+  const c = Math.cos(a), s = Math.sin(a);
+  out[k] = x * c - z * s;
+  out[k + 1] = y + orbit[j + 2] * motion * 0.22 * Math.sin(time * orbit[j + 1] * 0.61 + orbit[j] * 1.7);
+  out[k + 2] = x * s + z * c;
 }
 
 /** Adds the orbit to a stock PointsMaterial without giving up size, LOD opacity,
@@ -389,6 +385,16 @@ function buildCloud(key, files) {
   const R = isCore ? 2.75 : 1.72;
   const d0 = isCore ? 0 : 1;     // 階層の起点（Core雲はparts[0]=会社名がL1になる）
   const grp = new THREE.Group();
+  // A disc lying flat in the world plane is seen edge-on from this camera, and edge-on
+  // it is a bright streak with no readable structure — measured on the first screenshot
+  // of this layout, where SCHOOL and MEDIA came out as smears. Each cloud is therefore
+  // inclined, deterministically and differently, the way real galaxies are: enough to
+  // open the disc toward the viewer, not so much that the arms flatten into a ring.
+  grp.rotation.set(
+    -Math.PI * (0.24 + hash01(`${key}:incline`) * 0.16),
+    hash01(`${key}:yaw`) * Math.PI * 2,
+    (hash01(`${key}:roll`) - 0.5) * 0.3,
+  );
   scene.add(grp);
   const center = new THREE.Vector3(0, 0, 0);
   const N = files.length;
@@ -396,25 +402,58 @@ function buildCloud(key, files) {
   const rank = new Array(N);
   order.forEach((fi, r) => { rank[fi] = r / N; });
 
-  // 階層ハブ位置: L1/L2を別々の球殻へ置く。Yは上下対称にし、旧来の
-  // 「indexが増えるほど下へ垂れる」ツリー構造を作らない。
-  const hub = {}; // hubKey → THREE.Vector3
-  const hubFiles = {}; // hubKey → 配下ファイル数（=関係の濃さ。幹線の本数に反映）
-  const hubOf = (f) => {
+  // ── フォルダ＝腕 ────────────────────────────────────────────────────────
+  // Folders are laid out FIRST, before any file, because a file's arm is its folder's
+  // arm. Two passes rather than the old lazy one: an arm's direction depends on how
+  // many sibling folders there are, which is not known until every path has been read.
+  //
+  // The angle is assigned by sorted position, not by hash. A hash would scatter
+  // neighbouring folders to opposite sides of the disc and cluster others on top of
+  // each other; sorted order spaces them evenly and means the arms come out in the
+  // same reading order every time.
+  const parentOf = (f) => {
     const parts = f.p.split('/');
-    let h1 = null, h2 = null;
-    if (parts.length > d0 + 1) h1 = parts.slice(0, d0 + 1).join('/');
-    if (parts.length > d0 + 2) h2 = parts.slice(0, d0 + 2).join('/');
-    if (h1) hubFiles[h1] = (hubFiles[h1] || 0) + 1;
-    if (h2) hubFiles[h2] = (hubFiles[h2] || 0) + 1;
-    if (h1 && !hub[h1]) {
-      hub[h1] = radialShellPoint(h1, 1, R, 0.68);
-      hub[h1].userData = { depth: 1, c: f.c };
+    return {
+      h1: parts.length > d0 + 1 ? parts.slice(0, d0 + 1).join('/') : null,
+      h2: parts.length > d0 + 2 ? parts.slice(0, d0 + 2).join('/') : null,
+    };
+  };
+  const hubFiles = {}; // hubKey → 配下ファイル数（=関係の濃さ。幹線の本数に反映）
+  const hubCompany = {};
+  const l1Keys = [], childrenOf = {};
+  for (const f of files) {
+    const { h1, h2 } = parentOf(f);
+    if (h1) {
+      if (!(h1 in hubFiles)) { l1Keys.push(h1); childrenOf[h1] = []; hubCompany[h1] = f.c; }
+      hubFiles[h1] = (hubFiles[h1] || 0) + 1;
     }
-    if (h2 && !hub[h2]) {
-      hub[h2] = radialShellPoint(h2, 2, R, 0.62);
-      hub[h2].userData = { depth: 2, c: f.c };
+    if (h1 && h2) {
+      if (!(h2 in hubFiles)) { childrenOf[h1].push(h2); hubCompany[h2] = f.c; }
+      hubFiles[h2] = (hubFiles[h2] || 0) + 1;
     }
+  }
+  l1Keys.sort();
+  const arms = Math.max(1, l1Keys.length);
+  // Half the gap between arms, less a margin, so two arms never merge into a band.
+  const SECTOR = (Math.PI / arms) * 0.62;
+  const armTheta = {};
+  const hub = {}; // hubKey → THREE.Vector3
+  l1Keys.forEach((h1, index) => {
+    armTheta[h1] = (Math.PI * 2 * index) / arms;
+    hub[h1] = spiralArmPoint(armTheta[h1], 0.26, SECTOR * 0.25, h1, R);
+    hub[h1].userData = { depth: 1, c: hubCompany[h1] };
+    // Sub-folders fan out INSIDE their parent's sector, so a second-level folder is
+    // still visibly part of the first-level one it belongs to.
+    const kids = childrenOf[h1].slice().sort();
+    kids.forEach((h2, kidIndex) => {
+      const offset = kids.length > 1 ? ((kidIndex + 0.5) / kids.length - 0.5) * SECTOR * 1.1 : 0;
+      armTheta[h2] = armTheta[h1] + offset;
+      hub[h2] = spiralArmPoint(armTheta[h2], 0.50, SECTOR * 0.22, h2, R);
+      hub[h2].userData = { depth: 2, c: hubCompany[h2] };
+    });
+  });
+  const hubOf = (f) => {
+    const { h1, h2 } = parentOf(f);
     return hub[h2] || hub[h1] || null;
   };
 
@@ -430,10 +469,17 @@ function buildCloud(key, files) {
     const h = hubOf(f);
     leafHub[i] = h;
     if (h) hubPos.set([h.x, h.y, h.z], i * 3);
-    // 葉は最外殻へFibonacci風に分散。階層は筋繊維で読み、座標自体は
-    // 垂直方向に並べない。わずかな扁平率で銀河ディスクのリップル感を残す。
-    const ordered = rank[i] * Math.max(N - 1, 1);
-    const leafPoint = fibonacciLeafPoint(ordered, N, f.p, R);
+    // 葉＝自分のフォルダの腕の外側。角度はカテゴリ（どのフォルダか）、半径は連続
+    // （新しいものほど核に近い）。だから粒の位置がそのファイルについて何かを語り、
+    // フォルダへ戻る線は必ず内向きになる＝線が交差しない。
+    const { h1, h2 } = parentOf(f);
+    const theta = armTheta[h2] ?? armTheta[h1] ?? hash01(f.p + ':orphan') * Math.PI * 2;
+    // rank 0 is the newest file in this cloud, so recent work sits nearer the core.
+    // The band is wide (0.38–0.98 R) on purpose: a narrow one drew every file into a
+    // single outer ring around an empty middle, which is the opposite of the reference
+    // — measured on the first screenshot of this layout. Rank is uniform, so a uniform
+    // radial spread gives falling surface density outward: bright core, thinning rim.
+    const leafPoint = spiralArmPoint(theta, 0.38 + rank[i] * 0.60, SECTOR, f.p, R);
     const { x, y, z } = leafPoint;
     pos.set([x, y, z], i * 3);
     basePos.set([x, y, z], i * 3);
@@ -455,7 +501,9 @@ function buildCloud(key, files) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  geo.setAttribute('aHub', new THREE.BufferAttribute(hubPos, 3));
+  // aHub is deliberately NOT uploaded any more: the disc turns about its own axis, so
+  // the shader needs no per-particle centre. `hubPos` stays on the CPU because the
+  // hierarchy strands and the probe still read it.
   geo.setAttribute('aOrbit', new THREE.BufferAttribute(motion, 3));
   // The bounding sphere is measured from the base positions, which are now the only
   // ones the CPU uploads; the swing happens after culling has already decided. Widen
@@ -547,9 +595,14 @@ function buildCloud(key, files) {
   const liveEdges = files.map((file, index) => ({
     index,
     from: (leafHub[index] || center).clone(),
-    bendX: (hash01(file.p + ':bx') - 0.5) * R * 0.18,
-    bendY: (hash01(file.p + ':by') - 0.5) * R * 0.18,
-    bendZ: (hash01(file.p + ':bz') - 0.5) * R * 0.18,
+    // The bend is out of the disc's plane only. It used to wander in all three axes by
+    // up to 0.18 R, which on a disc means every strand cuts across its neighbours'
+    // arms — thousands of crossing lines, which is precisely what made the connections
+    // unreadable. Lifting the arc out of the plane instead keeps each strand over its
+    // own arm, so a folder's strands read as one bundle running in to the core.
+    bendX: (hash01(file.p + ':bx') - 0.5) * R * 0.02,
+    bendY: (hash01(file.p + ':by') - 0.5) * R * 0.20,
+    bendZ: (hash01(file.p + ':bz') - 0.5) * R * 0.02,
   }));
   const liveNetworkGeo = new THREE.BufferGeometry();
   liveNetworkGeo.setAttribute('position', new THREE.BufferAttribute(liveEdgePositions, 3));
@@ -605,7 +658,7 @@ function updateFileCloudDrift(cloud, time, now, opacity, reduced) {
   const motionScale = reduced ? 0 : 1;
   for (let index = 0; index < cloud.files.length; index++) {
     const j = index * 3;
-    orbitPoint(cloud.basePos, j, cloud.hubPos, cloud.motion, time, motionScale, positions, j);
+    orbitPoint(cloud.basePos, j, cloud.motion, time, motionScale, positions, j);
   }
   let cursor = 0;
   for (const edge of cloud.liveEdges) {
