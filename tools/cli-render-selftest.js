@@ -821,6 +821,32 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 1;
 }
 
+// npm talking about npm, in the error colour, twenty lines at a time.
+//
+// The patterns for this were written, exported, and called from nowhere. Measured
+// 2026-08-05 on a live turn: `added 6 packages`, `1 package is looking for funding`,
+// `found 0 vulnerabilities` and `npm notice New major version` filled the screen above
+// the one line that was about the task. npm also concatenates several notices onto one
+// physical line, which is why that pattern cannot be anchored to the start.
+{
+  const noisy = ['added 6 packages, and audited 7 packages in 6s',
+    '1 package is looking for funding run `npm fund` for details',
+    'found 0 vulnerabilities',
+    'npm notice npm notice New major version of npm available! 11.17.0 -> 12.0.2 npm notice',
+    'The cooking game scaffold is ready.'].join('\n');
+  const out = plainLines(T.renderToolResult(noisy, { width: 100 })).join('\n');
+  assert.match(out, /The cooking game scaffold is ready\./, 'the line that is about the task has to survive');
+  for (const gone of ['added 6 packages', 'looking for funding', 'found 0 vulnerabilities', 'npm notice']) {
+    assert.ok(!out.includes(gone), `npm chatter must not reach the transcript: ${gone}`);
+  }
+  // Silencing a failure would be a worse defect than printing noise.
+  assert.match(plainLines(T.renderToolResult('npm ERR! code ELIFECYCLE', { width: 80 })).join('\n'), /npm ERR!/,
+    'an npm failure is never noise');
+  assert.match(plainLines(T.renderToolResult('added 6 packages', { width: 80 })).join('\n'), /added 6 packages/,
+    'a result that is nothing but chatter still prints — an empty elbow would read as a lost result');
+  checks += 4;
+}
+
 // A question the owner cannot answer.
 //
 // `⚠ unanswered` reached the screen on 2026-08-04 and then stopped there: the CLI

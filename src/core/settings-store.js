@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { TOOL_PATH_IDS, TOOL_SETTING_ALIASES, expandPath } = require('../domain/pi-agent/tool-registry');
+const { TOOL_PATH_IDS, TOOL_SETTING_ALIASES, expandPath, normalizeCustomTool } = require('../domain/pi-agent/tool-registry');
 
 // Owner-facing PiAgent name. Kept short so it fits every HUD label without truncation.
 const PI_AGENT_NAME_MAX = 32;
@@ -144,6 +144,9 @@ const DEFAULTS = Object.freeze({
     // Local tool connections: id -> absolute path. Empty means "detect it", never
     // "there is none", so clearing a row hands the decision back to detection.
     tools: {},
+    // Tools the owner connected themselves. A list, not a map, because the order they
+    // are added is the order they should be shown in.
+    customTools: [],
   },
   cmux: {
     enabled: process.platform === 'darwin',
@@ -198,8 +201,23 @@ function normalizePaths(next) {
     tools[id] = resolved;
   }
   next.paths.tools = tools;
+  // Hand-addable, therefore hand-breakable. normalizeCustomTool() drops anything it
+  // cannot make safe — a blank id, an id that would shadow a built-in, an entry with
+  // neither a path nor an endpoint — and a duplicate id keeps only its first entry, so
+  // a settings file can never produce two rows that disagree about the same tool.
+  const seenCustom = new Set();
+  next.paths.customTools = (Array.isArray(next.paths.customTools) ? next.paths.customTools : [])
+    .map((entry) => {
+      const tool = normalizeCustomTool(entry);
+      if (!tool || seenCustom.has(tool.id)) return null;
+      seenCustom.add(tool.id);
+      return { id: tool.id, label: tool.label, kind: tool.kind, purpose: tool.purpose,
+        path: expandPath(entry.path) || '', url: String(entry.url || '').trim() };
+    })
+    .filter(Boolean)
+    .slice(0, 40);
   for (const key of Object.keys(DEFAULTS.paths)) {
-    if (key === 'tools') continue;
+    if (key === 'tools' || key === 'customTools') continue;
     if (typeof next.paths[key] !== 'string') next.paths[key] = '';
   }
   return next.paths;

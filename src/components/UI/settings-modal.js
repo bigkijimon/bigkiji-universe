@@ -107,7 +107,9 @@
       + `<span style="display:flex;align-items:center;gap:7px;justify-self:end">`
       + `<b class="connection ${badgeClass(tool)}" style="min-width:146px" data-tool-status="${esc(tool.id)}" title="${esc(tool.detail || '')}"><i></i>${esc(badgeText(tool))}</b>`
       + (choose ? `<button data-tool-choose="${esc(tool.id)}" style="min-width:94px">${choose}</button>` : '')
-      + `<button data-tool-test="${esc(tool.id)}">Test</button></span></div>`;
+      + `<button data-tool-test="${esc(tool.id)}">Test</button>`
+      + (tool.custom ? `<button data-tool-remove="${esc(tool.id)}" title="Remove this connection">Remove</button>` : '')
+      + `</span></div>`;
   }
   // ---- workspaces ------------------------------------------------------------
   // A registered folder is one BigKiji may read and edit. Candidates are proposed from
@@ -166,6 +168,14 @@
     return `<section class="settings-page" data-page-panel="tools"><div class="settings-grid">
       <div data-workspace-host class="wide">${workspacesCard()}</div>
       <div class="settings-card wide"><h3>LOCAL TOOL CONNECTIONS</h3>${rows}
+        <div class="setting-row" style="margin-top:14px;border-top:1px solid var(--border-100, rgba(0,0,0,.08));padding-top:12px">
+          <label>Add a tool<small style="display:block;color:#61736e">A folder, an executable, or an endpoint. It joins the list above and is detected and tested the same way.</small></label>
+          <input data-newtool="label" spellcheck="false" autocomplete="off" placeholder="Name — e.g. Hunyuan3D">
+          <span style="display:flex;align-items:center;gap:7px;justify-self:end">
+            <input data-newtool="target" spellcheck="false" autocomplete="off" placeholder="/path/to/it or http://127.0.0.1:PORT" style="min-width:260px">
+            <button data-newtool-choose>Choose folder…</button>
+            <button data-newtool-add>Add</button></span></div>
+        <p class="settings-copy" style="margin-top:6px" data-newtool-note></p>
         <div class="cmux-controls" style="margin-top:12px"><button data-tools="detect">Re-detect</button><button data-tools="test">Test all connections</button></div>
         <p class="settings-copy" style="margin-top:9px" data-tools-note>Nothing has been checked yet.</p></div>
       <div class="settings-card wide"><h3>HOW THESE CONNECTIONS WORK</h3>
@@ -312,6 +322,45 @@
       finally { button.disabled = false; }
     });
     root.querySelectorAll('[data-tool-test]').forEach((button) => button.onclick = () => testTool(button.dataset.toolTest));
+    // ---- tools the owner adds themselves ------------------------------------
+    // The id is derived from the name rather than asked for. A second field the owner
+    // has to invent, whose only job is to be unique and URL-safe, is a field they will
+    // get wrong; the store normalises it anyway and refuses anything unsafe.
+    const newToolNote = (text) => { const note = root.querySelector('[data-newtool-note]'); if (note) note.textContent = text || ''; };
+    const newToolField = (name) => root.querySelector(`[data-newtool="${name}"]`);
+    root.querySelectorAll('[data-newtool-choose]').forEach((button) => button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const chosen = await window.bigkiji.toolsChoose('');
+        if (chosen) newToolField('target').value = chosen;
+      } catch (error) { newToolNote(`Could not open the chooser: ${error.message}`); }
+      finally { button.disabled = false; }
+    });
+    root.querySelectorAll('[data-newtool-add]').forEach((button) => button.onclick = async () => {
+      const label = String(newToolField('label')?.value || '').trim();
+      const target = String(newToolField('target')?.value || '').trim();
+      if (!label || !target) { newToolNote('A name and a location are both needed.'); return; }
+      const endpoint = /^https?:\/\//i.test(target);
+      const id = label.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+      if (!id) { newToolNote('That name has no letters or digits in it, so there is nothing to key it by.'); return; }
+      const existing = Array.isArray(get(state, 'paths.customTools')) ? get(state, 'paths.customTools') : [];
+      if (existing.some((entry) => entry && entry.id === id) || tools.some((tool) => tool.id === id)) {
+        newToolNote(`${label} is already connected — edit its row above instead.`); return;
+      }
+      set(state, 'paths.customTools', [...existing,
+        { id, label, kind: endpoint ? 'http' : 'directory', path: endpoint ? '' : target, url: endpoint ? target : '' }]);
+      scheduleSave();
+      newToolField('label').value = ''; newToolField('target').value = '';
+      newToolNote(`${label} added. Detecting…`);
+      await refreshTools();
+    });
+    root.querySelectorAll('[data-tool-remove]').forEach((button) => button.onclick = async () => {
+      const id = button.dataset.toolRemove;
+      const existing = Array.isArray(get(state, 'paths.customTools')) ? get(state, 'paths.customTools') : [];
+      set(state, 'paths.customTools', existing.filter((entry) => entry && entry.id !== id));
+      scheduleSave();
+      await refreshTools();
+    });
     bindWorkspaces();
     root.querySelectorAll('[data-tools]').forEach((button) => button.onclick = () => {
       if (button.dataset.tools === 'detect') refreshTools();

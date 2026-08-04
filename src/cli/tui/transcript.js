@@ -338,7 +338,16 @@ function renderToolCall(name, input, options = {}) {
 /** `  ⎿  …` — the result of the line above, folded and indented under it. */
 function renderToolResult(text, options = {}) {
   const { width = 80, theme = themeFor('plan'), mark = glyphs(), maxLines = 4, indent = 2, tone = theme.muted, isError = false } = options;
-  const body = String(text ?? '').replace(/\s+$/, '');
+  // isRoutineToolNoise() was written, exported, and called from nowhere.
+  //
+  // Measured 2026-08-05: one turn painted `added 6 packages`, `1 package is looking
+  // for funding`, `found 0 vulnerabilities` and `npm notice New major version` twenty
+  // times, in the error colour, above the one line that was actually about the task.
+  // The patterns were right the whole time; nothing ran them. `npm notice` also
+  // arrives with several notices concatenated onto one physical line, so the test is
+  // applied to what npm sends rather than only to the start of a tidy line.
+  const kept = String(text ?? '').split('\n').filter((line) => !isRoutineToolNoise(line));
+  const body = (kept.length ? kept.join('\n') : String(text ?? '')).replace(/\s+$/, '');
   return gutterLines(body || '(no output)', {
     width, glyph: mark.result, indent, gap: 2, maxLines,
     tone: isError ? theme.error : tone, glyphTone: theme.brown, reset: theme.reset,
@@ -582,7 +591,10 @@ const NPM_NOISE = [
   /^\d+ packages? (are|is) looking for funding/i,
   /^\s*run `npm fund` for details/i,
   /^found \d+ vulnerabilities$/i,
-  /^npm notice/i,
+  // npm sends several notices on one physical line, so this cannot be anchored:
+  //   "npm notice npm notice New major version of npm available! ... npm notice"
+  /npm notice/i,
+  /^\s*run `npm fund`/i,
   /^audited \d+ packages?/i,
 ];
 

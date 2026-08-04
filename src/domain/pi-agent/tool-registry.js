@@ -357,7 +357,80 @@ function resolvePath(tool, ctx) {
   return { path: '', source: '' };
 }
 
+/**
+ * A tool the owner added from the settings window, shaped like a built-in.
+ *
+ * The registry above is the set BigKiji ships knowing about. It cannot be the set the
+ * owner is allowed to have: this machine runs ComfyUI, Blender, Unreal, n8n, ACE-Step
+ * and LTX-2 today and will run something else next month, and "wait for a release" is
+ * not an answer to "connect the thing I already installed". Everything a built-in gets
+ * — detection, status, a path picker, a health check — a custom entry gets too, from
+ * the same code paths, because a second class of tool would drift from the first.
+ *
+ * Untrusted input by construction: this is a hand-editable settings file.
+ * @returns {object|null} null when the entry cannot be made safe
+ */
+function normalizeCustomTool(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  // Ids reach filesystem-adjacent lookups and DOM attributes, so the character set is
+  // an allowlist rather than an escape. A built-in id is never shadowed — otherwise a
+  // settings file could quietly replace ComfyUI's definition with its own.
+  const id = String(entry.id || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+  if (!id || TOOL_IDS.includes(id)) return null;
+  const url = String(entry.url || '').trim().slice(0, 400);
+  const endpoint = /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+  const location = String(entry.path || '').trim().slice(0, 1024);
+  if (!endpoint && !location) return null;
+  const kind = KINDS.includes(entry.kind) ? entry.kind : (endpoint && !location ? 'http' : 'directory');
+  return {
+    id,
+    label: String(entry.label || id).trim().slice(0, 60) || id,
+    kind,
+    custom: true,
+    // Added by hand, so absent is a normal state and never painted as a failure.
+    optional: true,
+    settingKey: `custom.${id}`,
+    purpose: String(entry.purpose || '').trim().slice(0, 160) || 'Added from the settings window.',
+    env: [],
+    candidates: () => (location ? [location] : []),
+    probe: endpoint
+      ? {
+        type: 'http',
+        urls: [endpoint],
+        // Nothing is known about what this endpoint serves, so nothing is claimed
+        // beyond the fact that it answered. Same discipline as ACE-Step above, which
+        // serves a Gradio page rather than a health document.
+        accept: (body, response, target) => (response.status < 500 ? `Answering ${response.status} at ${new URL(target).host}` : ''),
+      }
+      : null,
+  };
+}
+
+/** The built-ins plus whatever the owner added, in one list. */
+function customTools(saved) {
+  const list = Array.isArray(saved?.customTools) ? saved.customTools : [];
+  const seen = new Set();
+  return list.map(normalizeCustomTool).filter((tool) => {
+    if (!tool || seen.has(tool.id)) return false;
+    seen.add(tool.id);
+    return true;
+  });
+}
+function allTools(saved) { return [...TOOLS, ...customTools(saved)]; }
+
 function detectOne(tool, ctx) {
+  // A service has no file on disk. Without this it resolved to nothing, failed the
+  // isDir/isFile test and was reported "Not found" while answering perfectly well.
+  if (tool.kind === 'http') {
+    const endpoint = tool.probe?.urls?.[0] || '';
+    return {
+      id: tool.id, label: tool.label, kind: tool.kind, settingKey: tool.settingKey, purpose: tool.purpose,
+      optional: tool.optional, custom: !!tool.custom, probe: !!tool.probe, source: endpoint ? 'settings' : '',
+      checked: false, path: endpoint,
+      status: endpoint ? STATUS.FOUND : STATUS.MISSING,
+      detail: endpoint ? 'Endpoint configured · health not checked yet' : 'No endpoint set',
+    };
+  }
   const { path: resolved, source } = resolvePath(tool, ctx);
   const base = {
     id: tool.id,
@@ -366,6 +439,7 @@ function detectOne(tool, ctx) {
     settingKey: tool.settingKey,
     purpose: tool.purpose,
     optional: tool.optional,
+    custom: !!tool.custom,
     probe: !!tool.probe,
     source,
     checked: false,
@@ -404,7 +478,7 @@ function detectOne(tool, ctx) {
 //                  entirely inside a fabricated home
 function detectAll({ env = process.env, home = os.homedir(), saved = {}, systemBinDirs = SYSTEM_BIN_DIRS } = {}) {
   const ctx = { env: env || {}, home, saved: saved || {}, systemBinDirs: systemBinDirs || [] };
-  return TOOLS.map((tool) => detectOne(tool, ctx));
+  return allTools(ctx.saved).map((tool) => detectOne(tool, ctx));
 }
 
 // ---- probes ----------------------------------------------------------------
@@ -508,9 +582,14 @@ async function probe(tool, { timeoutMs = PROBE_TIMEOUT_MS, path: target } = {}) 
 // Detect, then probe everything that has a probe, in parallel and bounded.
 async function detectAndProbeAll({ env, home, saved, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   const rows = detectAll({ env, home, saved });
+  // A custom tool's probe spec lives on its generated descriptor, not in TOOLS, so
+  // findTool() inside probe() would answer "Unknown tool" for everything the owner
+  // added. Both classes are looked up the same way here instead.
+  const descriptors = new Map(allTools(saved).map((tool) => [tool.id, tool]));
   return Promise.all(rows.map(async (row) => {
     if (!row.probe || row.status === STATUS.MISSING) return row;
-    const result = await probe(row, { timeoutMs });
+    const descriptor = descriptors.get(row.id);
+    const result = await probe(descriptor ? { ...descriptor, id: row.id } : row, { timeoutMs, path: row.path });
     return { ...row, ...result };
   }));
 }
@@ -518,6 +597,9 @@ async function detectAndProbeAll({ env, home, saved, timeoutMs = PROBE_TIMEOUT_M
 module.exports = {
   TOOLS,
   TOOL_IDS,
+  allTools,
+  customTools,
+  normalizeCustomTool,
   TOOL_PATH_IDS,
   TOOL_SETTING_ALIASES,
   STATUS,
