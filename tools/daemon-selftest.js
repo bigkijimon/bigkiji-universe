@@ -306,6 +306,24 @@ const WebSocket = require('ws');
     assert.match(source, /this\.memory\.record\(run\.prompt/, 'a finished run has to tell the memory what happened');
   }
 
+  // The open decisions reach the discussion, not just the front desk.
+  //
+  // One local model choosing alone is a thin basis for "what kind of thing are we
+  // building". The lenses already answer independently and are already merged, so the
+  // questions go in front of them and the merge is the discussion.
+  {
+    const { CoreExecutionCoordinator } = require('../src/domain/pi-agent/core-execution-coordinator');
+    const coordinator = Object.create(CoreExecutionCoordinator.prototype);
+    coordinator.skills = { brief: () => '' };
+    const lens = { id: 'risk', instruction: 'Find what breaks.', title: 'Risk' };
+    const withOpen = coordinator._lensPrompt({ id: 'run-1', prompt: 'ゲームを作って',
+      promptSpec: { decidedWithoutOwner: [{ ask: 'どのジャンルにしますか？' }] } }, lens);
+    assert.match(withOpen, /どのジャンルにしますか？/, 'the lens has to see the decision it is meant to weigh in on');
+    assert.match(withOpen, /state your own position on each/, 'and be told to take a position rather than assume one');
+    const without = coordinator._lensPrompt({ id: 'run-2', prompt: 'x', promptSpec: {} }, lens);
+    assert.ok(!/state your own position/.test(without), 'a run with nothing open must not be given a question list');
+  }
+
   // A live handle must never reach the session file.
   //
   // Measured 2026-08-05: a task carrying its abort timer went into JSON.stringify and

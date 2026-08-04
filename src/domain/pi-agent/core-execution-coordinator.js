@@ -434,7 +434,22 @@ class CoreExecutionCoordinator extends EventEmitter {
   _lensPrompt(run, lens) {
     let skillBrief = '';
     try { skillBrief = this.skills.brief(`${run.prompt} ${lens.title}`); } catch (_) {}
-    return `BIGKIJI DELIBERATION ${run.id}\nOwner goal: ${run.prompt}\n` +
+    // The decisions nobody asked the owner about.
+    //
+    // In hands-off mode the front desk settles the open questions so nothing stops
+    // mid-run, and one local model choosing alone is a thin basis for "what kind of
+    // thing are we building". The lenses are already answering independently and are
+    // already merged, so the questions are put in front of them: each takes a position,
+    // and the merge is the discussion. Named rather than assumed, so a lens that
+    // disagrees can say so instead of quietly planning something else.
+    const open = (run.promptSpec?.decidedWithoutOwner || [])
+      .map((item) => (typeof item === 'string' ? item : item?.ask))
+      .filter(Boolean).slice(0, 4);
+    const decide = open.length
+      ? `The owner did not specify these, and they were chosen without them — state your own position on each ` +
+        `in the first step, and plan for the one you would pick:\n${open.map((ask, i) => `  ${i + 1}. ${ask}`).join('\n')}\n`
+      : '';
+    return `BIGKIJI DELIBERATION ${run.id}\nOwner goal: ${run.prompt}\n` + decide +
       `You are the ${lens.id.toUpperCase()} lens. ${lens.instruction}\n` +
       'This is read-only. Do not edit files, run builds, or start anything. Other lenses are answering the same question ' +
       'independently and you cannot see them — do not hedge toward what you think they will say.\n' +
