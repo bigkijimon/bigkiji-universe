@@ -927,6 +927,52 @@
   .statusline.busy i { background: var(--accent); animation: thinkPulse 1.15s var(--ease-out) infinite; }
   .statusline.attention i { background: var(--danger); }
 
+  /* ── The approval gate, on the conversation surface ───────────────────────
+     The owner's first decision for V3 was one window, and the condition attached to
+     it was that Console is retired only once Canvas can carry an approval. This is
+     that surface. It sits directly above the composer because it blocks the next
+     thing the owner would type, and it is the loudest object on the screen on
+     purpose: this is the moment money is spent and something is allowed to write.
+
+     The contract is the console's, unchanged — buildApprovalPayload() builds the
+     same hash echo-back, and the coordinator still refuses a stale revision, plan or
+     disclosure. Nothing here decides anything; it only shows what is being decided. */
+  #approvalBar { position: relative; z-index: 2; width: min(760px, calc(100% - 52px));
+    margin: 0 auto; padding: 13px 15px; border: 1px solid var(--hairline-2);
+    border-radius: 14px; background: var(--bg-1);
+    box-shadow: 0 6px 22px rgba(41, 38, 27, .08); }
+  #approvalBar[hidden] { display: none; }
+  .ap-head { display: flex; align-items: center; gap: 10px; }
+  .ap-text { flex: 1; min-width: 0; }
+  .ap-text b { display: block; color: var(--ink); font: 600 13px var(--sans, system-ui); }
+  .ap-text span { display: block; color: var(--faint); font: 10.5px var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap-head button { flex: none; border-radius: 999px; padding: 6px 14px; cursor: pointer;
+    font: 600 12px var(--sans, system-ui); border: 1px solid var(--hairline-2);
+    background: var(--bg-1); color: var(--dim);
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+  .ap-head button:hover { background: var(--bg-2); color: var(--ink); }
+  .ap-head button:active { transform: scale(.97); }
+  .ap-head button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .ap-head button.primary:hover { filter: brightness(1.06); }
+  .ap-head button[disabled] { opacity: .5; cursor: not-allowed; }
+  .ap-body { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; }
+  .ap-goal { margin: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap-warn { margin: 0; color: var(--danger); font-weight: 600; }
+  .ap-why { margin: 0 0 0 12px; color: var(--faint); font: 10.5px var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap-rows { margin: 3px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+  .ap-rows li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .ap-who { flex: none; color: var(--dim); font-weight: 600; }
+  .ap-engine { flex: none; color: var(--faint); font: 10.5px var(--mono); }
+  .ap-access { flex: none; padding: 0 6px; border-radius: 999px; font: 10px var(--mono);
+    background: var(--bg-2); color: var(--label); }
+  .ap-access.is-write { background: color-mix(in srgb, var(--danger) 14%, var(--bg-2)); color: var(--danger); }
+  .ap-title { flex: 1; min-width: 0; color: var(--label);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap-reads { margin: 0; color: var(--faint); font: 10.5px var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   /* ── The composer, as one pill ───────────────────────────────────────────── */
   .cmdbar { position: relative; z-index: 2; justify-content: center; gap: 0;
     padding: 8px 26px 16px; border-top: 0; background: transparent; }
@@ -1063,6 +1109,7 @@
     </div><!-- /.workspace -->
     <div id="flow"></div>
     <div id="fileDetailPopup" role="dialog" aria-live="polite"></div>
+    <div id="approvalBar" hidden></div>
     <div class="cmdbar">
       <span class="ci">❖</span>
       <input id="ccmd" type="text" spellcheck="false" placeholder="Plan locally with Pi…" />
@@ -1424,6 +1471,8 @@
   // imported from the console window's own lib so the two surfaces cannot drift into
   // two different ideas of "done".
   import { foldSteps, stepsForRun, progressOf } from './console-app/src/lib/steps.mjs';
+  import { approvalPlan, approvalSummary, buildApprovalPayload, isBlocked }
+    from './console-app/src/lib/approval-payload.mjs';
 
   const bridge = window.bigkiji;
   if (bridge && window.bkThread) {
@@ -1535,9 +1584,98 @@
       card.fill.style.transform = `scaleX(${finished / assignments.length})`;
     }
 
+    // ── The approval gate ──────────────────────────────────────────────────
+    // The owner's first V3 decision was one window, conditional on Canvas being able
+    // to carry an approval. Nothing about the contract changes here: the payload is
+    // built by the console's own buildApprovalPayload() from the run object the
+    // coordinator last sent, and the coordinator still refuses a stale revision, plan
+    // hash or disclosure hash. This is a view of a decision, not a second gate.
+    const bar = document.getElementById('approvalBar');
+    let sending = false;
+    let shownRun = null;
+
+    const esc = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    function renderApproval(run) {
+      if (!bar) return;
+      const summary = approvalSummary(run);
+      if (!summary) {
+        if (shownRun === (run && run.id)) { bar.hidden = true; bar.innerHTML = ''; shownRun = null; }
+        return;
+      }
+      shownRun = run.id;
+      const plan = approvalPlan(run) || { rows: [], reads: [], questions: [] };
+      const blocked = isBlocked(run);
+      const ground = plan.groundwork;
+      // The headline is written here rather than taken from approvalSummary(), which is
+      // shared with the console window and reads in English. Everything else on this
+      // surface is Japanese, and a bilingual approval prompt is a prompt people skim.
+      // summary.detail — the two hashes and the revision — is used exactly as it comes:
+      // that is what the owner is agreeing to and it must not be rephrased.
+      const writers = plan.rows.filter((row) => row.access === 'write').length;
+      const headline = blocked
+        ? 'サンドボックスがこの run の一部を拒否しました'
+        : `${plan.rows.length} 体が待機中 · 承認すると開始します${writers ? `（うち ${writers} 体が書込）` : ''}`;
+      const parts = [
+        '<div class="ap-head"><div class="ap-text">',
+        `<b>${esc(headline)}</b><span>${esc(summary.detail)}</span></div>`,
+        '<button type="button" data-ap="abort">中止</button>',
+        `<button type="button" class="primary" data-ap="approve"${blocked ? ' disabled' : ''}>`,
+        blocked ? 'ブロック中' : '承認して開始', '</button></div>',
+        '<div class="ap-body">',
+      ];
+      if (plan.goal) parts.push(`<p class="ap-goal">${esc(plan.goal)}</p>`);
+      // The two things that can make the whole run wrong go above the assignments.
+      for (const question of plan.questions || []) {
+        parts.push(`<p class="ap-warn">⚠ 未回答 · ${esc(question)}</p>`);
+      }
+      if (ground && ground.lenses > 0 && ground.completed === 0) {
+        parts.push(`<p class="ap-warn">⚠ 下調べ 0/${ground.lenses} 成立 · この計画は下調べなしで書かれています</p>`);
+        for (const failure of ground.failures) {
+          parts.push(`<p class="ap-why">${esc([failure.who, failure.engine].filter(Boolean).join(' · '))} — ${esc(failure.reason || 'failed')}</p>`);
+        }
+      }
+      parts.push('<ul class="ap-rows">');
+      for (const row of plan.rows) {
+        parts.push('<li>',
+          `<span class="ap-who">${esc(row.who || row.engine)}</span>`,
+          `<span class="ap-engine">${esc(row.who ? row.engine : '')}</span>`,
+          row.access ? `<span class="ap-access is-${esc(row.access)}">${esc(row.access === 'write' ? '書込' : '読取')}</span>` : '',
+          `<span class="ap-title">${esc(row.title)}</span>`, '</li>');
+      }
+      parts.push('</ul>');
+      for (const entry of plan.reads) {
+        const shown = entry.files.slice(0, 4).join(' · ');
+        const rest = entry.files.length > 4 ? ` … +${entry.files.length - 4}` : '';
+        parts.push(`<p class="ap-reads">${esc(entry.provider)} reads ${entry.files.length} · ${esc(shown)}${esc(rest)}</p>`);
+      }
+      parts.push('</div>');
+      bar.innerHTML = parts.join('');
+      bar.hidden = false;
+      bar.querySelector('[data-ap="abort"]').addEventListener('click', () => {
+        bridge.abortRun && bridge.abortRun(run.id).catch(() => {});
+      });
+      const approveBtn = bar.querySelector('[data-ap="approve"]');
+      approveBtn.addEventListener('click', async () => {
+        const payload = buildApprovalPayload(run);
+        if (!payload || sending) return;
+        sending = true; approveBtn.disabled = true;
+        try { await bridge.approveRun(payload); }
+        catch (error) {
+          sending = false; approveBtn.disabled = false;
+          // The refusal is the useful part — a stale hash means the plan moved under
+          // the owner, and saying "failed" would hide which of the three it was.
+          bar.querySelector('.ap-text span').textContent = String((error && error.message) || error);
+        }
+      });
+    }
+
     bridge.onRunEvent && bridge.onRunEvent((run) => {
       if (!run || !run.id) return;
       runs.set(run.id, run);
+      if (shownRun === run.id || !bar || bar.hidden) sending = false;
+      renderApproval(run);
       render(run);
     });
     bridge.onTaskStep && bridge.onTaskStep((step) => {

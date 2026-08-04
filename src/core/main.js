@@ -1931,6 +1931,31 @@ app.whenReady().then(async () => {
       setTimeout(() => mainWin?.webContents.executeJavaScript(probe)
         .then((r) => console.log('SNAP_GALAXY b', r)).catch((e) => console.log('SNAP_GALAXY FAIL', e.message)), 4500);
     }
+    // SNAP_APPROVE=1 photographs the Canvas approval gate with everything that can
+    // appear on it at once: an unanswered question, groundwork that produced nothing,
+    // a writer and a reader, and a file list. Approving is what this window has to
+    // prove it can do before Console is retired (decision #1), and a gate can only be
+    // reviewed on screen — the console's version shipped with a layout bug nobody saw
+    // because no harness ever drew it.
+    if (process.env.SNAP_APPROVE) {
+      setTimeout(() => broadcast('run:event', {
+        id: 'snap-approve', revision: 2, status: 'AWAITING_APPROVAL', stage: 'execution',
+        planHash: 'a1b2c3d4e5f6a7b8', disclosureHash: '9f8e7d6c5b4a3928',
+        promptSpec: { goal: 'BKU の会話UIを一枚窓にまとめる', questions: ['現行版か、スナップショットか？'] },
+        groundwork: { lenses: 2, completed: 0, steps: 0, failures: [
+          { lens: 'architect', title: '構造', provider: 'ollama', model: 'qwen3.5:35b-a3b', status: 'failed', reason: 'Model "qwen3.5:35b-a3b" not found' },
+          { lens: 'risk', title: '危険点', provider: 'glm', model: 'glm-4.7-flash', status: 'failed', reason: '429 rate-limit' },
+        ] },
+        assignments: [
+          { taskId: 'a1', role: 'leader', agent: 'lead-pi', provider: 'claude-code', model: 'claude-opus-5', title: '実装', write: true, status: 'approved' },
+          { taskId: 'a2', role: 'debug', agent: 'debug-pi', provider: 'glm', model: 'glm-4.7-flash', title: '検証', write: false, status: 'approved' },
+        ],
+        disclosures: [
+          { provider: 'claude-code', files: [{ path: 'src/components/UI/main.html' }, { path: 'src/core/main.js' }] },
+          { provider: 'claude-code', files: [{ path: 'src/core/main.js' }, { path: 'src/core/preload.js' }] },
+        ],
+      }), 2600);
+    }
     if (process.env.SNAP_STEPS) {
       // Four assignments, one per state the Canvas work card can be in — running,
       // completed, not-yet-started and failed. One assignment could only ever
