@@ -42,6 +42,42 @@
     --mono: "SF Mono", Menlo, ui-monospace, monospace;
     --terminal-width: 40vw;
   }
+
+  /* ---- Paper: the default design language as of 2026-08-04 ----------------
+     The owner asked for the conversation surface to lose the space feel and sit on
+     "a white that is not too white, like a notebook". Every value here is measured,
+     not picked: the greys are the light ramp read off claude.ai and already recorded
+     in console-app/src/styles/tokens.css, and the accent is #c2600f — the same warm
+     orange the CLI paints, which tools/contrast-selftest.js measures at 6.18:1 on this
+     ground. Emerald #6fbf9a would be 1.9:1 here, which is why the accent changes with
+     the theme and the identity does not.
+
+     Only tokens. No layout, no new rules — a theme that also moves things is a theme
+     you cannot switch back out of. */
+  :root[data-theme="paper"] {
+    color-scheme: light;
+    --bg-0: #faf9f5; --bg-1: #ffffff; --bg-2: #f2f0e9; --bg-3: #e9e6dc;
+    --hairline: rgba(41,38,27,.10); --hairline-2: rgba(41,38,27,.18);
+    --ink: #29261b; --dim: #55503f; --label: #6b6553; --faint: #8d8371;
+    --accent: #c2600f; --danger: #b83a18;
+    --em: var(--accent);
+    /* The terminal inside this window follows the page, the way the console's does.
+       xterm-theme.js reads these names every time the scheme changes. */
+    --term-bg: #faf9f5; --term-fg: #29261b; --term-cursor: #c2600f;
+    --term-selection: rgba(194,96,15,.22);
+  }
+
+  /* The 3D scene as a watermark, not as content.
+     Measured, not chosen: at full strength on this ground the scene's own labels —
+     DESIGN, SCHOOL, CLAUDE CODE, drawn as THREE.Sprite textures inside the canvas, not
+     as DOM — sit at the same weight as the greeting and compete with it for the reader.
+     They cannot be hidden separately from the particles because they are the same layer,
+     so the whole layer steps back. Turning the theme off restores it exactly.
+
+     The canvas ELEMENT, not #canvasWrap. The wrapper also holds #views (SYSTEM / FILES /
+     CLOSE / AUTO) and #workState at z-index 28 — dimming the wrapper dimmed the controls
+     with the scene, which a screenshot caught and code review would not have. */
+  :root[data-theme="paper"] #canvasWrap > canvas { opacity: .30; filter: saturate(.55); }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; overflow: hidden; background: var(--bg-0);
     font-family: -apple-system, "Hiragino Sans", sans-serif; color: var(--ink);
