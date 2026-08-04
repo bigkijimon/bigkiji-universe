@@ -114,15 +114,56 @@ class DeliberationMemory {
     } catch (_) {}
   }
 
+  /**
+   * The closest plan that has not proved itself wrong.
+   *
+   * This used to return the closest plan, full stop. Nothing recorded what happened
+   * to a run afterwards, so a plan that led straight to a failure was recalled with
+   * the same confidence as one that shipped — for as long as the file survived. A
+   * memory that cannot be disappointed is not learning; it is a cache.
+   */
   lookup(prompt) {
     const terms = keywords(prompt); let best = null; let score = 0;
     for (const plan of this.read().plans) {
+      // More failures than successes means this shape of plan has been tried and did
+      // not work. Recalling it would repeat the mistake with extra confidence.
+      const { ok = 0, failed = 0 } = plan.outcomes || {};
+      if (failed > ok) continue;
       const value = jaccard(terms, plan.terms || []);
       if (value > score) { score = value; best = plan; }
     }
     if (!best || score < this.threshold) return null;
+    const { ok = 0, failed = 0 } = best.outcomes || {};
     return { steps: best.steps, contributors: best.contributors || [], lenses: best.lenses || 0,
-      source: 'memory', similarity: Number(score.toFixed(2)), recalledFrom: best.summary };
+      source: 'memory', similarity: Number(score.toFixed(2)), recalledFrom: best.summary,
+      // Untried is not the same as proven. A caller that wants to weigh a recalled
+      // plan can see which it is instead of inferring confidence from its existence.
+      outcomes: { ok, failed }, proven: ok > 0 };
+  }
+
+  /**
+   * What actually happened to the run that used this plan.
+   *
+   * Called once per finished run. Matching is by the same similarity the lookup used,
+   * so an outcome lands on the entry that was (or would have been) recalled — there is
+   * no id to thread through the coordinator, and adding one would mean every existing
+   * memory file starts again from nothing.
+   */
+  record(prompt, { ok = false, runId = '', reason = '' } = {}) {
+    const memory = this.read();
+    const terms = keywords(prompt);
+    let best = null; let score = 0;
+    for (const plan of memory.plans) {
+      const value = jaccard(terms, plan.terms || []);
+      if (value > score) { score = value; best = plan; }
+    }
+    if (!best || score < this.threshold) return null;
+    best.outcomes = best.outcomes || { ok: 0, failed: 0 };
+    best.outcomes[ok ? 'ok' : 'failed'] += 1;
+    best.lastOutcome = { ok: !!ok, runId: String(runId).slice(0, 60),
+      reason: String(reason || '').replace(/\s+/g, ' ').slice(0, 160), at: new Date().toISOString() };
+    this.write(memory);
+    return best.outcomes;
   }
 
   store(prompt, plan) {
@@ -131,7 +172,10 @@ class DeliberationMemory {
     const terms = keywords(prompt);
     if (memory.plans.some((item) => jaccard(terms, item.terms || []) >= this.threshold)) return null;
     const entry = { summary: String(prompt).replace(/\s+/g, ' ').slice(0, 120), terms, steps: plan.steps,
-      contributors: plan.contributors || [], lenses: plan.lenses || 0, createdAt: new Date().toISOString() };
+      contributors: plan.contributors || [], lenses: plan.lenses || 0,
+      // Nothing has been learned from this plan yet, and that is a fact worth storing
+      // rather than a zero to infer later.
+      outcomes: { ok: 0, failed: 0 }, createdAt: new Date().toISOString() };
     memory.plans.push(entry); this.write(memory);
     return entry;
   }

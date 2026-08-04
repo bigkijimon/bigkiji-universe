@@ -238,6 +238,69 @@ const WebSocket = require('ws');
     spec.shutdown();
   }
 
+  // Hands-off mode: one instruction in, a finished thing to look at.
+  //
+  // The owner asked for a mode where the fleet settles the open decisions itself and
+  // they only check the demo at the end. The front desk's stage two already existed
+  // for exactly this — told the owner has answered, it may not ask again and must
+  // choose safe defaults — so the answer is supplied rather than waited for.
+  {
+    const demoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-demo-test-'));
+    let calls = 0;
+    const facilitator = {
+      pending: null,
+      reset() { this.pending = null; },
+      async facilitate() {
+        calls += 1;
+        if (calls === 1) return { status: 'needs_clarification', provider: 'ollama', latencyMs: 1,
+          questions: [{ ask: 'which genre?', options: ['shooter', 'puzzle'] }] };
+        return { status: 'ready', provider: 'ollama', planHash: 'h', latencyMs: 1,
+          promptSpec: { goal: 'Build a browser shooter.', constraints: [], steps: ['a'], acceptance: ['runs'] },
+          promptSpecText: 'Goal: Build a browser shooter.' };
+      },
+    };
+    const conversationEngine = { model: 'stub',
+      turn: async () => ({ kind: 'TASK', reply: 'はい。', title: 't', summary: '', ideas: [], requirements: [],
+        decisions: [], openQuestions: [], todos: [], turnId: 'turn-demo', provider: 'local-qwen', latencyMs: 1, degraded: false }) };
+    const hands = new DaemonEngine({ stateRoot: demoRoot, workspace: process.cwd(), conversationEngine, facilitator });
+    const out = await hands.turn('ゲームを作って', { mode: 'demo' });
+    assert.equal(out.awaitingAnswer, false, 'hands-off must not stop to ask the owner anything');
+    assert.deepStrictEqual(out.questions, []);
+    assert.ok(out.run, 'it still has to produce a run');
+    assert.equal(out.run.promptSpec.goal, 'Build a browser shooter.', 'the decisions are made and written into the spec');
+    assert.notEqual(out.run.status, 'AWAITING_APPROVAL', 'a hands-off writing run does not wait for approval');
+    assert.equal(calls, 2, 'the open questions are answered by a second facilitation, not by guessing');
+    // Permissive on this machine, never over the network. The daemon listens on
+    // 0.0.0.0 and a token on the LAN must not be able to buy unattended writes.
+    assert.equal(effectiveMode({ socket: { remoteAddress: '192.168.1.20' } }, 'demo'), 'plan',
+      'hands-off may not be requested from the LAN');
+    assert.equal(effectiveMode({ socket: { remoteAddress: '127.0.0.1' } }, 'demo'), 'demo');
+    hands.shutdown();
+  }
+
+  // The memory learns, or it is only a cache.
+  {
+    const { DeliberationMemory } = require('../src/domain/pi-agent/deliberation');
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-delib-')), 'memory.json');
+    const memory = new DeliberationMemory({ file });
+    const ask = 'build a three js shooter game for the browser';
+    memory.store(ask, { steps: ['scene', 'player', 'enemies'], contributors: ['leader'], lenses: 2 });
+    assert.deepStrictEqual(memory.lookup(ask).outcomes, { ok: 0, failed: 0 }, 'untried is stated, not inferred');
+    assert.equal(memory.lookup(ask).proven, false);
+    // store() ran at planning time and nothing ever came back, so a plan that led
+    // straight to a failed run was recalled forever with the confidence of one that
+    // shipped.
+    memory.record(ask, { ok: false, runId: 'run-1', reason: 'tests-pass' });
+    assert.equal(memory.lookup(ask), null, 'a plan that has failed more than it has worked is not recalled');
+    memory.record(ask, { ok: true, runId: 'run-2' });
+    assert.deepStrictEqual(memory.lookup(ask).outcomes, { ok: 1, failed: 1 }, 'and it comes back once it has worked');
+    assert.equal(memory.lookup(ask).proven, true);
+    assert.equal(memory.record('an unrelated request about music generation', { ok: true }), null,
+      'an outcome lands on the plan it belongs to or on nothing');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'core-execution-coordinator.js'), 'utf8');
+    assert.match(source, /this\.memory\.record\(run\.prompt/, 'a finished run has to tell the memory what happened');
+  }
+
   // A live handle must never reach the session file.
   //
   // Measured 2026-08-05: a task carrying its abort timer went into JSON.stringify and
@@ -262,5 +325,5 @@ const WebSocket = require('ws');
   }
 
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened');
 })().catch((error) => { console.error(error); process.exit(1); });

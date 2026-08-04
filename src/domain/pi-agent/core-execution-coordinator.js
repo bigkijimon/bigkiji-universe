@@ -190,7 +190,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     const run = {
       id: runId(text), prompt: text, planHash, promptSpec, previewGame,
       cwd: previewGame && this.preview?.root ? this.preview.root : (cwd || this.taskRunner.cwd),
-      mode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
+      mode: ['plan', 'ask', 'auto', 'manual', 'demo'].includes(mode) ? mode : (routing.executionMode || 'plan'),
       status: 'PLANNING', leader: routing.sessionLeader === 'auto' || !routing.sessionLeader ? 'claude-code' : routing.sessionLeader,
       assignments: [], repairCycle: 0, maxRepairCycles: Number(settings.quality?.maxRepairCycles || 3),
       revision: 1, requestedMode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
@@ -366,7 +366,11 @@ class CoreExecutionCoordinator extends EventEmitter {
     const assignments = Array.isArray(run.assignments) ? run.assignments : [];
     if (!assignments.length) return true;
     if (assignments.every((item) => item.write === false)) return false;
-    return String(run.mode || 'plan') !== 'auto';
+    // `demo` is the owner's hands-off mode: one instruction in, a finished thing to
+    // look at, and no approval in between. It is exactly as permissive as `auto` and
+    // no more — SECURITY_BLOCKED above is checked before this is ever consulted, and
+    // an empty plan still waits, because an empty plan is a bug and not permission.
+    return !['auto', 'demo'].includes(String(run.mode || 'plan'));
   }
 
   _seal(run) {
@@ -553,6 +557,14 @@ class CoreExecutionCoordinator extends EventEmitter {
     run.report = this.buildReport(run);
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
+    // Tell the memory what its plan was worth.
+    //
+    // store() ran at planning time and nothing ever came back, so a plan that led
+    // straight to a failed run was recalled forever with the same confidence as one
+    // that shipped. This is the half that makes it a memory rather than a cache: the
+    // failing check is named, so the entry carries why rather than only that.
+    this.memory.record(run.prompt, { ok: run.status === 'COMPLETED', runId: run.id,
+      reason: run.quality.checks.filter((check) => !check.pass).map((check) => check.id).join(', ') || run.error || '' });
     this.emit('report', run.report);
     this._emit(run, 'finish');
     this.forgetOldRuns();

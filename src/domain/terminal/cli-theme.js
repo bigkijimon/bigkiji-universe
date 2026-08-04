@@ -55,10 +55,16 @@ const MODE_COLORS = Object.freeze({
   ask: { accent: PALETTE.orange, strong: PALETTE.orangeBright, border: PALETTE.brown, prompt: PALETTE.brownLight },
   'auto-edit': { accent: PALETTE.orangeBright, strong: PALETTE.orange, border: PALETTE.warning, prompt: PALETTE.warning },
   plan: { accent: PALETTE.planAccent, strong: PALETTE.orangeBright, border: PALETTE.brownLight, prompt: PALETTE.brownLight },
+  // Hands-off. Warning-coloured on purpose: nothing will stop to ask, so the mode line
+  // has to be the thing the owner notices before typing.
+  demo: { accent: PALETTE.warning, strong: PALETTE.orangeBright, border: PALETTE.warning, prompt: PALETTE.warning },
 });
 
 function normalizeMode(value) {
   const mode = String(value || '').toLowerCase();
+  // One instruction in, a finished thing to look at. Kept distinct from auto-edit
+  // because auto-edit still asks the owner the open questions and this one does not.
+  if (mode === 'demo' || mode === 'hands-off' || mode === 'auto-pilot') return 'demo';
   if (mode === 'auto' || mode === 'manual' || mode === 'auto-edit' || mode === 'shell') return 'auto-edit';
   return mode === 'ask' ? 'ask' : 'plan';
 }
@@ -68,7 +74,7 @@ function normalizeMode(value) {
 // flattened both to 'plan' anyway. Now that the mode decides whether a writing run waits,
 // the wire has to be able to say which of the three the owner chose. 'plan' and 'ask'
 // both still wait — the difference is how the CLI asks — and only 'auto' releases.
-const TRANSPORT = Object.freeze({ 'auto-edit': 'auto', ask: 'ask', plan: 'plan' });
+const TRANSPORT = Object.freeze({ 'auto-edit': 'auto', ask: 'ask', plan: 'plan', demo: 'demo' });
 function transportMode(mode) { return TRANSPORT[normalizeMode(mode)] || 'plan'; }
 function themeFor(mode) { return { ...PALETTE, ...MODE_COLORS[normalizeMode(mode)] }; }
 function paint(text, color = PALETTE.ink) { return `${color}${String(text)}${RESET}`; }

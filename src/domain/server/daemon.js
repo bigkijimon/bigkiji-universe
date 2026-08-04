@@ -60,7 +60,11 @@ const PATHS = createPathConfig({ appRoot: APP_ROOT });
 
 // The modes the coordinator understands. 'plan' and 'ask' both wait for the owner before
 // anything writes; only 'auto' releases without asking.
-const MODES = Object.freeze(['plan', 'ask', 'auto', 'manual']);
+const MODES = Object.freeze(['plan', 'ask', 'auto', 'manual', 'demo']);
+// What the owner types when they want the fleet to settle the open decisions itself.
+// The front desk's stage two already exists for this: told the owner has answered, it
+// is forbidden from asking again and must choose safe reasonable defaults.
+const HANDS_OFF_ANSWER = 'おまかせ。安全で一般的な既定を選んで進めて。';
 
 /** True for a request that came from this machine's own loopback interface. */
 function isLoopback(req) {
@@ -483,6 +487,15 @@ class DaemonEngine extends EventEmitter {
     let facilitation = null;
     if (result.kind === 'TASK') {
       facilitation = await this._facilitate(clean);
+      // Hands-off: the fleet decides rather than the owner. Same two-stage front desk,
+      // with the answer supplied here instead of waited for, so the decisions are made
+      // once and written into the spec rather than left open for a specialist to guess
+      // at mid-run — which is the failure this whole path exists to stop.
+      if (facilitation?.status === 'needs_clarification' && mode === 'demo') {
+        this.publish('commentary', { source: 'Front desk', status: 'PLANNING',
+          text: `Deciding ${facilitation.questions.length} open question${facilitation.questions.length === 1 ? '' : 's'} without the owner — hands-off mode.` });
+        facilitation = await this._facilitate(HANDS_OFF_ANSWER);
+      }
       if (facilitation?.status === 'needs_clarification') {
         // No run yet. A missing decision is cheaper to ask about than to guess at,
         // and a plan built on a guess is what the owner has been rejecting.
@@ -832,7 +845,7 @@ class DaemonEngine extends EventEmitter {
     this.publish('phase', { sessionId: session.id, phase: 'PREFLIGHT', status: 'PRUNING', progress: 8 });
     this.publish('commentary', { source: 'PiAgent Engine', status: 'PRUNING', text: 'Inspecting sandbox memory and selecting only the required models.' });
     const run = this.coordinator.submit({ prompt: clean, promptSpec: { goal: clean, acceptance: [], decisions: [] }, cwd: this.workspace,
-      mode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : 'plan' });
+      mode: MODES.includes(mode) ? mode : 'plan' });
     this.runSessions.set(run.id, session.id); // onRun already appended and published it
     if (run.status === 'AWAITING_APPROVAL') {
       this.publish('phase', { sessionId: session.id, runId: run.id, phase: 'AWAITING_OWNER_DIRECTIVE', status: run.status, progress: 0 });
@@ -1389,4 +1402,4 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
 
 if (require.main === module) startDaemon();
 
-module.exports = { jsonSafe, DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };
+module.exports = { HANDS_OFF_ANSWER, jsonSafe, DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };
