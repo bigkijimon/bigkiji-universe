@@ -891,6 +891,18 @@
   .agent[data-state="failed"] .agent-gauge { background: transparent;
     box-shadow: inset 0 0 0 1px var(--hairline-2); }
   .agent[data-state="failed"] .agent-gauge u { opacity: 0; }
+  /* What the run changed. Only files something actually wrote — a file that was read is
+     not an artifact, and a failed edit did not produce one — so this box simply is not
+     there until there is something true to put in it. */
+  .worksheet-files { padding: 10px 14px 12px; border-top: 1px solid var(--hairline); }
+  .worksheet-files b { display: block; margin-bottom: 5px; color: var(--dim);
+    font: 600 11px var(--sans, system-ui); }
+  .worksheet-files p { display: flex; align-items: baseline; gap: 8px; margin: 0 0 2px;
+    font: 10.5px var(--mono); min-width: 0; }
+  .worksheet-files p span { flex: 1; min-width: 0; color: var(--label);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .worksheet-files p i { flex: none; color: var(--accent); font-style: normal; }
+  .worksheet-files p.more { color: var(--faint); }
   .agent-count { color: var(--label); font: 10.5px var(--mono); text-align: right;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .agent[data-state="failed"] .agent-count { color: var(--danger); }
@@ -1470,7 +1482,7 @@
   // `task:step` already carries every tool call; foldSteps/stepsForRun/progressOf are
   // imported from the console window's own lib so the two surfaces cannot drift into
   // two different ideas of "done".
-  import { foldSteps, stepsForRun, progressOf } from './console-app/src/lib/steps.mjs';
+  import { foldSteps, stepsForRun, progressOf, changedFiles } from './console-app/src/lib/steps.mjs';
   import { approvalPlan, approvalSummary, buildApprovalPayload, isBlocked }
     from './console-app/src/lib/approval-payload.mjs';
 
@@ -1558,11 +1570,41 @@
       return `${step.tool}${step.target ? ` ${leaf(step.target)}` : ''}`;
     }
 
+    /**
+     * What the run actually changed — the last of the four things decision #1 requires
+     * of this window before Console can be retired.
+     *
+     * changedFiles() is the console's own: only successful Edit/Write/NotebookEdit steps
+     * with a real target, newest first. A file a run merely READ is not an artifact, and
+     * an edit that failed did not produce one. The list is empty until something is
+     * genuinely written, which is why nothing renders during a read-only stage.
+     */
+    function renderArtifacts(card, mine) {
+      const files = changedFiles(mine);
+      if (!files.length) {
+        if (card.artifacts) { card.artifacts.remove(); card.artifacts = null; }
+        return;
+      }
+      if (!card.artifacts) {
+        card.artifacts = window.bkThread.el('worksheet-files');
+        card.root.appendChild(card.artifacts);
+      }
+      const rows = files.slice(0, 6).map((file) => {
+        const diff = file.added || file.removed ? ` +${file.added} −${file.removed}` : '';
+        return `<span>${leaf(file.path)}</span><i>${diff}</i>`;
+      });
+      const hidden = files.length - Math.min(files.length, 6);
+      card.artifacts.innerHTML = `<b>変更したファイル ${files.length}</b>`
+        + rows.map((row) => `<p>${row}</p>`).join('')
+        + (hidden ? `<p class="more">… 他 ${hidden} 件</p>` : '');
+    }
+
     function render(run) {
       const assignments = Array.isArray(run.assignments) ? run.assignments : [];
       if (!assignments.length) return;
       const card = cardFor(run);
       const mine = stepsForRun(steps, run);
+      renderArtifacts(card, mine);
       let finished = 0;
       for (const assignment of assignments) {
         const terminal = TERMINAL[String(assignment.status || '').toLowerCase()];
