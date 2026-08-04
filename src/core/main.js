@@ -1883,8 +1883,18 @@ app.whenReady().then(async () => {
     // SNAP_SETTINGS and SNAP_WAKE above: nothing is stubbed in the renderer, the events
     // take the ordinary broadcast path, and the text says plainly that it is a test.
     if (process.env.SNAP_STEPS) {
+      // Four assignments, one per state the Canvas work card can be in — running,
+      // completed, not-yet-started and failed. One assignment could only ever
+      // photograph a quarter of the surface, and the three unphotographed states are
+      // exactly where a layout breaks (the failed row has no gauge fill, the waiting
+      // row has no steps at all).
       const run = { id: 'snap-run', revision: 1, status: 'EXECUTING', planHash: 'snap', disclosureHash: 'snap',
-        assignments: [{ taskId: 'snap-1', role: 'leader', provider: 'claude-code', model: 'claude-opus-5', status: 'running' }] };
+        assignments: [
+          { taskId: 'snap-1', role: 'leader', title: '実装', agent: 'lead-pi', provider: 'claude-code', model: 'claude-opus-5', write: true, status: 'running' },
+          { taskId: 'snap-2', role: 'ui', title: '画面', agent: 'design-pi', provider: 'codex', model: 'gpt-5.6-sol', write: true, status: 'completed' },
+          { taskId: 'snap-3', role: 'debug', title: '検証', agent: 'debug-pi', provider: 'glm', model: 'glm-4.7-flash', write: false, status: 'approved' },
+          { taskId: 'snap-4', role: 'risk-lens', title: '危険点', agent: 'risk-pi', provider: 'glm', model: 'glm-4.7-flash', write: false, status: 'failed', error: 'rate-limit' },
+        ] };
       const step = (extra) => broadcast('task:step', Object.assign({ taskId: 'snap-1', provider: 'claude-code' }, extra));
       setTimeout(() => {
         broadcast('run:event', run);
@@ -1893,6 +1903,11 @@ app.whenReady().then(async () => {
         step({ phase: 'start', toolUseId: 's2', tool: 'Edit', target: 'src/components/UI/console-app/src/App.jsx', added: 24, removed: 6, at: new Date().toISOString() });
         step({ phase: 'end', toolUseId: 's2', ok: true, at: new Date().toISOString() });
         step({ phase: 'start', toolUseId: 's3', tool: 'Bash', target: 'npm test — SNAP visual test', at: new Date().toISOString() });
+        const done = (extra) => broadcast('task:step', Object.assign({ taskId: 'snap-2', provider: 'codex' }, extra));
+        done({ phase: 'start', toolUseId: 'u1', tool: 'Read', target: 'src/components/UI/main.html', at: new Date().toISOString() });
+        done({ phase: 'end', toolUseId: 'u1', ok: true, at: new Date().toISOString() });
+        done({ phase: 'start', toolUseId: 'u2', tool: 'Edit', target: 'src/components/UI/main.html', added: 61, removed: 4, at: new Date().toISOString() });
+        done({ phase: 'end', toolUseId: 'u2', ok: true, at: new Date().toISOString() });
       }, 2400);
       // Rendered and visible are different questions, and a screenshot only answers the
       // second. This reports the first, so "the timeline is missing" can be told apart
