@@ -57,6 +57,23 @@ export default function ApprovalBar() {
           {plan.questions.map((question) => (
             <p className="approval-question" key={question}>⚠ unanswered · {question}</p>
           ))}
+          {/* Groundwork that did not happen. The owner watched both lenses die and was
+              still shown a plan with nothing marking it as uninformed — so this sits with
+              the unanswered questions, above the assignments, and only appears when the
+              groundwork genuinely failed. A run that never had a deliberation stage says
+              nothing here rather than warning about an absence that was never planned. */}
+          {plan.groundwork && plan.groundwork.lenses > 0 && plan.groundwork.completed === 0 ? (
+            <div className="approval-groundwork">
+              <p className="approval-question">
+                ⚠ 下調べ 0/{plan.groundwork.lenses} 成立 · この計画は下調べなしで書かれています
+              </p>
+              {plan.groundwork.failures.map((failure) => (
+                <p className="approval-groundwork-why" key={`${failure.who}-${failure.engine}`}>
+                  {[failure.who, failure.engine].filter(Boolean).join(' · ')} — {failure.reason || 'failed'}
+                </p>
+              ))}
+            </div>
+          ) : null}
           <ul className="approval-rows">
             {plan.rows.map((row) => (
               <li key={row.key}>

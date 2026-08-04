@@ -177,6 +177,84 @@ ok('approve() still refuses what it always refused', () => {
   assert.equal(started.status, 'EXECUTING', 'and the correct hashes still start it');
 });
 
+// ---------------------------------------------------------------------------
+// A plan written after nothing must say so.
+//
+// The owner watched both lenses die in the live stream — one model-unavailable, one
+// 429 — and the run still presented its plan for approval with no sign that the
+// groundwork behind it had produced zero results. Approving a plan informed by two
+// lenses and approving one informed by none are different decisions, and the screen
+// could not tell them apart.
+// ---------------------------------------------------------------------------
+
+// Every lens fails, with the two reasons the owner actually saw.
+const deadLensRunner = () => {
+  const tasks = new Map();
+  const reasons = ['Model "qwen3.5:35b-a3b" not found', '429 rate-limit'];
+  return Object.assign(new EventEmitter(), {
+    get(id) { return tasks.get(id) || null; },
+    plan(spec) {
+      const task = { id: spec.id, status: 'failed', output: '',
+        error: reasons[tasks.size % reasons.length], disclosure: { disclosureHash: 'h' } };
+      tasks.set(spec.id, task);
+      return task;
+    },
+    approve() {},
+  });
+};
+
+ok('a plan written after zero groundwork says so, with the reasons', () => {
+  const c = new CoreExecutionCoordinator({
+    taskRunner: deadLensRunner(),
+    registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'd-')) }),
+    available: () => true,
+  });
+  const run = c.submit({ prompt: RESEARCH, cwd: '/tmp', mode: 'plan' });
+  assert.equal(run.stage, 'deliberation', 'the fixture has to reach the lens stage or this proves nothing');
+  const lenses = run.assignments.length;
+  c._concludeDeliberation(run);
+
+  assert.ok(run.groundwork, 'the run has to carry what the groundwork produced');
+  assert.equal(run.groundwork.lenses, lenses);
+  assert.equal(run.groundwork.completed, 0, 'no lens completed');
+  assert.equal(run.groundwork.failures.length, lenses, 'every failure is accounted for, not just counted');
+  // The reason is carried through verbatim, not flattened to "failed": a missing model
+  // and a rate limit are different problems with different answers.
+  assert.ok(run.groundwork.failures.some((item) => /not found/i.test(item.reason)),
+    `the model-unavailable reason survives: ${JSON.stringify(run.groundwork.failures)}`);
+  assert.ok(run.groundwork.failures.some((item) => /rate-limit/i.test(item.reason)),
+    'and so does the rate limit');
+  const note = (run.notes || []).join(' | ');
+  assert.match(note, /No groundwork: 0 of \d+ lenses completed/, `the note states the fact: ${note}`);
+  assert.match(note, /written without any of it/, 'and says what it means for the plan below');
+});
+
+ok('a deliberation that ran but said nothing is a different sentence', () => {
+  const quiet = () => {
+    const tasks = new Map();
+    return Object.assign(new EventEmitter(), {
+      // Completed, with output — but nothing consolidate() can turn into steps.
+      get(id) { return tasks.get(id) || null; },
+      plan(spec) {
+        const task = { id: spec.id, status: 'completed', output: '...', error: '', disclosure: { disclosureHash: 'h' } };
+        tasks.set(spec.id, task); return task;
+      },
+      approve() {},
+    });
+  };
+  const c = new CoreExecutionCoordinator({
+    taskRunner: quiet(),
+    registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'q-')) }),
+    available: () => true,
+  });
+  const run = c.submit({ prompt: RESEARCH, cwd: '/tmp', mode: 'plan' });
+  c._concludeDeliberation(run);
+  assert.ok(run.groundwork.completed > 0, 'these lenses did answer');
+  const note = (run.notes || []).join(' | ');
+  if (note) assert.doesNotMatch(note, /No groundwork/,
+    'lenses that answered must never be reported as lenses that never ran');
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`approval flood selftest: ${failures} FAILED`); process.exit(1); }
-console.log('approval flood selftest: PASS · one request waits once · different work stays separate · unanswered plans expire · every approval reachable · reading starts itself · writing waits unless auto-edit · blocked stays blocked · stale hashes still refused');
+console.log('approval flood selftest: PASS · one request waits once · different work stays separate · unanswered plans expire · every approval reachable · reading starts itself · writing waits unless auto-edit · blocked stays blocked · stale hashes still refused · a plan built on no groundwork says so, with the real reasons');

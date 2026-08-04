@@ -68,6 +68,19 @@ export function approvalPlan(run) {
     constraints: list(spec.constraints),
     questions: list(spec.questions),
     stage: flat(run.stage),
+    // What the groundwork produced, or did not. `null` when this run never had a
+    // deliberation stage — which is not the same as a deliberation that produced nothing,
+    // and must not render as a warning.
+    groundwork: run.groundwork ? {
+      lenses: Number(run.groundwork.lenses) || 0,
+      completed: Number(run.groundwork.completed) || 0,
+      steps: Number(run.groundwork.steps) || 0,
+      failures: (Array.isArray(run.groundwork.failures) ? run.groundwork.failures : []).map((item) => ({
+        who: flat(item.title || item.lens),
+        engine: flat(item.model || item.provider),
+        reason: flat(item.reason) || flat(item.status),
+      })),
+    } : null,
     writes: assignments.length ? assignments.some((item) => item.write !== false) : null,
     rows: assignments.map((item) => {
       const provider = flat(item.provider).toLowerCase();

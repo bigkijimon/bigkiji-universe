@@ -544,17 +544,47 @@ class CoreExecutionCoordinator extends EventEmitter {
   // usable degrades to executing without it — the owner asked for a better plan, not
   // for a gate that can strand the task.
   _concludeDeliberation(run) {
-    const proposals = run.assignments.map((assignment) => {
+    const outcomes = run.assignments.map((assignment) => {
       const task = this.taskRunner.get(assignment.taskId);
-      return task?.status === 'completed' && task.output ? { lens: assignment.lens, provider: assignment.provider, text: task.output } : null;
-    }).filter(Boolean);
+      return { assignment, task, ok: task?.status === 'completed' && !!task.output };
+    });
+    const proposals = outcomes.filter((item) => item.ok).map(({ assignment, task }) =>
+      ({ lens: assignment.lens, provider: assignment.provider, text: task.output }));
     const plan = deliberate.consolidate(proposals);
+
+    // What the groundwork actually produced, kept on the run so the approval screens can
+    // say it. The owner watched two lenses die — one model-unavailable, one 429 — and the
+    // run still asked for approval as though the plan below had been informed by them.
+    // A plan written after zero successful groundwork is a different thing to approve
+    // than one written after two, and the screen has to be able to tell them apart.
+    run.groundwork = {
+      lenses: outcomes.length,
+      completed: proposals.length,
+      steps: plan.steps.length,
+      failures: outcomes.filter((item) => !item.ok).map(({ assignment, task }) => ({
+        lens: assignment.lens || assignment.role,
+        title: assignment.title || '',
+        provider: assignment.provider,
+        model: assignment.model,
+        status: task?.status || 'missing',
+        // The reason as the runner recorded it. Truncated, never rewritten: 'rate-limit'
+        // and 'model not found' are different problems with different answers.
+        reason: String(task?.error || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      })),
+    };
+
     if (plan.steps.length) {
       run.deliberation = { ...plan, source: 'live' };
       this.memory.store(run.prompt, plan);
     } else {
       run.deliberation = null;
-      run.notes = [...(run.notes || []), `Deliberation returned no usable steps from ${run.assignments.length} lenses; proceeding without it.`];
+      // Two different facts that used to be reported as one. "The lenses answered and
+      // said nothing useful" is a weak plan; "no lens ever ran" is no groundwork at all.
+      run.notes = [...(run.notes || []), proposals.length
+        ? `Deliberation returned no usable steps from ${outcomes.length} lenses; proceeding without it.`
+        : `No groundwork: 0 of ${outcomes.length} lenses completed`
+          + `${run.groundwork.failures.length ? ` (${run.groundwork.failures.map((f) => f.reason || f.status).join('; ')})` : ''}`
+          + '. The plan below was written without any of it.'];
     }
     run.revision += 1;
     knowledge.recordEvent(run.id, { type: 'deliberated', status: run.status, provider: run.leader,

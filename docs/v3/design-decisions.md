@@ -25,14 +25,15 @@ Rules for this file:
 | 10 | 2026-08-04 | The particle design knowledge goes into `product-design/references/particle-fields.md`, not a new skill | claude | The owner's own rule, recorded in `skill-registry.js` CATEGORIES: one skill per category, and UI work folds into the big existing one |
 
 | 11 | 2026-08-04 | Per-agent progress has **no denominator**: running agents get an indeterminate gauge plus a count of finished steps, only terminal ones get a filled bar, `—` ≠ 0. The one real fraction (assignments finished / planned) sits in the card header | claude | A provider never announces how many tools it will use. Same rule as `progressOf()` and `pricing.js` |
-| 12 | 2026-08-04 | The particle motion becomes a bounded rotation about each file's **real parent-folder hub**, GPU-integrated. The spiral-arm relayout (angle categorical / radius continuous) is **not** done | claude | The owner's complaint was motion, smoothness, fps and file-binding — all four measured fixed. Relayout would move every particle and reset the spatial memory decision #8 protects. See below |
+| 12 | 2026-08-04 | The particle motion becomes a bounded rotation about each file's **real parent-folder hub**, GPU-integrated | claude | `synapse.js:424-429` integrated every file on the CPU every frame. Superseded in part by #13 — on a disc the rotation is in-plane about the disc axis |
+| 13 | 2026-08-05 | Each cloud becomes a **flat spiral disc**: arm = folder (categorical, assigned from sorted keys), radius = depth then recency (continuous). **Every particle moved once** | owner | 「全粒子の表示動かしても構いません。しっかり繋がりがわかるようにシナプスの固まりを表してください」. Overrides the "do not move placement" half of #8; the deterministic half stands — the new positions are still seeded from the path and never drift |
 
 ## Open, waiting on the owner
 
 | Question | Why it is not minor |
 |---|---|
 | Does the synapse show at all on the paper theme, or only on studio? | Needs a screenshot judgement. If the inverted field reads as dirt rather than a faint line drawing, the answer changes the whole look of the default theme |
-| Should each cloud become a flat spiral disc — arm = top-level directory, radius = depth or age — instead of the current spherical shell? | It is the layout the reference clip actually teaches (`reference-analysis.md` §2) and it would make a file's position *say* something. But it moves every particle once, and the whole value of deterministic placement is that it does not move. That trade is the owner's to make, not a minor decision |
+| ~~Should each cloud become a flat spiral disc?~~ | **Answered 2026-08-05 by the owner: yes.** 「全粒子の表示動かしても構いません」. Decision #13 below |
 | Should a transient `model-unavailable` mark the model unusable in the capability registry? | Get it wrong and one GPU hiccup permanently blacklists the best local model |
 
 ## Measured facts worth not rediscovering

@@ -24,10 +24,34 @@ class TUIMonitor {
     if (event === 'state') this.state = { ...data, preferences: this.preferences.get() };
     else if (event === 'preferences') this.state.preferences = data;
     else if (event === 'models') this.state.models = data;
-    else if (event === 'run') { const list = this.state.runs || []; this.state.runs = [...list.filter((run) => run.id !== data.id), data]; this.state.phase = data.status; }
+    else if (event === 'run') {
+      const list = this.state.runs || []; this.state.runs = [...list.filter((run) => run.id !== data.id), data]; this.state.phase = data.status;
+      this.pushRunNotes(data);
+    }
     else if (event === 'phase') this.state.phase = data.phase || data.status;
     if (['commentary', 'tasklog', 'phase', 'run', 'session'].includes(event)) this.push(data.source || data.provider || event, data.text || data.status || data.phase || 'update');
     this.renderer.draw(this.state, this.relay);
+  }
+  /**
+   * A run's notes, said once each.
+   *
+   * The coordinator has always written the important ones — "no groundwork: 0 of 2 lenses
+   * completed (rate-limit; model not found)" — onto the run, and publicRun has always
+   * published them. Nothing ever drew them, so the owner watched both lenses die in the
+   * live stream and then saw a plan waiting for approval with no sign that it had been
+   * written blind. The run event carries the whole notes array on every update, hence the
+   * seen set: without it the same sentence repeats on every subsequent event.
+   */
+  pushRunNotes(run) {
+    const notes = Array.isArray(run?.notes) ? run.notes : [];
+    if (!notes.length) return;
+    this.seenNotes = this.seenNotes || new Set();
+    for (const note of notes) {
+      const key = `${run.id}:${note}`;
+      if (this.seenNotes.has(key)) continue;
+      this.seenNotes.add(key);
+      this.push('run', `⚠ ${note}`);
+    }
   }
   push(source, text) { this.relay.push({ time: new Date().toLocaleTimeString('en-GB', { hour12: false }), source, text: String(text || '').replace(/\s+/g, ' ') }); this.relay = this.relay.slice(-40); }
   async onKey(buffer) {
