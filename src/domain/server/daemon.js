@@ -110,6 +110,32 @@ function asList(value) {
   if (Array.isArray(value)) return value.map((entry) => String(entry)).filter(Boolean);
   return [value].filter(Boolean).map(String);
 }
+/**
+ * A value that can be written to the session log.
+ *
+ * A task carries live handles, an abort timer among them, and on 2026-08-05 one went
+ * into JSON.stringify and threw "Converting circular structure to JSON" out of
+ * shutdown() — from inside an EventEmitter callback, where nothing could catch it, so
+ * the process died rather than the append failing. publicRun() already strips a
+ * Timeout for exactly this reason. A session file is a transcript, not a heap dump.
+ */
+function jsonSafe(value, seen = new WeakSet()) {
+  if (typeof value === 'function') return undefined;
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value.toISOString();
+  // A timer handle: has ref/unref and a circular place in the timers list.
+  if (typeof value.ref === 'function' && typeof value.unref === 'function') return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((entry) => jsonSafe(entry, seen));
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const safe = jsonSafe(entry, seen);
+    if (safe !== undefined) out[key] = safe;
+  }
+  return out;
+}
+
 /** How long an unanswered front-desk question stays the meaning of the next thing typed. */
 const FACILITATION_WINDOW_MS = 15 * 60 * 1000;
 const TERMINAL_RUN = Object.freeze(['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED']);
@@ -263,7 +289,7 @@ class DaemonEngine extends EventEmitter {
     this.runner.on('task', (task) => {
       this.models.ingestTask(task); this.piFleet.ingestTask(task); this.publish('task', task);
       const sessionId = task.metadata?.runId && this.runSessions.get(task.metadata.runId);
-      if (sessionId) this.sessions.append(sessionId, { type: 'task', status: task.status, task });
+      if (sessionId) this.sessions.append(sessionId, { type: 'task', status: task.status, task: jsonSafe(task) });
       if (task.metadata?.kind === 'idea-enhancement' && ['completed', 'failed', 'blocked'].includes(task.status)) this.finishIdeaEnhancement(task);
     });
     this.runner.on('log', (entry) => {
@@ -1363,4 +1389,4 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
 
 if (require.main === module) startDaemon();
 
-module.exports = { DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };
+module.exports = { jsonSafe, DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };

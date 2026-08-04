@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { DaemonEngine, startDaemon } = require('../src/domain/server/daemon');
+const { DaemonEngine, startDaemon, jsonSafe } = require('../src/domain/server/daemon');
 const { daemonSpawnEnv } = require('../src/domain/server/daemon-client');
 const WebSocket = require('ws');
 
@@ -229,6 +229,29 @@ const WebSocket = require('ws');
       'a plan with nothing to answer says so instead of rewriting itself');
     await assert.rejects(() => spec.answerRun({ runId: waiting.id, text: '   ' }), /answer is required/);
     spec.shutdown();
+  }
+
+  // A live handle must never reach the session file.
+  //
+  // Measured 2026-08-05: a task carrying its abort timer went into JSON.stringify and
+  // threw "Converting circular structure to JSON" out of shutdown(), from inside an
+  // EventEmitter callback where nothing could catch it — so the process died instead
+  // of one append failing.
+  {
+    const timer = setTimeout(() => {}, 60000); timer.unref();
+    const task = { id: 'task-1', status: 'running', when: new Date('2026-08-05T00:00:00Z'),
+      deadlineTimer: timer, onDone: () => {}, nested: { list: [1, 'two'] } };
+    task.self = task;
+    const safe = jsonSafe(task);
+    assert.doesNotThrow(() => JSON.stringify(safe), 'whatever a task carries, the transcript line has to serialise');
+    assert.equal(safe.id, 'task-1');
+    assert.equal(safe.status, 'running');
+    assert.equal(safe.when, '2026-08-05T00:00:00.000Z', 'a Date is a timestamp, not an empty object');
+    assert.deepStrictEqual(safe.nested, { list: [1, 'two'] }, 'real data survives intact');
+    assert.equal(safe.deadlineTimer, undefined, 'a timer handle is dropped');
+    assert.equal(safe.onDone, undefined, 'so is a function');
+    assert.equal(safe.self, undefined, 'and a cycle does not recurse forever');
+    clearTimeout(timer);
   }
 
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
