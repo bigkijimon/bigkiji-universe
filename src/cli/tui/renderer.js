@@ -31,10 +31,18 @@ const phaseName = (value) => {
   return String(value === undefined || value === null || value === '' ? 'IDLE' : value);
 };
 // Last resort only: a keyword guess used when nothing real is published.
+//
+// AWAITING_APPROVAL is 0, and that is the whole point of this line.
+//
+// It was 25. A run that is waiting for the owner has executed nothing — no file read,
+// no command run, no token spent on the work itself — and the meter said a quarter of
+// it was done. Measured 2026-08-04: two runs sat at AWAITING_APPROVAL for eleven hours
+// with the bar showing 25% the entire time, while the owner asked four times whether
+// anything was happening. A quarter of nothing is nothing. Waiting is not progress.
 const keywordProgress = (phase) => {
   const text = phaseName(phase).toUpperCase();
   return text.includes('COMPLETED') ? 100 : text.includes('VERIFY') ? 88 : text.includes('EXEC') || text.includes('REPAIR') ? 58
-    : text.includes('AWAIT') ? 25 : text.includes('PREFLIGHT') || text.includes('PLANNING') ? 12 : 0;
+    : text.includes('AWAIT') ? 0 : text.includes('PREFLIGHT') || text.includes('PLANNING') ? 12 : 0;
 };
 // Real numbers win over the guess — never invent a percentage the daemon already knows.
 function progressOf(state = {}, phase = state?.phase) {

@@ -135,10 +135,24 @@ ok('the bottom row says what the fleet is doing, and stays quiet when it is not'
 
   const wide = buildFooter({ cols: 100, mode: 'plan', state: { runs: [running] } });
   assert.match(wide.lines.at(-1).replace(/\x1b\[[0-9;]*m/g, ''), /work: 1\/3 · 8m · 22m left/);
+  // Under width pressure, `work` is the last thing to go — not the first.
+  //
+  // It used to be dropped first, on the reasoning that the phase row above repeated it.
+  // The phase row does not repeat it: that row carries three chips and a meter, and
+  // neither says how many runs are waiting for the owner. Measured 2026-08-04 —
+  // `work: 2 awaiting /approve` vanished below 75 columns, so in the owner's split pane
+  // the one actionable fact on the screen was the first casualty, and two runs sat
+  // waiting eleven hours behind that silence. `shell` is this process's own pid and
+  // never changes; it goes first now.
   const narrow = buildFooter({ cols: 52, mode: 'plan', state: { runs: [running] } });
   const plainNarrow = narrow.lines.at(-1).replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(!plainNarrow.includes('work:'), 'the newest segment is the first one a narrow terminal drops');
-  assert.ok(plainNarrow.includes('mode:'), 'and the row it shares does not break');
+  assert.ok(plainNarrow.includes('work: 1/3'), `what the fleet is doing survives a narrow pane: ${plainNarrow}`);
+  assert.ok(!plainNarrow.includes('shell:'), 'and the pid of this very process is what makes room for it');
+
+  // The waiting count in particular, at the width the owner's split pane actually is.
+  const waiting = buildFooter({ cols: 63, mode: 'plan', state: { runs: [{ status: 'AWAITING_APPROVAL' }, { status: 'AWAITING_APPROVAL' }] } });
+  assert.match(waiting.lines.at(-1).replace(/\x1b\[[0-9;]*m/g, ''), /work: 2 awaiting \/approve/,
+    'the row that says what to do next has to reach a 63 column pane');
 });
 
 fs.rmSync(root, { recursive: true, force: true });

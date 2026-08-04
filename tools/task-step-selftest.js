@@ -161,6 +161,50 @@ function drain(chunks) {
   assert.ok(/this\.emit\('log', \{ taskId: task\.id/.test(source), 'the raw log channel is untouched');
 }
 
+// ---------------------------------------------------------------------------
+// The steps have to reach the terminal (2026-08-04)
+//
+// The daemon has published one of these per tool call since this parser was written, and
+// the CLI's relay list did not carry `step`, so every one was dropped at the door: the
+// GUI window had a live work timeline and the terminal had nothing. That is most of the
+// answer to "is it working or not" — when something IS running, this is the only thing
+// that says so — and its absence is why the only way to find out was to ask, and why
+// asking got a fabricated answer.
+// ---------------------------------------------------------------------------
+{
+  const fs = require('fs');
+  const path = require('path');
+  const cli = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'bigkiji-cli.js'), 'utf8');
+  const relay = /const RELAY_EVENTS = \[([^\]]+)\]/.exec(cli);
+  assert.ok(relay, 'the relay list has to be findable');
+  assert.ok(/'step'/.test(relay[1]), 'a step the CLI does not relay is a step the owner never sees');
+  assert.match(cli, /renderEvent\('step', data, \{ [^}]*label: stepLabel\(data\) \}\)/,
+    'and it is rendered with the agent resolved, because the owner asked to see who is doing what');
+
+  const { renderEvent } = require('../src/cli/tui/transcript');
+  const plain = (lines) => lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+
+  const start = plain(renderEvent('step', { phase: 'start', tool: 'Edit', target: '/repo/src/cli/tui/footer.js',
+    added: 12, removed: 3, at: '2026-08-04T03:04:36Z', provider: 'claude-code' }, { width: 90, label: 'ui · builder' }));
+  assert.ok(/ui · builder · Edit\(/.test(start[0]), `the row names the agent, not just the provider: ${start[0]}`);
+  assert.ok(/footer\.js/.test(start[0]), 'and what it touched');
+  assert.ok(/\+12/.test(start[0]) && /−3/.test(start[0]), 'and how much, from the parser above');
+  assert.ok(/03?:04:36|12:04:36/.test(start[0]), 'with a clock, so an eleven-hour-old line cannot look like a fresh one');
+
+  // A Bash command is not a path. shortenPath would fold `cd /a/b/c && npm test` into
+  // something that never ran.
+  const shell = plain(renderEvent('step', { phase: 'start', tool: 'Bash', target: 'cd /a/b/c/d && npm test' },
+    { width: 90, label: 'leader' }));
+  assert.ok(/cd \/a\/b\/c\/d && npm test/.test(shell[0]), `a command is shown as written: ${shell[0]}`);
+
+  const failed = plain(renderEvent('step', { phase: 'end', ok: false, errorText: 'string not found in file' }, { width: 90 }));
+  assert.ok(/string not found in file/.test(failed[0]), 'a failed tool says why');
+  assert.ok(plain(renderEvent('step', { phase: 'end', ok: true }, { width: 90 }))[0].includes('ok'));
+  assert.deepEqual(renderEvent('step', { phase: 'start' }, { width: 90 }), [],
+    'a start with no tool is machinery and is not printed');
+}
+
 console.log('task step selftest: PASS · 6 steps from a real stream · identical output at every chunk boundary and '
   + 'byte-at-a-time · never throws on junk and recovers after it · counts are numbers, not formatted strings · '
-  + 'glm/qwen report nothing because they run without tools · parsed from redacted text with task:log unchanged');
+  + 'glm/qwen report nothing because they run without tools · parsed from redacted text with task:log unchanged · '
+  + 'relayed to the terminal and rendered with the agent, the target and a clock');

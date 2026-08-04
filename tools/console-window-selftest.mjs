@@ -269,6 +269,39 @@ assert.ok(/Open Console/.test(main), 'the tray menu offers it');
 
   const bar = stripComments(code[`${APP}/src/components/ApprovalBar.jsx`]);
   assert.ok(/disabled=\{blocked/.test(bar), 'a sandbox refusal disables the button rather than failing on click');
+
+  // What the owner is agreeing to, not just that they are agreeing.
+  //
+  // This bar showed a count of specialists and a row of hash prefixes. Everything below
+  // already travelled inside the same run object and was dropped by the render: which
+  // agent, on which model, allowed to write or not, and — the one that can invalidate
+  // the whole plan — a question the plan asked the owner and nobody answered.
+  const { approvalPlan } = await import(`../${APP}/src/lib/approval-payload.mjs`);
+  const full = approvalPlan({
+    ...run,
+    stage: 'execution',
+    promptSpec: { goal: 'Rebuild the conversation UI', constraints: ['keep the hashes'], questions: ['Current version or a snapshot?'] },
+    assignments: [
+      { taskId: 't1', role: 'leader', agent: 'builder', provider: 'claude-code', model: 'claude-opus-5', title: 'Implement', write: true },
+      { taskId: 't2', role: 'debug', agent: 'checker', provider: 'glm', model: 'glm-5.2', title: 'Verify', write: false },
+      { taskId: 't3', role: 'ui', provider: 'codex', title: 'Polish' },
+    ],
+    disclosures: [{ provider: 'glm', files: [{ path: 'src/a.js' }, { path: 'src/b.js' }] }],
+  });
+  assert.equal(full.goal, 'Rebuild the conversation UI');
+  assert.deepEqual(full.questions, ['Current version or a snapshot?'], 'an unanswered question has to reach a screen');
+  assert.equal(full.writes, true, 'a run containing a writer says so before it is approved');
+  assert.equal(full.rows[0].access, 'write');
+  assert.equal(full.rows[1].access, 'read');
+  assert.equal(full.rows[2].access, '', 'an assignment the coordinator never marked gets no badge, not a guessed one');
+  assert.equal(full.rows[1].engine, 'glm-5.2', 'the vendor is dropped when the model id already opens with it');
+  assert.equal(full.rows[0].engine, 'claude-code claude-opus-5', 'and kept when it does not');
+  assert.equal(full.reads[0].files.length, 2, 'the files come from the disclosure the hash is sealed against');
+  assert.equal(approvalPlan({ ...run, status: 'EXECUTING' }), null, 'nothing to approve, nothing to describe');
+  // Read-only runs exist now: the deliberation lenses never write, and the coordinator
+  // releases them without a gate. If one ever does reach this bar it must not be
+  // labelled as writing.
+  assert.equal(approvalPlan({ ...run, assignments: [{ taskId: 't1', write: false }] }).writes, false);
 }
 
 // ---- raw provider output ----------------------------------------------------

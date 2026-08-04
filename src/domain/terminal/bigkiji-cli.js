@@ -14,7 +14,7 @@ const { buildFooter, footerHeightFor } = require('../../cli/tui/footer');
 const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
 const {
   glyphs, lower, phrase, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
-  renderUserTurn, shortenPath, truncateToWidth,
+  renderUserTurn, shortRunId, shortenPath, truncateToWidth,
 } = require('../../cli/tui/transcript');
 const { CliPreferences } = require('./cli-preferences');
 const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
@@ -76,7 +76,7 @@ function header(state = {}, width = screenWidth(), frame = 0) {
 // "start waiting run" were the same colour, so the row read as a sentence rather than
 // as a list of things you can type.
 const HINTS = Object.freeze([
-  ['/help', 'commands'], ['/status', 'fleet'], ['/approve', 'start waiting run'],
+  ['/help', 'commands'], ['/status', 'fleet'], ['/runs', 'what is waiting'], ['/approve', 'start it'],
   ['/pi', 'talk to pi'], ['/gpu off', 'free vram'], ['/exit', ''],
 ]);
 
@@ -161,7 +161,22 @@ function stateText(state, width = screenWidth()) {
 }
 function printState(state) { console.log(stateText(state)); }
 
-const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'run', 'conversation', 'idea', 'checkpoint', 'review', 'reflection', 'pi', 'report'];
+// `step` is on this list because it was the missing half of "is it working or not".
+//
+// The daemon has published one of these per tool call since the stream parser was
+// written — Read, Edit, Bash, Grep, with targets and line counts — and this list did
+// not carry it, so every one was dropped at daemon-client's door. Measured 2026-08-04:
+// the GUI window had a live work timeline and the terminal had nothing, which is why
+// the only way to find out whether a delegated agent was doing anything was to ask,
+// and asking got a fabricated answer.
+const RELAY_EVENTS = ['commentary', 'phase', 'tasklog', 'step', 'run', 'conversation', 'idea', 'checkpoint', 'review', 'reflection', 'pi', 'report'];
+
+/** Replace a run in the live list, or append it. Keeps the footer honest between polls. */
+function mergeRun(runs, run) {
+  const list = Array.isArray(runs) ? runs : [];
+  if (!run?.id) return list;
+  return [...list.filter((item) => item.id !== run.id), run];
+}
 
 async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
@@ -170,6 +185,7 @@ async function repl(client) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}>${A.reset} ` });
   const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
+  let abortedTurn = false; // one abort per turn; the second Ctrl-C leaves
   const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
   // Readline owns the input row: re-issue the prompt or the line being typed gets
   // eaten, then repair the rows underneath it — readline's refresh emits ESC[0J,
@@ -208,12 +224,112 @@ async function repl(client) {
   // one submitted plan printed two or three identical blocks in a row. Each
   // distinct state of a run is printed once; a real status change still prints.
   const seenRuns = new Set();
+  const waitingRuns = () => (Array.isArray(live.runs) ? live.runs : []).filter((item) => item.status === 'AWAITING_APPROVAL');
+  /**
+   * The waiting run the owner meant. No argument is the newest; an argument matches a
+   * full id or a prefix of one, the way `git show` takes a short SHA.
+   *
+   * `.at(-1)` used to be the only reachable run, full stop. Measured 2026-08-04: two
+   * runs were waiting and the older one — eleven hours old — could not be approved or
+   * rejected from the CLI by any sequence of keystrokes, because nothing addressed it
+   * and nothing listed it.
+   */
+  const findWaiting = (wanted) => {
+    const runs = waitingRuns();
+    if (!wanted) return runs.at(-1) || null;
+    const needle = String(wanted).toLowerCase();
+    return runs.find((item) => String(item.id).toLowerCase() === needle)
+      || runs.find((item) => String(item.id).toLowerCase().startsWith(needle)) || null;
+  };
+  // The gate itself is unchanged. The hashes below are the ones the coordinator demands
+  // back — a stale revision, plan or disclosure is still refused, which is the whole
+  // point of echoing them rather than sending a bare id.
+  const approveRun = async (run) => {
+    const result = await client.approve({ id: run.id, revision: run.revision, planHash: run.planHash,
+      disclosureHash: run.disclosureHash, idempotencyKey: `cli-${run.id}-${run.revision}-${run.disclosureHash}` });
+    emit([...renderToolCall('approve', `${shortRunId(run.id)} ${glyphs().note} ${phrase(result.status || 'started')}`, view()),
+      ...renderToolResult(`${run.assignments?.length || 0} assignments released`, { ...view(), maxLines: 2 })]);
+    return result;
+  };
+  const rejectRun = async (run) => {
+    const result = await client.abort(run.id);
+    emit(renderToolCall('reject', `${shortRunId(run.id)} ${glyphs().note} ${phrase(result.status || 'aborted')}`, view()));
+    return result;
+  };
+
+  /**
+   * One keystroke, read straight off the tty, with readline stood down for the duration.
+   *
+   * Numbers rather than arrows on purpose: a moving selection has to redraw itself, and
+   * redrawing inside the DECSTBM scroll region means either scrolling the transcript or
+   * addressing rows this function does not own. A single key needs neither, so the
+   * sticky layout cannot be corrupted by the thing that is supposed to make approving
+   * easier. Esc and Ctrl-C both mean "later" — never "yes".
+   * @returns {Promise<string>} the chosen id, or '' for later
+   */
+  const askKey = (choices) => new Promise((resolve) => {
+    if (!process.stdin.isTTY) { resolve(''); return; }
+    const wasRaw = process.stdin.isRaw;
+    rl.pause();
+    if (!wasRaw) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    const finish = (value) => {
+      process.stdin.off('data', onKey);
+      if (!wasRaw) process.stdin.setRawMode(false);
+      rl.resume(); refreshPrompt();
+      resolve(value);
+    };
+    const onKey = (buffer) => {
+      const key = buffer.toString();
+      if (key === '\x1b' || key === '\x03' || key === '\r' || key === '\n') return finish('');
+      const hit = choices.find((choice) => choice.keys.includes(key));
+      if (hit) finish(hit.id);
+    };
+    process.stdin.on('data', onKey);
+  });
+
+  let deciding = false;
+  /**
+   * Say that a run is waiting, and offer to start it right here.
+   *
+   * The REPL never said this sentence. `main()` printed "awaiting your approval — type
+   * /approve to start it" on the one-shot path and the interactive path printed nothing
+   * at all, so the only trace of a waiting run was a footer segment that disappears
+   * below 75 columns. Two runs waited eleven hours behind that silence.
+   */
+  const offerApproval = (run) => {
+    const id = shortRunId(run.id);
+    // `ask` puts the question on screen and takes one key. `plan` states it and gets out
+    // of the way, for the owner who wants to read the disclosure first and type the
+    // command deliberately — that is the whole difference between the two modes, and
+    // both of them still wait. `auto-edit` never arrives here at all, because a writing
+    // run in that mode is released by the coordinator without a gate.
+    //
+    // Not while they are typing: the prompt reads raw keys, so grabbing the keyboard
+    // mid-sentence would eat the line. A half-written line falls back to the note.
+    const interactive = mode === 'ask' && process.stdin.isTTY && !deciding && !rl.line;
+    emit(renderNote(interactive
+      ? `waiting for you.  1 approve  ${glyphs().note}  2 reject  ${glyphs().note}  3 later  (esc = later)`
+      : `waiting for you — /approve ${id} to start it, /reject to drop it, /runs to see them all`, view()));
+    if (!interactive) return;
+    deciding = true;
+    askKey([{ id: 'approve', keys: ['1', 'y', 'Y'] }, { id: 'reject', keys: ['2', 'n', 'N'] }, { id: 'later', keys: ['3'] }])
+      .then(async (choice) => {
+        if (choice === 'approve') await approveRun(run);
+        else if (choice === 'reject') await rejectRun(run);
+        else emit(renderNote(`left waiting — /approve ${id} when you are ready`, view()));
+      })
+      .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true })))
+      .finally(() => { deciding = false; paintFooter(true); refreshPrompt(); });
+  };
+
   const emitRun = (run) => {
     if (!run?.id) return;
     const key = `${run.id}:${run.status}:${run.revision ?? ''}:${run.assignments?.length ?? 0}`;
     if (seenRuns.has(key)) return;
     if (seenRuns.size > 200) seenRuns.delete(seenRuns.values().next().value);
     seenRuns.add(key); emit(renderEvent('run', run, view()));
+    if (run.status === 'AWAITING_APPROVAL') offerApproval(run);
   };
   if (!stickyOn) { console.log(header(live)); hintLines().forEach((line) => console.log(line)); }
   // Animates the loading cat + elapsed clock, repainting only when the footer
@@ -242,12 +358,46 @@ async function repl(client) {
   ticker?.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
   const statePoll = setInterval(() => { client.state().then((next) => { live = next; paintFooter(); }).catch(() => {}); }, 4000); statePoll.unref?.();
+  /**
+   * Which delegated agent a step belongs to.
+   *
+   * The step payload names its provider but not the role it was hired for, and the
+   * owner asked to see who is doing what. The run's assignments hold both, keyed by the
+   * same taskId, so this is a lookup rather than a guess — and it falls back to the
+   * provider rather than inventing a role when the run is not in `live` yet.
+   */
+  const stepLabel = (step) => {
+    for (const run of Array.isArray(live.runs) ? live.runs : []) {
+      const found = (run.assignments || []).find((item) => item.taskId === step?.taskId);
+      if (found) {
+        const who = [lower(found.role || ''), lower(found.agent || '')].filter(Boolean).join(` ${glyphs().note} `);
+        if (who) return who;
+      }
+    }
+    return lower(step?.provider || 'agent');
+  };
   client.on('event', ({ event, data }) => {
     if (event === 'state') live = { ...live, ...data };
     else if (event === 'models') live = { ...live, models: data };
     else if (event === 'phase') phaseInfo = data;
-    else if (event === 'run') phaseInfo = data.status || phaseInfo;
+    else if (event === 'run') {
+      phaseInfo = data.status || phaseInfo;
+      // Keep the live list current between four-second polls: the footer's waiting
+      // count and /approve both read it, and a stale one under-reports what is waiting.
+      live = { ...live, runs: mergeRun(live.runs, data) };
+    }
     if (!RELAY_EVENTS.includes(event)) { paintFooter(); return; }
+    // A step's `phase` is 'start' or 'end' — machinery, not a status. Letting the
+    // generic extraction below reach it would put the word "start" in the comment slot
+    // where the owner is looking for what is happening.
+    if (event === 'step') {
+      const lines = renderEvent('step', data, { ...view(), label: stepLabel(data) });
+      if (lines.length) emit(lines);
+      if (data?.phase === 'start' && data?.tool) {
+        comment = `${data.tool}${data.target ? ` ${shortenPath(String(data.target))}` : ''}`.replace(/\s+/g, ' ').trim();
+      }
+      paintFooter(); refreshPrompt(); return;
+    }
     // The footer's comment slot still shows every event, so the transcript can
     // afford to stay quiet: phase ticks and the daemon echoing back the prompt
     // the owner just typed are dropped by renderEvent rather than printed.
@@ -266,7 +416,7 @@ async function repl(client) {
   }); client.connect();
   const handleTurn = async (text) => {
     if (sticky.active && text) emit(renderUserTurn(text, view()));
-    if (text) { turnStartedAt = Date.now(); frameIndex = 0; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
+    if (text) { turnStartedAt = Date.now(); frameIndex = 0; abortedTurn = false; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
     try {
       if (!text) {}
       else if (['/exit', '/quit'].includes(text)) { rl.close(); return; }
@@ -321,19 +471,26 @@ async function repl(client) {
       // coordinator demands back — a stale revision, plan or disclosure is still
       // refused, which is the whole point of echoing them rather than sending a
       // bare id.
-      else if (text === '/approve' || text === '/reject') {
+      // What is waiting, in full. There was no way to ask this: /status printed the
+      // number of runs and nothing about them, so a run the owner could not address was
+      // also a run they could not read.
+      else if (text === '/runs') {
         live = await client.state();
-        const run = (live.runs || []).filter((item) => item.status === 'AWAITING_APPROVAL').at(-1);
-        if (!run) { emit(renderNote('nothing is waiting for approval', view())); }
-        else if (text === '/reject') {
-          const result = await client.abort(run.id);
-          emit(renderToolCall('reject', `${lower(run.id)} · ${phrase(result.status || 'aborted')}`, view()));
-        } else {
-          const result = await client.approve({ id: run.id, revision: run.revision, planHash: run.planHash,
-            disclosureHash: run.disclosureHash, idempotencyKey: `cli-${run.id}-${run.revision}-${run.disclosureHash}` });
-          emit([...renderToolCall('approve', `${lower(run.id)} · ${phrase(result.status || 'started')}`, view()),
-            ...renderToolResult(`${run.assignments?.length || 0} assignments released`, { ...view(), maxLines: 2 })]);
-        }
+        const runs = waitingRuns();
+        const shown = runs.slice(-5);
+        emit([...renderToolCall('runs', `${runs.length} waiting`, view()),
+          ...(runs.length ? shown.flatMap((run) => renderEvent('run', run, view()))
+            : renderNote('nothing is waiting for approval', view())),
+          ...(runs.length > shown.length ? renderNote(`${glyphs().ellipsis} +${runs.length - shown.length} older`, view()) : [])]);
+      }
+      else if (text === '/approve' || text === '/reject' || text.startsWith('/approve ') || text.startsWith('/reject ')) {
+        live = await client.state();
+        const [command, wanted] = text.trim().split(/\s+/);
+        const run = findWaiting(wanted);
+        if (!run) {
+          emit(renderNote(wanted ? `no waiting run matches ${lower(wanted)} — /runs lists them` : 'nothing is waiting for approval', view()));
+        } else if (command === '/reject') await rejectRun(run);
+        else await approveRun(run);
       }
       // Step 1 of the owner's own workflow: talk to Pi.
       //
@@ -377,7 +534,7 @@ async function repl(client) {
       }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. when a run is waiting, /approve starts it and /reject drops it; nothing external ever runs without that. /pi consults pi directly — it has no tools and cannot run anything.', view()));
+      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. read-only work starts on its own and reports each step as it happens; anything that writes waits for you. /runs lists what is waiting, /approve [id] starts it and /reject [id] drops it — an id can be a prefix. ctrl-c interrupts the work without leaving. /pi consults pi directly — it has no tools and cannot run anything.', view()));
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the
@@ -453,11 +610,28 @@ async function repl(client) {
   };
   if (process.stdin.isTTY) { process.stdout.write('\x1b[?2004h'); process.stdin.prependListener('data', watchPaste); }
   rl.on('line', (line) => { pending.push(line); if (!pasting) schedule(); });
-  // readline in terminal mode swallows ^C itself and emits this instead of
-  // letting SIGINT reach the process, so without it Ctrl-C out of the REPL
-  // closed the interface and exited 0.
+  // Ctrl-C stops the work, not the conversation.
+  //
+  // readline in terminal mode swallows ^C itself and emits this instead of letting
+  // SIGINT reach the process, so without a handler Ctrl-C out of the REPL closed the
+  // interface and exited 0. It did that during a running turn as well: every other
+  // agent CLI reads the interrupt as "stop what you are doing", and this one read it as
+  // "throw the session away", which is a bad trade when the thing you want to stop is a
+  // twenty-minute run. With a turn in flight the abort goes to the daemon and the REPL
+  // stays. Pressed again — or with nothing running — it exits as before.
   let interrupted = false;
-  rl.on('SIGINT', () => { interrupted = true; rl.close(); });
+  rl.on('SIGINT', () => {
+    if (turnStartedAt && !abortedTurn) {
+      abortedTurn = true;
+      emit(renderNote('interrupting — ctrl-c again to leave bigkiji', view()));
+      client.post('/api/abort')
+        .then((result) => emit(renderToolCall('abort', phrase(result?.status || 'sent'), view())))
+        .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 2, isError: true })))
+        .finally(() => { paintFooter(true); refreshPrompt(); });
+      return;
+    }
+    interrupted = true; rl.close();
+  });
   rl.on('close', () => {
     clearTimeout(quietTimer); clearTimeout(pasteTimer);
     if (process.stdin.isTTY) { process.stdin.off('data', watchPaste); rl.output = process.stdout; process.stdout.write('\x1b[?2004l'); }
@@ -498,7 +672,7 @@ async function main(argv = process.argv.slice(2)) {
     if (result.draft) console.log(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, options).join('\n'));
     if (result.run) {
       console.log(renderEvent('run', result.run, options).join('\n'));
-      console.log(renderNote('awaiting your approval — type /approve to start it, or /reject to drop it.', options).join('\n'));
+      console.log(renderNote(`awaiting your approval — run \`bigkiji\` and type /approve ${shortRunId(result.run.id)} to start it, or /reject to drop it.`, options).join('\n'));
     }
     return;
   }

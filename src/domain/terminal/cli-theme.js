@@ -62,7 +62,14 @@ function normalizeMode(value) {
   if (mode === 'auto' || mode === 'manual' || mode === 'auto-edit' || mode === 'shell') return 'auto-edit';
   return mode === 'ask' ? 'ask' : 'plan';
 }
-function transportMode(mode) { return normalizeMode(mode) === 'auto-edit' ? 'auto' : 'plan'; }
+// What the daemon is told. Three values, because there are three modes.
+//
+// This collapsed `ask` into `plan` and sent two values, which was fine while the daemon
+// flattened both to 'plan' anyway. Now that the mode decides whether a writing run waits,
+// the wire has to be able to say which of the three the owner chose. 'plan' and 'ask'
+// both still wait — the difference is how the CLI asks — and only 'auto' releases.
+const TRANSPORT = Object.freeze({ 'auto-edit': 'auto', ask: 'ask', plan: 'plan' });
+function transportMode(mode) { return TRANSPORT[normalizeMode(mode)] || 'plan'; }
 function themeFor(mode) { return { ...PALETTE, ...MODE_COLORS[normalizeMode(mode)] }; }
 function paint(text, color = PALETTE.ink) { return `${color}${String(text)}${RESET}`; }
 function stripAnsi(value) { return String(value || '').replace(/\x1b\[[0-9;]*m/g, ''); }

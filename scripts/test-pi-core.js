@@ -34,7 +34,12 @@ async function main() {
   }) });
   const events = []; coordinator.on('run', (event) => events.push(event));
   const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'e2e', 'bigkiji-3d-shooter.json'), 'utf8'));
-  const run = coordinator.submit({ prompt: fixture.ownerPrompt, promptSpec: { goal: fixture.ownerPrompt, acceptance: fixture.acceptance }, mode: 'auto', cwd: root });
+  // 'plan', not 'auto'. This end-to-end exists to walk submit → approve → dispatch →
+  // complete, and it used to pass 'auto' only because the mode was ignored everywhere.
+  // Since 2026-08-04 the mode decides whether a writing run waits, so asking for 'auto'
+  // here would skip the very gate this test is walking through. Which modes release and
+  // which wait is asserted in tools/approval-flood-selftest.js.
+  const run = coordinator.submit({ prompt: fixture.ownerPrompt, promptSpec: { goal: fixture.ownerPrompt, acceptance: fixture.acceptance }, mode: 'plan', cwd: root });
   assert.strictEqual(run.status, 'AWAITING_APPROVAL');
   assert.strictEqual(runner.snapshot().filter((task) => task.status === 'running').length, 0);
   coordinator.approve(run.id, { revision: run.revision, planHash: run.planHash, disclosureHash: run.disclosureHash,

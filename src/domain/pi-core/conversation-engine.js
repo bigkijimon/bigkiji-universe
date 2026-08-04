@@ -16,6 +16,34 @@ function json(value) {
     try { return start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : null; } catch (_) { return null; }
   }
 }
+// The model's own JSON, leaking into the sentence the owner reads.
+//
+// Ollama's `format: json` constrains the output to valid JSON, which guarantees the
+// envelope parses and guarantees nothing about what is inside the string. Measured in
+// the owner's session on 2026-08-04:
+//
+//     …まずはどの機能から優先的に修復すべきか教えていただけますでしょうか？”}{
+//     …/approve を入力いただければすぐに処理を開始いたしますね。”}title=
+//
+// A closing quote followed by a brace is never prose in any language; it is the model
+// starting the next field inside the current one. Cut there and keep what came before.
+//
+// This runs on the model's `reply` only — never on the owner's text, which routinely
+// contains `"}` inside a pasted snippet and must survive intact.
+// Two shapes, both structural: a quote against a brace, and a quote-comma-quote, which
+// is the model closing "reply" and opening the next field while still inside the string.
+// Japanese quotes prose with 「」, so `”、“` mid-sentence is the machine showing through.
+const STRUCTURE = /["”]\s*[}{]|}\s*{|["”]\s*[、,]\s*[“"]/;
+function stripStructure(reply) {
+  const text = String(reply || '');
+  const hit = text.search(STRUCTURE);
+  if (hit < 0) return text;
+  // Only when there is a real answer in front of it. A reply that is nothing but
+  // structure is a failure, and truncating it to '' lets normalize() fall back rather
+  // than hand the owner an empty bubble.
+  const kept = text.slice(0, hit).trim();
+  return kept.length >= 6 ? kept : text;
+}
 function deriveTitle(text) {
   const first = clean(text, 180).split(/[。.!?！？\n]/)[0]
     .replace(/^\s*(?:maybe|perhaps|もしかすると|ふと思った(?:んですが)?)[、,:：\s]*/i, '')
@@ -79,7 +107,7 @@ function normalize(value, text) {
     ? (item.q || item.question || item.text || item.title || item.reply || '') : item;
   const arr = (key) => [...new Set((Array.isArray(value?.[key]) ? value[key] : []).map((item) => clean(asText(item), 500)).filter(Boolean))].slice(0, 10);
   // 劣化応答ガード: 返答が欠落・極端に短い・goal/summaryの鸚鵡返しなら文脈フォールバックへ
-  let reply = clean(asText(value?.reply), 1800);
+  let reply = stripStructure(clean(asText(value?.reply), 1800));
   const echo = clean(asText(value?.summary), 200);
   if (!reply || reply.length < 6 || (echo && reply === echo)) reply = base.reply;
   return { kind, reply,

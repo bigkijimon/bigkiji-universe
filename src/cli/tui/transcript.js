@@ -150,12 +150,16 @@ const UNICODE_GLYPHS = Object.freeze({
   // The critique thread. One cell wide, East Asian Width neutral, and distinct
   // from the result elbow — a reply to a result is not a result.
   reply: '⤷',
+  // Something the owner has to see before deciding: a question the plan asked and
+  // nobody answered, or a step that cannot be undone.
+  warn: '⚠',
   done: '☑', active: '▸', pending: '☐', ellipsis: '…', rule: '─',
 });
 // TERM=dumb rarely has the box-drawing elbow or the ballot boxes.
 const ASCII_GLYPHS = Object.freeze({
   turn: '*', result: '\\', user: '>', note: '.',
   reply: '->',
+  warn: '!',
   done: '[x]', active: '>', pending: '[ ]', ellipsis: '...', rule: '-',
 });
 
@@ -258,6 +262,9 @@ function count(list) {
 // ---------------------------------------------------------------------------
 
 const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filePath'];
+// Tools whose target is a filesystem path, so it can be folded to `~/…/dir/file`.
+// Everything else — a command, a pattern, a url — is shown as written.
+const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'Delete']);
 
 /** Shorten an absolute path the way a status line should: `~/…/dir/file.js`. */
 function shortenPath(value, home = process.env.HOME || '') {
@@ -290,20 +297,42 @@ function summarizeToolInput(name, input = {}, { width = 48 } = {}) {
   return truncateToWidth(String(value).replace(/\s+/g, ' ').trim(), Math.max(8, width));
 }
 
-/** `● Bash(npm test)` — one line, name bold, argument dim. */
+/**
+ * `HH:MM:SS` in local time, or '' for a timestamp we were not given.
+ *
+ * A transcript without clocks cannot answer "is this from now or from this morning?".
+ * Measured 2026-08-04: two runs had been waiting eleven hours and their block on screen
+ * was indistinguishable from one submitted a second ago.
+ */
+function clockOf(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const two = (part) => String(part).padStart(2, '0');
+  return `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+}
+
+/** `● Bash(npm test)` — one line, name bold, argument dim, optional clock at the right edge. */
 function renderToolCall(name, input, options = {}) {
   // `glyph` overrides the gutter. The critique thread needs a mark that reads as a
   // reply rather than as a new turn — the same shape at two indents is a wall.
-  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 0, glyph = null } = options;
+  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 0, glyph = null, at = '' } = options;
   const label = String(name || 'tool');
-  const argWidth = Math.max(8, width - indent - stringWidth(label) - 6);
+  // The clock is reserved out of the width before the argument is measured, so a long
+  // path is ellipsised rather than pushing the time off the edge.
+  const clock = clockOf(at);
+  const reserve = clock ? stringWidth(clock) + 2 : 0;
+  const argWidth = Math.max(8, width - indent - stringWidth(label) - 6 - reserve);
   const arg = typeof input === 'string' ? truncateToWidth(input, argWidth) : summarizeToolInput(label, input, { width: argWidth });
   const head = `${theme.bold}${theme.ink}${label}${theme.reset}${theme.muted}(${arg})${theme.reset}`;
   const plainHead = `${label}(${arg})`;
   const gutter = glyph || mark.turn;
   const column = indent + stringWidth(gutter) + 1;
-  return [`${' '.repeat(indent)}${theme.accent}${gutter}${theme.reset} ${
-    stringWidth(plainHead) > width - column ? truncateToWidth(plainHead, width - column) : head}`];
+  const room = Math.max(4, width - column - reserve);
+  const shown = stringWidth(plainHead) > room ? truncateToWidth(plainHead, room) : head;
+  // stringWidth strips ANSI, so this measures the painted and the plain branch alike.
+  const gap = clock ? ' '.repeat(Math.max(1, width - column - stringWidth(shown) - stringWidth(clock))) : '';
+  return [`${' '.repeat(indent)}${theme.accent}${gutter}${theme.reset} ${shown}${clock ? `${gap}${theme.dim}${clock}${theme.reset}` : ''}`];
 }
 
 /** `  ⎿  …` — the result of the line above, folded and indented under it. */
@@ -444,11 +473,101 @@ const RUN_TASK_STATE = Object.freeze({
   running: 'active', executing: 'active', dispatching: 'active',
 });
 
+/**
+ * One row per assignment: who, on what model, allowed to write or not, doing what.
+ *
+ * This used to be `title · provider`, which answered none of the questions the owner
+ * asks at an approval gate. The coordinator has already decided the role, the agent,
+ * the exact model tier and whether the task may write — all of it sitting in the run
+ * object, none of it on screen (measured 2026-08-04, where the whole visible plan was
+ * two lines of title and a provider name).
+ *
+ * Nothing is inferred. A field the coordinator did not set is left out rather than
+ * defaulted: `write` absent is not `write` false, and printing either would be a claim
+ * about permissions we were never told.
+ */
+/** The readable handle for a run — its first two segments, the way git shows a short SHA. */
+function shortRunId(id) {
+  const text = lower(id || '');
+  const parts = text.split('-');
+  return parts.length > 2 ? parts.slice(0, 2).join('-') : text;
+}
+
 function runAssignments(run = {}) {
-  return (run.assignments || []).map((item) => ({
-    text: `${item.title || item.role || item.taskId} ${item.provider ? `· ${item.provider}` : ''}`.trim(),
-    status: RUN_TASK_STATE[String(item.status || '').toLowerCase()] || 'pending',
+  const rows = (run.assignments || []).map((item) => {
+    // The role is the job; the agent is the hat worn for this run. `leader` alone does
+    // not say that this one is the architect lens, and both are one word each.
+    const who = [lower(item.role || ''), lower(item.agent || '')].filter(Boolean).join(' · ');
+    // The tier that will answer, not just the vendor: two assignments on one provider
+    // routinely run different models and cost different money. The vendor is dropped
+    // when the model id already opens with it, because `qwen qwen3.5:35b-a3b` reads as
+    // a stutter rather than as two facts.
+    const provider = lower(item.provider || '');
+    const model = lower(item.model || '');
+    const engine = model ? (provider && !model.startsWith(provider) ? `${provider} ${model}` : model) : provider;
+    return { who, engine, access: typeof item.write === 'boolean' ? (item.write ? 'write' : 'read') : '',
+      title: String(item.title || item.taskId || ''),
+      status: RUN_TASK_STATE[String(item.status || '').toLowerCase()] || 'pending' };
+  });
+  // Columns, because the point of this block is comparing the rows to each other:
+  // ragged text makes the owner re-read each line to find which one may write.
+  const widest = (key) => rows.reduce((max, row) => Math.max(max, stringWidth(row[key])), 0);
+  const whoWidth = widest('who'); const engineWidth = widest('engine'); const accessWidth = widest('access');
+  return rows.map((row) => ({
+    status: row.status,
+    text: [row.who && padToWidth(row.who, whoWidth), row.engine && padToWidth(row.engine, engineWidth),
+      row.access && padToWidth(row.access, accessWidth), row.title].filter(Boolean).join('  '),
   }));
+}
+
+/**
+ * What the plan is for, and what it still wants answered.
+ *
+ * Every line here already travelled to the CLI inside the run object and was thrown
+ * away by the renderer. The one that matters most is the last: `promptSpec.questions`
+ * is the plan asking the owner something, and on 2026-08-04 a run sat for eleven hours
+ * with an unanswered question in it that never reached a screen.
+ * @returns {string[]}
+ */
+function runBrief(run = {}, options = {}) {
+  const { mark = glyphs() } = options;
+  const spec = run.promptSpec || {};
+  const flat = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const list = (value) => (Array.isArray(value) ? value.map(flat).filter(Boolean) : []);
+  const rows = [];
+  if (flat(spec.goal)) rows.push(`goal: ${flat(spec.goal)}`);
+  const constraints = list(spec.constraints);
+  if (constraints.length) rows.push(`constraints: ${constraints.join(' / ')}`);
+  for (const question of list(spec.questions)) rows.push(`${mark.warn} unanswered: ${question}`);
+  if (!rows.length) return [];
+  return renderToolResult(rows.join('\n'), { ...options, indent: 2, maxLines: 8 });
+}
+
+const READS_PER_PROVIDER = 6;
+
+/**
+ * Which files each agent will actually open, from the disclosure the owner is approving.
+ *
+ * The disclosure is the thing the approval hash is sealed against, so this is not a
+ * summary of the plan — it is the plan, in the same bytes the coordinator will check.
+ * @returns {string[]}
+ */
+function runReads(run = {}, options = {}) {
+  const { mark = glyphs() } = options;
+  const rows = [];
+  for (const disclosure of run.disclosures || []) {
+    const files = (disclosure.files || []).filter((file) => file && file.path);
+    if (!files.length) continue;
+    const shown = files.slice(0, READS_PER_PROVIDER).map((file) => {
+      const ranges = Array.isArray(file.ranges) ? file.ranges.join(',') : '';
+      return ranges ? `${shortenPath(file.path)} ${ranges}` : shortenPath(file.path);
+    });
+    const hidden = files.length - shown.length;
+    rows.push(`${lower(disclosure.provider || 'agent')} reads: ${shown.join(` ${mark.note} `)}${
+      hidden ? ` ${mark.ellipsis} +${hidden} ${hidden === 1 ? 'file' : 'files'}` : ''}`);
+  }
+  if (!rows.length) return [];
+  return renderNote(rows.join('\n'), { ...options, indent: 2 });
 }
 
 /**
@@ -484,13 +603,52 @@ function renderEvent(event, data = {}, options = {}) {
       return [...head, ...renderNote(phrase(status), base)];
     }
     case 'run': {
-      const head = renderToolCall('run', `${lower(data.id) || DASH} · ${phrase(data.status) || DASH}`, base);
+      // The headline carries the two facts that decide whether this needs reading:
+      // which of the two gates it is at, and whether anything can write. There are two
+      // approval gates — a read-only deliberation and then the execution — and until
+      // now the screen never said which one you were looking at.
+      const assignments = data.assignments || [];
+      const stage = lower(data.stage || '');
+      const writes = assignments.some((item) => item.write !== false);
+      const headline = [shortRunId(data.id) || DASH, phrase(data.status) || DASH,
+        stage ? `${stage} stage` : '', assignments.length ? (writes ? 'writes' : 'read-only') : '']
+        .filter(Boolean).join(' · ');
+      const head = renderToolCall('run', headline, { ...base, at: data.updatedAt || data.createdAt || '' });
       const list = formatTaskList(runAssignments(data), { ...base, indent: 2, maxLines: 8 });
       // A failed run rendered as a status word with nothing behind it: the reason
       // travelled all the way from the coordinator and was dropped right here, so
       // the only thing the transcript ever said about a failure was that it failed.
       const failure = String(data.error || data.reason || '').trim();
-      return [...head, ...list, ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
+      return [...head, ...runBrief(data, base), ...list, ...runReads(data, base),
+        ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
+    }
+    // One tool call by one delegated agent, as it happens.
+    //
+    // The daemon has published these down `task:step` since the day the stream parser
+    // was written, and the CLI's relay list did not carry `step`, so every one of them
+    // was dropped at the door: the GUI window had a live work timeline and the terminal
+    // had nothing at all. That is most of the answer to "is it working or not" — when
+    // something IS running, this is the only thing that says so.
+    //
+    // `options.label` is who — the caller resolves taskId against the run's assignments,
+    // because the step payload knows its provider but not which role it was hired for.
+    case 'step': {
+      const who = String(options.label || lower(data.provider || 'agent')).trim();
+      if (data.phase === 'end') {
+        const failed = data.ok === false;
+        const said = String(data.errorText || '').trim();
+        return renderToolResult(failed ? (said || 'failed') : 'ok',
+          { ...base, indent: 2, maxLines: 2, isError: failed });
+      }
+      if (data.phase !== 'start' || !data.tool) return [];
+      const tool = String(data.tool);
+      // shortenPath only where the target is a path. A shell command routinely contains
+      // slashes and folding it to `~/…/a/b` would be a lie about what ran.
+      const target = FILE_TOOLS.has(tool) ? shortenPath(data.target || '') : String(data.target || '');
+      const counts = [Number(data.added) > 0 ? `+${data.added}` : '', Number(data.removed) > 0 ? `−${data.removed}` : '']
+        .filter(Boolean).join(' ');
+      return renderToolCall(`${who} ${mark.note} ${tool}`, [target, counts].filter(Boolean).join('  '),
+        { ...base, at: data.at || '' });
     }
     // The critique thread the owner asked for: result, then BigKiji's comment, then
     // the agent's answer, each one step further in. Two levels only — a third
@@ -694,9 +852,9 @@ function renderStatus(state = {}, options = {}) {
 module.exports = {
   DASH, UNICODE_GLYPHS, ASCII_GLYPHS, glyphs, lower, phrase,
   charWidth, stringWidth, sliceToWidth, truncateToWidth, padToWidth, wrapToWidth,
-  foldLines, foldMarker, gutterLines, metric, count,
+  foldLines, foldMarker, gutterLines, metric, count, clockOf,
   shortenPath, summarizeToolInput, renderToolCall, renderToolResult,
   renderUserTurn, renderAssistantText, renderNote,
   parseUnifiedDiff, formatDiff, formatTaskList, looksLikeDiff,
-  renderEvent, renderStatus, runAssignments,
+  renderEvent, renderStatus, runAssignments, runBrief, runReads, shortRunId, FILE_TOOLS,
 };

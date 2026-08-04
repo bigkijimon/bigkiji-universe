@@ -98,10 +98,16 @@ function fakeChild() {
   assert(planned.assignments.every((item) => item.write === false), 'a discussion never gets write access');
   assert.strictEqual(new Set(planned.assignments.map((item) => item.provider)).size, 2,
     'two lenses on one provider is one opinion twice');
-  assert.strictEqual(planned.status, 'AWAITING_APPROVAL', 'a discussion costs tokens, so the owner still approves it');
+  // This asserted 'AWAITING_APPROVAL' — "a discussion costs tokens, so the owner still
+  // approves it" — and the owner reversed that rule by name on 2026-08-04, after it cost
+  // them a morning. Two of these read-only stages sat untouched for eleven hours: the
+  // CLI never said they were waiting, so the owner spent the time asking whether
+  // anything was happening and being told yes. Reading changes nothing on disk; it is
+  // the writing that needs a human, and the assertion below this one is where that is
+  // still enforced.
+  assert.strictEqual(planned.status, 'EXECUTING', 'a read-only discussion starts on its own — owner decision, 2026-08-04');
 
   const finished = new Promise((resolve) => coordinator.on('run', (event) => { if (event.kind === 'deliberated') resolve(event); }));
-  coordinator.approve(planned.id, { disclosureHash: planned.disclosureHash, planHash: planned.planHash, revision: planned.revision });
   const after = await finished;
 
   assert.strictEqual(after.stage, 'execution', 'the run has to move on by itself once the lenses answer');

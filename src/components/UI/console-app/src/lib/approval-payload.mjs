@@ -42,6 +42,53 @@ export function buildApprovalPayload(run) {
   };
 }
 
+/**
+ * What the owner is actually being asked to approve.
+ *
+ * The run object carries the goal, the constraints, the questions the plan could not
+ * answer, every assignment's role / agent / model / write permission, and the exact
+ * files each one will open — and this window used to show two strings: a count of
+ * specialists and a row of hash prefixes. Measured 2026-08-04, on a run whose plan
+ * contained an unanswered question for the owner that no surface ever displayed.
+ *
+ * Same shape of answer as the CLI's run block, deliberately: two surfaces disagreeing
+ * about what a plan says is worse than either of them being terse.
+ *
+ * Nothing is inferred. `write` absent is not `write` false — an assignment the
+ * coordinator did not mark gets no access badge rather than a guessed one.
+ */
+export function approvalPlan(run) {
+  if (!isAwaitingDecision(run)) return null;
+  const flat = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const list = (value) => (Array.isArray(value) ? value.map(flat).filter(Boolean) : []);
+  const spec = run.promptSpec || {};
+  const assignments = Array.isArray(run.assignments) ? run.assignments : [];
+  return {
+    goal: flat(spec.goal),
+    constraints: list(spec.constraints),
+    questions: list(spec.questions),
+    stage: flat(run.stage),
+    writes: assignments.length ? assignments.some((item) => item.write !== false) : null,
+    rows: assignments.map((item) => {
+      const provider = flat(item.provider).toLowerCase();
+      const model = flat(item.model).toLowerCase();
+      return {
+        key: item.taskId || `${provider}-${flat(item.title)}`,
+        who: [flat(item.role), flat(item.agent)].filter(Boolean).join(' · '),
+        engine: model ? (provider && !model.startsWith(provider) ? `${provider} ${model}` : model) : provider,
+        access: typeof item.write === 'boolean' ? (item.write ? 'write' : 'read') : '',
+        title: flat(item.title),
+        status: flat(item.status),
+      };
+    }),
+    reads: (Array.isArray(run.disclosures) ? run.disclosures : []).map((disclosure) => ({
+      provider: flat(disclosure.provider).toLowerCase(),
+      files: (Array.isArray(disclosure.files) ? disclosure.files : [])
+        .filter((file) => file && file.path).map((file) => flat(file.path)),
+    })).filter((entry) => entry.files.length),
+  };
+}
+
 /** What the gate says about itself, so the copy is testable too. */
 export function approvalSummary(run) {
   if (!isAwaitingDecision(run)) return null;

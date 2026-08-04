@@ -105,6 +105,32 @@ const WebSocket = require('ws');
   assert.equal(mobileReload.status, 403, 'paired mobile may not reload daemon code');
   const reload = await fetch(`${base}/api/reload`, { method: 'POST', headers: { authorization: 'Bearer selftest-token', 'content-type': 'application/json' },
     body: JSON.stringify({ policyHash: state.security.policyHash, ownerConfirmed: true }) }).then((response) => response.json()); assert.equal(reload.ok, true);
+  // A mode that can skip approval is only honoured from this machine.
+  //
+  // The daemon binds 0.0.0.0 — measured with lsof 2026-08-04, `*:8777 (LISTEN)`, and
+  // remote.json carries `"bind": "0.0.0.0"` — so a token on the LAN reaches /api/turn.
+  // Now that the mode decides whether a writing run waits for a human, "auto-edit" from
+  // anywhere but loopback has to be refused. This is the assertion that must never be
+  // relaxed: if it fails, nothing else in this change is safe to ship.
+  const { effectiveMode } = require('../src/domain/server/daemon');
+  const from = (address) => ({ socket: { remoteAddress: address } });
+  for (const local of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    assert.equal(effectiveMode(from(local), 'auto'), 'auto', `${local} is the owner's own machine`);
+    assert.equal(effectiveMode(from(local), 'ask'), 'ask');
+  }
+  for (const remote of ['192.168.1.42', '10.0.0.9', '::ffff:192.168.1.42', undefined]) {
+    assert.equal(effectiveMode(from(remote), 'auto'), 'plan', `${remote} must not be able to buy an unattended write`);
+    assert.equal(effectiveMode(from(remote), 'ask'), 'plan');
+  }
+  assert.equal(effectiveMode(from('127.0.0.1'), 'nonsense'), 'plan', 'an unrecognised mode is the one that waits');
+  assert.equal(effectiveMode(from('127.0.0.1'), undefined), 'plan', 'and so is no mode at all');
+  // The phone's voice route names its mode explicitly rather than inheriting a default.
+  const daemonSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+  assert.match(daemonSource, /const turn = await engine\.turn\(heard\.text, \{ mode: 'plan' \}\)/,
+    'the mobile voice route used to say auto, which was safe only while every mode was flattened');
+  assert.match(daemonSource, /async _turn\(text, \{ sessionId = '', mode = 'plan' \}/,
+    'and the default for a caller that names no mode is the one that waits');
+
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only');
 })().catch((error) => { console.error(error); process.exit(1); });

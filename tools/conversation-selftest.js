@@ -250,5 +250,72 @@ function ollama(value) {
     fs.rmSync(userData, { recursive: true, force: true });
   }
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file');
+  // -------------------------------------------------------------------------
+  // "Is it actually working?" is not a question for a model (2026-08-04)
+  //
+  // The daemon hands the model the true numbers before every turn. Asked four times in
+  // one session whether anything was happening, it answered "順調に進んでいます" four
+  // times while two runs sat untouched for eleven hours. Re-measured the same day with
+  // those exact facts in the prompt: two questions, two fabrications. Prompting harder
+  // was measured too and traded the fabrication for a self-contradiction plus leaked
+  // JSON. So this class of question never reaches a model.
+  // -------------------------------------------------------------------------
+  {
+    const { isStatusQuestion, statusReport } = require('../src/domain/pi-core/status-answer');
+
+    // The four the owner actually typed, plus the shapes around them.
+    for (const asked of ['ほんとに動いてる？', '仕事できてる？', '進んでる？', 'さぎょうが遅くない？',
+      'どうなってる？', '何してるの', 'どこまで進んだ？', 'status', 'any progress?', 'is it still running']) {
+      assert.ok(isStatusQuestion(asked), `a status question must be intercepted: ${asked}`);
+    }
+
+    // The expensive mistake is the other one. Every line here is real work or real
+    // conversation and has to reach the model, including the ones that contain the very
+    // words the patterns above match.
+    for (const kept of ['予約フローの進捗管理機能を作ってください', '進捗バーを実装して',
+      'ページの表示が遅い問題を調査して', 'ログの読み込みが遅い原因を調べてほしい',
+      '作業工程を可視化する機能を追加して', 'こんにちは', '今日は寒いね',
+      'school フォルダを分析して改善点を洗い出してください']) {
+      assert.ok(!isStatusQuestion(kept), `this is not a status question and must not be stolen: ${kept}`);
+    }
+
+    const now = Date.parse('2026-08-04T03:00:00Z');
+    const waiting = statusReport({ running: [], waiting: [
+      { id: 'run-msdy0mb2', createdAt: '2026-08-04T00:51:51Z', total: 2, writes: false, stage: 'deliberation' },
+      { id: 'run-msdznc8o', createdAt: '2026-08-04T01:37:31Z', total: 2, writes: false, stage: 'deliberation' },
+    ] }, { text: 'ほんとに動いてる？', now });
+    assert.ok(/実行中 0 件/.test(waiting), 'the count comes first and it is the real one');
+    assert.ok(/動いているものはありません/.test(waiting), 'and it says so in words, not only in a number');
+    assert.ok(!/進んで|順調/.test(waiting), 'the sentence that started all of this can never be produced here');
+    assert.ok(/run-msdy0mb2/.test(waiting) && /run-msdznc8o/.test(waiting), 'both waiting runs are named, including the older one');
+    assert.ok(/2時間待機/.test(waiting), 'and how long they have been waiting, which is the fact that was missing');
+    assert.ok(/\/approve run-msdy0mb2/.test(waiting), 'with the exact command that starts the oldest of them');
+
+    const running = statusReport({ running: [{ id: 'run-x', startedAt: '2026-08-04T02:48:00Z', total: 4, done: 3, stage: 'execution' }], waiting: [] },
+      { text: '進んでる？', now });
+    assert.ok(/実行中 1 件/.test(running) && /3\/4/.test(running), 'real progress is reported as the fraction it is');
+    assert.ok(!/動いているものはありません/.test(running), 'and is not denied');
+
+    const idle = statusReport({ running: [], waiting: [] }, { text: 'any progress?', now });
+    assert.ok(/0 running/.test(idle), 'english question, english answer');
+    assert.ok(/Nothing has been asked of me yet/.test(idle), 'an empty machine says it is empty rather than inventing work');
+
+    // A run whose start time was never recorded gets no elapsed clause at all.
+    const unknown = statusReport({ running: [{ id: 'run-y', total: 2, done: 0 }], waiting: [] }, { text: '進んでる？', now });
+    assert.ok(!/経過/.test(unknown), 'a measurement we never took is left out, not guessed');
+  }
+
+  // The model's own JSON, leaking into the sentence the owner reads. Both of these are
+  // verbatim from the owner's session log of 2026-08-04.
+  {
+    const { normalize, clean } = require('../src/domain/pi-core/conversation-engine');
+    assert.equal(normalize({ kind: 'CHAT', reply: 'ご安心ください。”}title=' }, 'テスト').reply, 'ご安心ください。');
+    assert.equal(normalize({ kind: 'CHAT', reply: 'はい、進行中です。”、“まずはどの機能から？”}{' }, 'テスト').reply, 'はい、進行中です。');
+    assert.equal(normalize({ kind: 'CHAT', reply: '「A」と「B」の違いを説明します。' }, 'テスト').reply, '「A」と「B」の違いを説明します。',
+      'Japanese quotes prose with 「」 and that has to survive untouched');
+    assert.ok(clean('この JSON を直して: function f(){ return {"a":1} }').includes('{"a":1}'),
+      'and the owner\'s own pasted snippet is never cut — this runs on the model reply only');
+  }
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not');
 })().catch((error) => { console.error(error); process.exit(1); });

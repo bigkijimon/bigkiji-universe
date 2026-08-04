@@ -37,6 +37,7 @@ const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 const { ConversationEngine, normalizeKeepAlive } = require('../pi-core/conversation-engine');
+const { isStatusQuestion, statusReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 const stt = require('./speech-to-text');
@@ -55,6 +56,30 @@ const APP_VERSION = require('../../../package.json').version;
 // whisper/recordings locations for the mobile voice route
 const { createPathConfig } = require('../../core/path-config');
 const PATHS = createPathConfig({ appRoot: APP_ROOT });
+
+// The modes the coordinator understands. 'plan' and 'ask' both wait for the owner before
+// anything writes; only 'auto' releases without asking.
+const MODES = Object.freeze(['plan', 'ask', 'auto', 'manual']);
+
+/** True for a request that came from this machine's own loopback interface. */
+function isLoopback(req) {
+  const address = String(req?.socket?.remoteAddress || '');
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+/**
+ * The mode a request is allowed to run in.
+ *
+ * Loopback — the CLI and the Electron window, running as the owner on the owner's
+ * machine — gets what it asked for. Anything else gets 'plan' and waits for a human,
+ * because the daemon listens on 0.0.0.0 and a token on the LAN must not be able to buy
+ * unattended writes. Requesting a mode is not the same as being allowed one.
+ */
+function effectiveMode(req, requested) {
+  const wanted = String(requested || '');
+  if (!MODES.includes(wanted)) return 'plan';
+  return isLoopback(req) ? wanted : 'plan';
+}
 
 const EVENT_CHANNEL = Object.freeze({
   task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
@@ -278,8 +303,13 @@ class DaemonEngine extends EventEmitter {
       let saved = {}; try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
       this._settingsAt = mtime;
       this._settings = {
-        // executionMode stays pinned to 'plan' here: the daemon is the surface a phone
-        // talks to, and a mode that could skip approval must not be reachable from it.
+        // executionMode stays pinned to 'plan' — but read what it now defends.
+        //
+        // This is the *fallback* the coordinator uses when a submission names no valid
+        // mode, so pinning it here never stopped a caller that named one; it only ever
+        // held because _turn() flattened everything to 'plan' before this was consulted.
+        // The real boundary is effectiveMode() in the HTTP layer, which honours a mode
+        // only for loopback requests. This stays as the safe default underneath it.
         routing: { ...(saved.routing || {}), executionMode: 'plan', facilitationComplete: true },
         quality: { gate: 'strict', maxRepairCycles: 2, ...(saved.quality || {}) },
       };
@@ -317,7 +347,13 @@ class DaemonEngine extends EventEmitter {
     return result;
   }
 
-  async _turn(text, { sessionId = '', mode = 'auto' } = {}) {
+  // The default is 'plan', and it matters more than it looks.
+  //
+  // It was 'auto', which was safe only because the body of this method threw the mode
+  // away and submitted 'plan' regardless. With the mode honoured, that default would
+  // hand every caller who omitted the field a run that starts writing without asking.
+  // The safe value is the one that waits.
+  async _turn(text, { sessionId = '', mode = 'plan' } = {}) {
     const inspected = redactPayload(String(text || '').trim());
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_PROMPT');
     const clean = inspected.text; if (!clean) throw new Error('Conversation text is empty');
@@ -329,6 +365,14 @@ class DaemonEngine extends EventEmitter {
     this.publish('session', this.sessions.read(session.id));
     this.publish('conversation', { kind: 'turn_start', sessionId: session.id, model: this.conversation.model, text: clean.slice(0, 120), receivedAt: Date.now() });
     this.publish('pi', { kind: 'turn_start', model: this.conversation.model, text: clean.slice(0, 120) });
+    // "Is it actually working?" is answered by the coordinator, not by a model.
+    //
+    // See status-answer.js for the measurements. In short: the model is handed the true
+    // numbers and still reports progress that does not exist, and prompting it harder
+    // trades the fabrication for a self-contradiction. This is the one class of question
+    // where a wrong answer is worse than no answer, and it is also the one class we can
+    // answer exactly — so it never reaches the model at all.
+    if (isStatusQuestion(clean)) return this._statusTurn(session, clean);
     const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
@@ -346,7 +390,15 @@ class DaemonEngine extends EventEmitter {
       const goal = result.summary || clean;
       const promptSpec = { goal, constraints: result.requirements || [], steps: result.todos || [],
         acceptance: result.decisions || [], questions: result.openQuestions || [], ideaId: draft?.id };
-      run = this.coordinator.submit({ prompt: clean, promptSpec, cwd: this.workspace, mode: mode === 'manual' ? 'manual' : 'plan' });
+      // The mode reaches the coordinator now.
+      //
+      // This read `mode === 'manual' ? 'manual' : 'plan'`, which flattened every mode
+      // the CLI could send into 'plan' — so `/mode auto-edit` changed the prompt colour
+      // and nothing else, and the coordinator ignored the field anyway. Both halves are
+      // fixed; the value arriving here has already been narrowed to 'plan' for anything
+      // that is not a loopback request (see effectiveMode in the HTTP layer), which is
+      // what keeps a phone on the LAN from asking for auto-edit.
+      run = this.coordinator.submit({ prompt: clean, promptSpec, cwd: this.workspace, mode });
       // submit() emits 'run' synchronously, so onRun has already appended this run
       // to the session and published it. Doing it again here printed the same run
       // twice in the transcript and wrote it twice into the session file.
@@ -358,6 +410,28 @@ class DaemonEngine extends EventEmitter {
     this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('stats', { turn: { input: result.context?.estimatedTokens || 0, output: Math.max(1, Math.ceil(result.reply.length / 4)) },
       ms: result.latencyMs, provider: result.provider, model: result.model });
+    this.publish('session', this.sessions.read(session.id));
+    return output;
+  }
+
+  /**
+   * A status question, answered from the coordinator's snapshot.
+   *
+   * Same shape, same session append, same events as a model-served turn, so nothing
+   * downstream needs to know the difference — except `provider`, which says plainly
+   * that this came from measurement rather than from a model. It can never open an
+   * idea or a run: asking how things are going is not asking for work.
+   */
+  _statusTurn(session, text) {
+    const started = Date.now();
+    const reply = statusReport(this.statusFacts(), { text });
+    const turnId = `turn-${started.toString(36)}-status`;
+    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'CHAT', text: reply,
+      turnId, provider: 'bigkiji-state', latencyMs: Date.now() - started });
+    const output = { accepted: true, kind: 'CHAT', reply, sessionId: session.id, turnId,
+      provider: 'bigkiji-state', model: 'measured', latencyMs: Date.now() - started, degraded: false,
+      draft: null, run: null, requiresApproval: false };
+    this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('session', this.sessions.read(session.id));
     return output;
   }
@@ -527,7 +601,15 @@ class DaemonEngine extends EventEmitter {
     // AWAITING_OWNER_DIRECTIVE used to fall through this chain to the VERIFY arm and
     // report 92%, so a run that had not started looked nearly finished. It is a
     // waiting state, not a late one.
-    const PROGRESS = { PREFLIGHT: 20, AWAITING_OWNER_DIRECTIVE: 25, EXECUTE: 62, VERIFY: 92 };
+    // Waiting is 0, not 25.
+    //
+    // The comment above records this same number being moved down from 92 once already,
+    // and it stopped one step short: a run that has not started has executed nothing, so
+    // any figure above zero is a claim about work that does not exist. Measured
+    // 2026-08-04 — two runs held this at 25% for eleven hours while nothing ran, and the
+    // renderer's own fallback (renderer.js keywordProgress) was fixed in the same pass.
+    // Both had to move: a published number always wins over the fallback.
+    const PROGRESS = { PREFLIGHT: 20, AWAITING_OWNER_DIRECTIVE: 0, EXECUTE: 62, VERIFY: 92 };
     this.publish('phase', { sessionId, runId: run.id, phase, status: run.status, progress: PROGRESS[phase] ?? 20 });
     this.publish('run', run);
     if (sessionId) this.publish('session', this.sessions.read(sessionId));
@@ -545,10 +627,10 @@ class DaemonEngine extends EventEmitter {
     this.publish('phase', { sessionId: session.id, phase: 'PREFLIGHT', status: 'PRUNING', progress: 8 });
     this.publish('commentary', { source: 'PiAgent Engine', status: 'PRUNING', text: 'Inspecting sandbox memory and selecting only the required models.' });
     const run = this.coordinator.submit({ prompt: clean, promptSpec: { goal: clean, acceptance: [], decisions: [] }, cwd: this.workspace,
-      mode: mode === 'auto' ? 'auto' : 'plan' });
+      mode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : 'plan' });
     this.runSessions.set(run.id, session.id); // onRun already appended and published it
     if (run.status === 'AWAITING_APPROVAL') {
-      this.publish('phase', { sessionId: session.id, runId: run.id, phase: 'AWAITING_OWNER_DIRECTIVE', status: run.status, progress: 25 });
+      this.publish('phase', { sessionId: session.id, runId: run.id, phase: 'AWAITING_OWNER_DIRECTIVE', status: run.status, progress: 0 });
       this.publish('commentary', { source: 'BigKiji', status: 'SYNC', text: 'The change plan is ready. Accept, edit, reject, or send a custom directive.' });
     }
     return { accepted: true, sessionId: session.id, run };
@@ -742,6 +824,29 @@ class DaemonEngine extends EventEmitter {
     return reflection;
   }
 
+  /**
+   * The same state `facts()` narrates, as numbers instead of prose.
+   *
+   * `facts()` writes English sentences for a model to read. This writes the objects the
+   * deterministic status reply is assembled from, so that answer never passes through a
+   * language model and cannot come back as an assurance. Both read one snapshot.
+   * @returns {{running: object[], waiting: object[]}}
+   */
+  statusFacts() {
+    const runs = this.coordinator.snapshot();
+    const counted = (run) => {
+      const assignments = Array.isArray(run.assignments) ? run.assignments : [];
+      return { id: run.id, stage: run.stage || '', total: assignments.length,
+        done: assignments.filter((item) => String(item.status || '').toLowerCase() === 'completed').length,
+        writes: assignments.length ? assignments.some((item) => item.write !== false) : undefined,
+        createdAt: run.createdAt, startedAt: run.startedAt || run.updatedAt };
+    };
+    return {
+      running: runs.filter((run) => ['EXECUTING', 'REPAIRING', 'VERIFYING', 'PLANNING', 'DISPATCHING'].includes(run.status)).map(counted),
+      waiting: runs.filter((run) => run.status === 'AWAITING_APPROVAL').map(counted),
+    };
+  }
+
   facts() {
     const runs = this.coordinator.snapshot();
     const waiting = runs.filter((run) => run.status === 'AWAITING_APPROVAL');
@@ -857,7 +962,11 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
           if (heard.error) return json(res, 503, { error: heard.error });
           if (!stt.isMeaningful(heard.text)) return json(res, 200, { text: '', lang: heard.lang, skipped: 'noise' });
           engine.publish('commentary', { text: `🎙 STT(${heard.lang}): ${heard.text.slice(0, 120)}`, source: 'mobile' });
-          const turn = await engine.turn(heard.text, { mode: 'auto' });
+          // 'plan', explicitly. This route is the phone talking, and it used to say
+          // 'auto' — harmless only for as long as _turn() flattened every mode to
+          // 'plan'. Now that the mode is honoured, a voice note from a handset must
+          // not be the thing that authorises an unattended write.
+          const turn = await engine.turn(heard.text, { mode: 'plan' });
           return json(res, 200, { text: heard.text, lang: heard.lang, reply: turn?.reply || '' });
         } finally { try { fs.unlinkSync(wav); } catch (_) {} }
       }
@@ -965,12 +1074,26 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
         res.write(`event: state\ndata: ${JSON.stringify(engine.state())}\n\n`); clients.add(res);
         req.on('close', () => clients.delete(res)); return;
       }
+      // A mode that can skip approval is only honoured from this machine.
+      //
+      // The daemon binds 0.0.0.0 — measured with lsof on 2026-08-04, `*:8777 (LISTEN)`,
+      // and remote.json says `"bind": "0.0.0.0"` — so the phone is not the only thing on
+      // the LAN that can reach these routes with a token. `ownerSettings()` used to pin
+      // executionMode to 'plan' for exactly this reason, and the note there says so:
+      // "the daemon is the surface a phone talks to, and a mode that could skip approval
+      // must not be reachable from it."
+      //
+      // That pin is not removed. It is narrowed to what it was defending: requests from
+      // 127.0.0.1 / ::1 — the CLI and the Electron app, both running as the owner on the
+      // owner's machine — get the mode they asked for. Everything else is forced to
+      // 'plan' and waits for a human, exactly as before.
       if (req.method === 'POST' && url.pathname === '/api/prompt') {
         const body = await readJson(req);
-        return json(res, 202, engine.prompt(body.text, { mode: body.mode, sessionId: body.sessionId }));
+        return json(res, 202, engine.prompt(body.text, { mode: effectiveMode(req, body.mode), sessionId: body.sessionId }));
       }
       if (req.method === 'POST' && url.pathname === '/api/turn') {
-        const body = await readJson(req); return json(res, 200, await engine.turn(body.text, { mode: body.mode, sessionId: body.sessionId }));
+        const body = await readJson(req);
+        return json(res, 200, await engine.turn(body.text, { mode: effectiveMode(req, body.mode), sessionId: body.sessionId }));
       }
       if (req.method === 'GET' && url.pathname === '/api/ideas') return json(res, 200, { ideas: engine.ideas.list(Number(url.searchParams.get('limit') || 40)) });
       if (req.method === 'GET' && url.pathname === '/api/idea') {
@@ -1057,4 +1180,4 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
 
 if (require.main === module) startDaemon();
 
-module.exports = { DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT };
+module.exports = { DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES };

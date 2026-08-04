@@ -183,10 +183,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     const run = {
       id: runId(text), prompt: text, planHash, promptSpec, previewGame,
       cwd: previewGame && this.preview?.root ? this.preview.root : (cwd || this.taskRunner.cwd),
-      mode: ['plan', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
+      mode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
       status: 'PLANNING', leader: routing.sessionLeader === 'auto' || !routing.sessionLeader ? 'claude-code' : routing.sessionLeader,
       assignments: [], repairCycle: 0, maxRepairCycles: Number(settings.quality?.maxRepairCycles || 3),
-      revision: 1, requestedMode: ['plan', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
+      revision: 1, requestedMode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
       directiveKeys: [],
       quality: { gate: settings.quality?.gate || 'strict', makerCheckerSeparated: true, checks: [] },
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -210,9 +210,15 @@ class CoreExecutionCoordinator extends EventEmitter {
     return publicRun(run);
   }
 
-  // Independent proposals, read-only, one provider each. They are approved like any
-  // other work: a discussion still costs tokens, so it does not happen behind the
-  // owner's back.
+  // Independent proposals, read-only, one provider each.
+  //
+  // These used to wait for approval like any other work, on the reasoning that a
+  // discussion still costs tokens. Measured on 2026-08-04, that reasoning cost more
+  // than it saved: two of these sat for eleven hours, and because the CLI never said
+  // they were waiting, the owner spent the morning asking whether anything was
+  // happening. `write: false` on every one of them — they read and they argue, and
+  // then PiAgent merges what they said. The owner decided that day to let them run
+  // and to keep the gate for the writing. `_needsApproval()` is where that lives.
   _planDeliberation(run, lenses) {
     run.stage = 'deliberation';
     const used = new Set();
@@ -326,12 +332,63 @@ class CoreExecutionCoordinator extends EventEmitter {
     return new Set(Array.isArray(configured) && configured.length ? configured.map(String) : [...PAID_PROVIDERS]);
   }
 
+  /**
+   * Does this run have to stop and wait for the owner?
+   *
+   * Two rules, in this order.
+   *
+   * 1. Nothing that writes, no gate — whatever the mode. The line below used to read
+   *    "every mutation-capable run waits here" while the code waited for every run
+   *    full stop, and the gap between those two sentences is what stranded the owner:
+   *    on 2026-08-04 the two runs sitting untouched for eleven hours were a pair of
+   *    read-only lenses, `write: false` on both, blocked behind an approval prompt
+   *    that never reached a screen. A discussion does cost tokens, and the owner
+   *    decided that day that the cost of reading is worth paying without being asked
+   *    (see docs/v3 and the plan for that session). Reading changes nothing; it is
+   *    the writing that needs a human.
+   *
+   * 2. Something writes, and then the mode decides. `auto-edit` releases; `plan` and
+   *    `ask` wait. This is the first time the mode has had any effect at all — it was
+   *    collapsed to 'plan' at the daemon and ignored here, so `/mode` moved a colour
+   *    and nothing else.
+   *
+   * A run with no assignments always waits: an empty plan is a bug, not permission.
+   * @returns {boolean}
+   */
+  _needsApproval(run) {
+    const assignments = Array.isArray(run.assignments) ? run.assignments : [];
+    if (!assignments.length) return true;
+    if (assignments.every((item) => item.write === false)) return false;
+    return String(run.mode || 'plan') !== 'auto';
+  }
+
   _seal(run) {
     run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
     run.disclosureHash = aggregateDisclosureHash(run.disclosures);
-    // Owner policy is intentionally stronger than executionMode: every mutation-capable run waits here.
-    run.status = run.assignments.some((item) => item.status === 'blocked') ? 'SECURITY_BLOCKED' : 'AWAITING_APPROVAL';
+    // Security first, always. A blocked assignment is not released by any mode and not
+    // by the read-only rule either — the check below never sees it.
+    if (run.assignments.some((item) => item.status === 'blocked')) {
+      run.status = 'SECURITY_BLOCKED'; run.updatedAt = new Date().toISOString(); return;
+    }
+    run.status = 'AWAITING_APPROVAL';
     run.updatedAt = new Date().toISOString();
+    if (!this._needsApproval(run)) this._release(run);
+  }
+
+  /**
+   * Start the work. The single dispatch path — `approve()` reaches it after checking
+   * the hashes, `_seal()` reaches it when there is nothing to check.
+   */
+  _release(run) {
+    run.status = 'EXECUTING'; run.startedAt = run.startedAt || new Date().toISOString(); run.updatedAt = new Date().toISOString();
+    run.deadlineAt = new Date(new Date(run.startedAt).getTime() + RUN_BUDGET_MS).toISOString();
+    this._armDeadline(run);
+    this._emit(run, 'dispatch');
+    for (const assignment of run.assignments) {
+      const task = this.taskRunner.get(assignment.taskId);
+      if (task?.status === 'awaiting_approval') this.taskRunner.approve(task.id, { disclosureHash: task.disclosure?.disclosureHash });
+    }
+    return publicRun(run);
   }
 
   approve(id, expected = {}) {
@@ -343,15 +400,7 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (expected.idempotencyKey && run.directiveKeys.includes(String(expected.idempotencyKey))) return publicRun(run);
     if (run.status !== 'AWAITING_APPROVAL') return publicRun(run);
     if (expected.idempotencyKey) run.directiveKeys.push(String(expected.idempotencyKey));
-    run.status = 'EXECUTING'; run.startedAt = run.startedAt || new Date().toISOString(); run.updatedAt = new Date().toISOString();
-    run.deadlineAt = new Date(new Date(run.startedAt).getTime() + RUN_BUDGET_MS).toISOString();
-    this._armDeadline(run);
-    this._emit(run, 'dispatch');
-    for (const assignment of run.assignments) {
-      const task = this.taskRunner.get(assignment.taskId);
-      if (task?.status === 'awaiting_approval') this.taskRunner.approve(task.id, { disclosureHash: task.disclosure?.disclosureHash });
-    }
-    return publicRun(run);
+    return this._release(run);
   }
 
   abort(id) {

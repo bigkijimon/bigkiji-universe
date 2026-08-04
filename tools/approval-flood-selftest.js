@@ -99,6 +99,84 @@ ok('the approval gate is not what changed', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Which runs have to wait at all (2026-08-04)
+//
+// Two runs sat untouched for eleven hours and both were read-only: `write: false` on
+// every assignment, a pair of lenses that read the repository and argue about the
+// approach. They were held by a gate whose own comment said it existed for
+// "every mutation-capable run", and the code waited for every run full stop.
+//
+// The owner's decision that day: reading starts on its own, writing waits, and which of
+// plan / ask / auto-edit you are in decides how long. These assertions are the shape of
+// that decision — including the two that must never move, which are that a blocked run
+// is not released by anything and that approve() still refuses a stale hash.
+// ---------------------------------------------------------------------------
+
+// A runner whose planned tasks can be marked blocked, so the security path is reachable.
+const gateRunner = ({ blocked = false } = {}) => Object.assign(new EventEmitter(), {
+  approved: [],
+  get() { return { status: 'awaiting_approval', disclosure: { disclosureHash: 'h' } }; },
+  plan(spec) { return { id: spec.id, status: blocked ? 'blocked' : 'awaiting_approval', disclosure: { disclosureHash: 'h' } }; },
+  approve(id) { this.approved.push(id); },
+});
+const gateCoordinator = (options) => new CoreExecutionCoordinator({
+  taskRunner: gateRunner(options),
+  registry: new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'g-')) }),
+  available: () => true,
+});
+// Long enough and substantial enough that deliberation.needed() fires, which is what
+// produces the read-only stage the owner was stranded behind.
+// deliberation.needed() wants >= 120 characters as well as the substantial-work
+// vocabulary, so this fixture is long on purpose. The assertion below checks the stage
+// it produced rather than trusting the length.
+const RESEARCH = 'BKU V3 の conversation UI を再構築します。セッション履歴・作業工程のリアルタイム表示・成果物ウィンドウを設計し、既存実装を分析してください。'
+  + '既存のコードを読み、どこを再利用できるかを洗い出し、依存関係と検証方法まで整理してください。';
+
+ok('a read-only stage starts without asking', () => {
+  const c = gateCoordinator();
+  const run = c.submit({ prompt: RESEARCH, cwd: '/tmp', mode: 'plan' });
+  assert.equal(run.stage, 'deliberation', 'the fixture has to reach the lens stage or this proves nothing');
+  assert.ok(run.assignments.every((item) => item.write === false), 'and every lens must be read-only');
+  assert.equal(run.status, 'EXECUTING', 'reading changes nothing, so it does not wait — even in plan mode');
+});
+
+ok('a run that writes waits in plan and in ask', () => {
+  for (const mode of ['plan', 'ask']) {
+    const c = gateCoordinator();
+    const run = c.submit({ prompt: 'READMEのタイポを直してください', cwd: '/tmp', mode });
+    assert.equal(run.stage, 'execution');
+    assert.ok(run.assignments.some((item) => item.write !== false), `${mode}: the fixture must contain a writer`);
+    assert.equal(run.status, 'AWAITING_APPROVAL', `${mode} must stop before anything writes`);
+  }
+});
+
+ok('auto-edit releases the same writing run', () => {
+  const c = gateCoordinator();
+  const run = c.submit({ prompt: 'READMEのタイポを直してください', cwd: '/tmp', mode: 'auto' });
+  assert.equal(run.status, 'EXECUTING', 'this is the first time the mode has changed anything');
+  assert.ok(run.startedAt, 'and a released run is actually started, not just relabelled');
+});
+
+ok('a blocked run is released by nothing', () => {
+  for (const mode of ['plan', 'ask', 'auto']) {
+    const c = gateCoordinator({ blocked: true });
+    const run = c.submit({ prompt: 'READMEのタイポを直してください', cwd: '/tmp', mode });
+    assert.equal(run.status, 'SECURITY_BLOCKED', `${mode} must not talk its way past the sandbox`);
+    assert.ok(!run.startedAt, 'and nothing was dispatched');
+  }
+});
+
+ok('approve() still refuses what it always refused', () => {
+  const c = gateCoordinator();
+  const run = c.submit({ prompt: 'READMEのタイポを直してください', cwd: '/tmp', mode: 'plan' });
+  assert.throws(() => c.approve(run.id, { revision: run.revision + 1, planHash: run.planHash, disclosureHash: run.disclosureHash }), /STALE_RUN_REVISION/);
+  assert.throws(() => c.approve(run.id, { revision: run.revision, planHash: 'nope', disclosureHash: run.disclosureHash }), /STALE_PLAN_HASH/);
+  assert.throws(() => c.approve(run.id, { revision: run.revision, planHash: run.planHash, disclosureHash: '' }), /STALE_DISCLOSURE_HASH/);
+  const started = c.approve(run.id, { revision: run.revision, planHash: run.planHash, disclosureHash: run.disclosureHash });
+  assert.equal(started.status, 'EXECUTING', 'and the correct hashes still start it');
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`approval flood selftest: ${failures} FAILED`); process.exit(1); }
-console.log('approval flood selftest: PASS · one request waits once · different work stays separate · unanswered plans expire · every approval reachable · gate untouched');
+console.log('approval flood selftest: PASS · one request waits once · different work stays separate · unanswered plans expire · every approval reachable · reading starts itself · writing waits unless auto-edit · blocked stays blocked · stale hashes still refused');

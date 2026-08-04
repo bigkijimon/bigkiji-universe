@@ -72,7 +72,18 @@ function agentLabel(state = {}, C = themeFor('plan')) {
   const fleet = state?.models?.models || [];
   const busy = fleet.find((model) => BUSY_STATUS.has(String(model?.status || '').toUpperCase()));
   const model = busy || fleet.find((item) => item?.connected);
-  if (!model) return { text: DASH, colored: `${C.muted}${DASH}${C.reset}` };
+  // Nobody running is not nobody there.
+  //
+  // `connected` means "has a task running right now", so on an idle machine this row
+  // read `agent: —` with six providers authenticated and the conversation model loaded
+  // — measured 2026-08-04. A dash is what we print for a metric we never took, and we
+  // took this one: the model answering the owner's sentences is in the daemon's
+  // conversation snapshot. It is named, and marked idle, because both are true.
+  if (!model) {
+    const chatting = lower(state?.conversation?.model || '');
+    if (!chatting) return { text: DASH, colored: `${C.muted}${DASH}${C.reset}` };
+    return { text: `${chatting} ●idle`, colored: `${C.ink}${chatting}${C.reset} ${C.muted}●idle${C.reset}` };
+  }
   const status = String(model.status || 'IDLE').toUpperCase();
   const word = STATUS_WORD[status] || phrase(status);
   const tone = busy ? C.accent : status === 'ERROR' ? C.error : C.muted;
@@ -118,7 +129,16 @@ function buildFooter(options = {}) {
   const right = `${C.muted}${rightPlain}${C.reset}`;
   const headPlain = `${plain(icon)}  ${statusText}`;
   const room = inner - stringWidth(headPlain) - stringWidth(rightPlain) - 4;
-  const note = room > 6 ? clip(String(comment || '').trim() || DASH, room) : '';
+  // The comment slot is for something the status word does not already say.
+  //
+  // The daemon publishes the same value down two channels — `run.status` sets the phase
+  // and the relay writes it into `comment` — so a waiting run printed
+  // `awaiting approval  awaiting approval` and spent the widest slot on the row saying
+  // the same thing twice (measured 2026-08-04). If it echoes the status, it is dropped
+  // and the room goes back to the elapsed clock.
+  const said = String(comment || '').trim();
+  const echoes = said && phrase(said).toLowerCase() === phrase(statusText).toLowerCase();
+  const note = room > 6 ? clip(echoes ? DASH : (said || DASH), room) : '';
   const leftPlain = note ? `${headPlain}  ${note}` : headPlain;
   const left = `${C.brownLight}${icon}${C.reset}  ${busy ? C.accent : C.strong}${statusText}${C.reset}${note ? `  ${C.muted}${note}${C.reset}` : ''}`;
   lines.push(MARGIN + spread(left, right, inner, leftPlain, rightPlain).text);
@@ -164,10 +184,17 @@ function buildFooter(options = {}) {
   // while `shell:` kept all seventeen of its columns. Dropping a segment says "not
   // shown"; clipping a value says something false about it.
   //
-  // Order, least valuable first: `work` (repeated in the phase row above), then
-  // `shell` (constant for the life of the process), then `mode` (visible in the
-  // prompt colour). `agent` is never dropped — it is the only line that says which
-  // model is answering.
+  // Order, least valuable first: `shell` (this process's own pid, constant for its
+  // whole life), then `mode` (already visible in the prompt colour). `work` is the
+  // last thing to go and `agent` rides with it.
+  //
+  // `work` used to be first out, on the reasoning that the phase row above repeated
+  // it. The phase row does not repeat it — it carries the three chips and the meter,
+  // and neither of those says how many runs are waiting for the owner. Measured
+  // 2026-08-04: `work: 2 awaiting /approve` vanished below 75 columns, so in the
+  // owner's split pane the single actionable fact on the screen was the first thing
+  // dropped, and two runs sat waiting for eleven hours. The row that says what to do
+  // next outranks the row that says which shell you are in.
   const agent = agentLabel(state, C);
   const work = workSegment(state);
   // The mode gets the violet the rest of this palette did not have. Claude Code puts
@@ -177,15 +204,21 @@ function buildFooter(options = {}) {
   const shellSeg = { plain: `shell: ${lower(shellLabel())}`, colored: `${C.muted}shell:${C.reset} ${C.dim}${lower(shellLabel())}${C.reset}` };
   const agentSeg = { plain: `agent: ${agent.text}`, colored: `${C.muted}agent:${C.reset} ${agent.colored}` };
   const workSeg = work ? { plain: `work: ${work}`, colored: `${C.muted}work:${C.reset} ${C.info}${work}${C.reset}` } : null;
-  const candidates = [
-    [modeSeg, shellSeg, agentSeg, workSeg],
-    [modeSeg, shellSeg, agentSeg],
-    [modeSeg, agentSeg],
-    [agentSeg],
-  ];
+  const candidates = workSeg
+    ? [
+      [modeSeg, shellSeg, agentSeg, workSeg],
+      [modeSeg, agentSeg, workSeg],
+      [agentSeg, workSeg],
+      [workSeg],
+    ]
+    : [
+      [modeSeg, shellSeg, agentSeg],
+      [modeSeg, agentSeg],
+      [agentSeg],
+    ];
   const join = (segments, key) => segments.filter(Boolean).map((segment) => segment[key]).join('    ');
   const chosen = candidates.find((segments) => stringWidth(join(segments, 'plain')) <= inner);
-  lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([agentSeg], 'plain'), inner)));
+  lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([workSeg || agentSeg], 'plain'), inner)));
 
   return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };
 }
