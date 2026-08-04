@@ -302,6 +302,37 @@ assert.ok(/Open Console/.test(main), 'the tray menu offers it');
   // releases them without a gate. If one ever does reach this bar it must not be
   // labelled as writing.
   assert.equal(approvalPlan({ ...run, assignments: [{ taskId: 't1', write: false }] }).writes, false);
+
+  // One line per provider, not one per assignment. Disclosures are per assignment, so a
+  // run whose leader and ui roles both landed on codex printed `codex reads: …` twice
+  // with the same files — the owner saw it. A duplicated list in an approval prompt
+  // teaches the eye to skim the one thing it must not skim.
+  const doubled = approvalPlan({
+    ...run,
+    disclosures: [
+      { provider: 'codex', files: [{ path: 'src/a.js' }, { path: 'src/b.js' }] },
+      { provider: 'codex', files: [{ path: 'src/b.js' }, { path: 'src/c.js' }] },
+      { provider: 'glm', files: [{ path: 'src/d.js' }] },
+    ],
+  });
+  assert.equal(doubled.reads.length, 2, 'two codex assignments are one codex line');
+  const codex = doubled.reads.find((entry) => entry.provider === 'codex');
+  assert.deepEqual(codex.files, ['src/a.js', 'src/b.js', 'src/c.js'],
+    'the union, in first-seen order, with the file named twice named once');
+  assert.ok(doubled.reads.every((entry) => !('seen' in entry)),
+    'the dedupe Set is an implementation detail and must not cross into the payload');
+
+  // Groundwork that did not happen has to reach the bar. A run that never had a
+  // deliberation stage stays null rather than warning about an absence nobody planned.
+  assert.equal(approvalPlan(run).groundwork, null, 'no deliberation, no warning');
+  const blind = approvalPlan({
+    ...run,
+    groundwork: { lenses: 2, completed: 0, steps: 0,
+      failures: [{ lens: 'risk', title: '危険点', provider: 'glm', model: 'glm-4.7-flash', status: 'failed', reason: '429 rate-limit' }] },
+  });
+  assert.equal(blind.groundwork.completed, 0);
+  assert.equal(blind.groundwork.failures[0].reason, '429 rate-limit',
+    'the reason survives to the screen — a rate limit and a missing model are different problems');
 }
 
 // ---- raw provider output ----------------------------------------------------

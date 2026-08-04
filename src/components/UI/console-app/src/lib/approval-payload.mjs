@@ -94,11 +94,24 @@ export function approvalPlan(run) {
         status: flat(item.status),
       };
     }),
-    reads: (Array.isArray(run.disclosures) ? run.disclosures : []).map((disclosure) => ({
-      provider: flat(disclosure.provider).toLowerCase(),
-      files: (Array.isArray(disclosure.files) ? disclosure.files : [])
-        .filter((file) => file && file.path).map((file) => flat(file.path)),
-    })).filter((entry) => entry.files.length),
+    // One line per provider, not one per assignment.
+    //
+    // Disclosures are per assignment, so a run whose leader and ui roles both landed on
+    // codex printed `codex reads: …` twice with identical file lists — the owner saw it
+    // on screen. The same file named twice is not two facts, and a duplicated list in an
+    // approval prompt trains the eye to skim exactly the thing it must not skim.
+    reads: Object.values((Array.isArray(run.disclosures) ? run.disclosures : []).reduce((byProvider, disclosure) => {
+      const provider = flat(disclosure.provider).toLowerCase();
+      const files = (Array.isArray(disclosure.files) ? disclosure.files : [])
+        .filter((file) => file && file.path).map((file) => flat(file.path));
+      if (!files.length) return byProvider;
+      const entry = byProvider[provider] || (byProvider[provider] = { provider, files: [], seen: new Set() });
+      for (const file of files) {
+        if (entry.seen.has(file)) continue;
+        entry.seen.add(file); entry.files.push(file);
+      }
+      return byProvider;
+    }, {})).map(({ provider, files }) => ({ provider, files })),
   };
 }
 

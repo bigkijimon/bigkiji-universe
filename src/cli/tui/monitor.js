@@ -3,7 +3,7 @@
 const { TUIRenderer } = require('./renderer');
 const { CliPreferences } = require('../../domain/terminal/cli-preferences');
 const { normalizeMode } = require('../../domain/terminal/cli-theme');
-const { phrase } = require('./transcript');
+const { phrase, isRoutineToolNoise } = require('./transcript');
 
 class TUIMonitor {
   constructor({ client, input = process.stdin, output = process.stdout } = {}) {
@@ -29,7 +29,13 @@ class TUIMonitor {
       this.pushRunNotes(data);
     }
     else if (event === 'phase') this.state.phase = data.phase || data.status;
-    if (['commentary', 'tasklog', 'phase', 'run', 'session'].includes(event)) this.push(data.source || data.provider || event, data.text || data.status || data.phase || 'update');
+    if (['commentary', 'tasklog', 'phase', 'run', 'session'].includes(event)) {
+      const text = data.text || data.status || data.phase || 'update';
+      // npm telling the owner about npm is not news about the run. Errors are never
+      // filtered — see isRoutineToolNoise, which refuses to drop anything carrying a
+      // failure marker.
+      if (!(event === 'tasklog' && isRoutineToolNoise(text))) this.push(data.source || data.provider || event, text);
+    }
     this.renderer.draw(this.state, this.relay);
   }
   /**

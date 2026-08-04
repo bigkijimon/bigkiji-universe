@@ -557,6 +557,42 @@ const READS_SHOWN = 4;
  * meant to inform an approval turns into something nobody reads.
  * @returns {string[]}
  */
+// npm's routine chatter, which is not news about the task.
+//
+// The owner watched a run where `added 4 packages`, `2 packages are looking for
+// funding` and `npm notice New major version of npm available` took a dozen lines of
+// the live stream, in the same treatment as real output. None of it says anything
+// about the work; the funding and version notices are not even about this project.
+//
+// Only lines that carry NO information about the task. A real npm failure — `npm ERR!`,
+// a peer-dependency conflict, an audit finding with a severity — is not here and must
+// never be: silencing a failure is a worse defect than printing noise, and it is the
+// exact shape of the defect this whole session has been removing.
+const NPM_NOISE = [
+  /^added \d+ packages?(, and )?/i,
+  /^removed \d+ packages?/i,
+  /^changed \d+ packages?/i,
+  /^up to date(,| in )/i,
+  /^\d+ packages? (are|is) looking for funding/i,
+  /^\s*run `npm fund` for details/i,
+  /^found \d+ vulnerabilities$/i,
+  /^npm notice/i,
+  /^audited \d+ packages?/i,
+];
+
+/**
+ * True when a line is npm saying something about npm rather than about the task.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isRoutineToolNoise(text) {
+  const line = String(text || '').trim();
+  if (!line) return false;
+  // An error is never noise, whatever else it matches.
+  if (/npm ERR!|ERR!|\bERROR\b/.test(line)) return false;
+  return NPM_NOISE.some((pattern) => pattern.test(line));
+}
+
 function runReads(run = {}, options = {}) {
   const { mark = glyphs() } = options;
   const byFiles = new Map();
@@ -879,4 +915,5 @@ module.exports = {
   renderUserTurn, renderAssistantText, renderNote,
   parseUnifiedDiff, formatDiff, formatTaskList, looksLikeDiff,
   renderEvent, renderStatus, runAssignments, runBrief, runReads, shortRunId, FILE_TOOLS,
+  isRoutineToolNoise,
 };

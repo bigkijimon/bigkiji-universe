@@ -777,4 +777,48 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   assert.deepStrictEqual(litSteps('IDLE'), [], 'idle lights nothing rather than guessing');
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact`);
+{
+  // npm's chatter about npm took a dozen lines of the owner's live stream, in the same
+  // treatment as real tool output. The rule is narrow on purpose: drop only lines that
+  // say nothing about the task, and never drop a failure. Silencing an error would be a
+  // worse defect than the noise it replaced.
+  const { isRoutineToolNoise } = T;
+  const noise = [
+    'added 4 packages, and audited 512 packages in 2s',
+    'removed 12 packages',
+    'up to date, audited 300 packages in 1s',
+    '2 packages are looking for funding',
+    '  run `npm fund` for details',
+    'found 0 vulnerabilities',
+    'npm notice New major version of npm available! 10.9.0 -> 11.0.0',
+    'audited 512 packages in 3s',
+  ];
+  for (const line of noise) {
+    assert.ok(isRoutineToolNoise(line), `npm chatter must not reach the stream: ${line}`);
+    checks += 1;
+  }
+  const keep = [
+    'npm ERR! code ERESOLVE',
+    'found 3 vulnerabilities (1 moderate, 2 high)',
+    'npm notice',           // bare, but a real error marker below decides
+    'Tests: 4 failed, 58 passed',
+    'added 4 packages but ERR! something went wrong',
+    '',
+  ];
+  assert.ok(!isRoutineToolNoise('npm ERR! code ERESOLVE'), 'an npm failure is never noise');
+  assert.ok(!isRoutineToolNoise('found 3 vulnerabilities (1 moderate, 2 high)'),
+    'a vulnerability count with findings is a fact about the project, not chatter');
+  assert.ok(!isRoutineToolNoise('added 4 packages but ERR! something went wrong'),
+    'an error marker outranks every noise pattern');
+  assert.ok(!isRoutineToolNoise('Tests: 4 failed, 58 passed'), 'real output is untouched');
+  assert.ok(!isRoutineToolNoise(''), 'an empty line is not a match');
+  checks += keep.length;
+  // The filter is applied to tool logs only, and only in the live relay.
+  const monitor = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'cli', 'tui', 'monitor.js'), 'utf8');
+  assert.match(monitor, /event === 'tasklog' && isRoutineToolNoise\(text\)/,
+    'the filter is scoped to tool logs — a run or phase line is never dropped');
+  checks += 1;
+}
+
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never`);
