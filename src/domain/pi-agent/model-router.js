@@ -224,6 +224,25 @@ const QUOTA_PATTERN = new RegExp([
   'out of (?:credit|quota)',
   'billing details',
   '\\bbilling\\b[^\\n]{0,40}\\b(?:required|enable|upgrade)\\b',
+  // The phrase the two subscription CLIs actually send, which is neither the word
+  // "quota" nor a 429. Measured 2026-08-05 from a real run:
+  //
+  //   codex        {"type":"error","message":"You've hit your usage limit.
+  //                 Upgrade to Pro (https://chatgpt.com/explore/pro), visit …"}
+  //   claude-code  "Claude usage limit reached. Your limit will reset at …"
+  //
+  // classifyFailure returned '' for both, so the breaker never opened, the router
+  // kept assigning work to a provider that could not run it, and every retry cost a
+  // repair cycle — each of which asks the owner to approve again because the fallback
+  // is a different provider and therefore a different disclosure. The owner saw an
+  // approval loop; the cause was one unmatched sentence.
+  //
+  // Tight on purpose, like everything above it: the limit has to be a *usage* limit,
+  // not any of the ordinary sentences containing "limit" that a provider writes to
+  // stderr. The apostrophe is optional and may be straight or curly — a CLI that
+  // pretty-prints its own errors will send U+2019.
+  "\\busage limit\\b[^\\n]{0,40}\\b(?:reached|hit|exceeded|reset)\\b",
+  "\\b(?:hit|reached|exceeded)\\b[^\\n]{0,24}\\busage limit\\b",
 ].join('|'), 'i');
 
 // UNCHANGED from before the classification split, deliberately. pi-bridge.js:72

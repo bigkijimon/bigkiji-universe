@@ -133,15 +133,47 @@ Three things worth keeping:
   disappears when the run ends. Searching output for a status is the same mistake as
   asking a model for one — the answer is somewhere in the text whether or not it is true.
 
-### Open — for the owner
+### The approval loop — solved, and it was not the approval gate
 
-**A plan carrying an unanswered question can loop.** `run-mseo84pl` was approved twice
-(13:05 and 13:16). Both times its specialists ran and it returned to
-`AWAITING_APPROVAL` with the same goal and the same `⚠ unanswered: この高さに合わせる
-ことで視覚的な不自然さが発生する可能性はあるが、機能優先で進めるか？`. The CLI's inline
-choice is `1 approve · 2 reject · 3 later` — there is no way to **answer the question**,
-only to approve a plan that still contains it. Not touched here: the re-plan decision is
-coordinator logic, not presentation.
+`run-mseo84pl` was approved twice and came back to `AWAITING_APPROVAL` both times. The
+unanswered question in the plan was a red herring. The cause, read out of the run's own
+stderr:
+
+```
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro …"}   ← codex
+"Claude usage limit reached. Your limit will reset at …"                      ← claude-code
+```
+
+`classifyFailure` returned **`''`** for both — measured, not assumed. Neither phrasing
+contains the word `quota` or a `429`, and `QUOTA_PATTERN` had no pattern for the sentence
+the two subscription CLIs actually send. Unclassified means:
+
+1. the circuit breaker never opens on a spent allowance;
+2. the router keeps assigning work to a provider that cannot run it;
+3. every failure costs a **repair cycle** — and a repair cycle falls back to a different
+   provider, which is a different disclosure, which by contract asks the owner to
+   approve again.
+
+So the owner saw an approval loop. What it was, was one unmatched sentence. The repair
+cycle re-asking is **correct** and stays: a new provider must not inherit consent given
+for a different one.
+
+Fixed in `model-router.js` with the same tightness as everything else in that pattern —
+the limit has to be a *usage* limit, and `tools/circuit-breaker-selftest.js` now pins
+both the real messages and five ordinary sentences containing "limit" that must still be
+penalised.
+
+### Who may approve, and how the demo runs unattended
+
+Nothing new was built for this: `effectiveMode` already answers it. Loopback — the CLI
+and the Electron window, running as the owner on the owner's machine — gets the mode it
+asks for; anything arriving over the LAN is forced to `plan` and waits for a human,
+because the daemon listens on `0.0.0.0` and a token must not be able to buy unattended
+writes. **Requesting a mode is not the same as being allowed one.**
+
+For the demo the CLI is set to `auto-edit` (`~/BigKijiUniverse/state/cli-config.json`),
+which is the only mode that releases a writing run without stopping. **shift+tab** cycles
+`ask → auto-edit → plan`, so it is one keystroke back to asking.
 
 ## Answered since (2026-08-05)
 

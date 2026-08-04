@@ -79,8 +79,33 @@ ok('and a genuine throttle still is one, in the shapes providers actually send',
     ['insufficient_quota', 'quota'],
     ['Quota exceeded for metric generate_content_free_tier_requests', 'quota'],
     ['please check your plan and billing details', 'quota'],
+    // The two subscription CLIs say neither "quota" nor 429. Both went unclassified
+    // until 2026-08-05, so the breaker never opened on a spent allowance: the router
+    // kept assigning work to a provider that could not run it, and each retry cost a
+    // repair cycle — and a repair cycle asks the owner to approve again, because the
+    // fallback is a different provider and therefore a different disclosure. What the
+    // owner saw was an approval loop. What it was, was this sentence.
+    [`{"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro)"}`, 'quota'],
+    ['You’ve hit your usage limit. Upgrade to Pro', 'quota'],   // curly apostrophe
+    ['Claude usage limit reached. Your limit will reset at 3pm (Asia/Tokyo)', 'quota'],
+    ['5-hour usage limit reached', 'quota'],
   ];
   for (const [text, want] of throttles) assert.equal(classifyFailure(text), want, `"${text}"`);
+});
+ok('but "limit" on its own is still an ordinary failure', () => {
+  // The usage-limit patterns are the loosest thing in QUOTA_PATTERN, so they get the
+  // same adversarial treatment as `exceeded` and bare `429` above: a provider writes
+  // the word "limit" for a dozen ordinary reasons, and every one of them must still
+  // reach the penalty table.
+  for (const text of [
+    'RangeError: Invalid string length limit',
+    'ESLint: max-lines limit of 300 exceeded in game.js',
+    'the request exceeded the configured timeout limit of 30s',
+    'Error: heap limit reached while parsing',
+    'git: pack size limit reached',
+  ]) {
+    assert.equal(classifyFailure(text), '', `"${text}" is an ordinary failure, not a spent allowance`);
+  }
 });
 ok('the combined pattern still matches everything it used to', () => {
   // pi-bridge.js drives its local fallback off ERROR_PATTERN. Splitting the
