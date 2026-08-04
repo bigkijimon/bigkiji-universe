@@ -113,8 +113,8 @@ const merge = (list) => Object.assign({}, ...list.map((b) => b.vars));
 // Shared aliases first, then the theme's own values — the order the cascade applies, so
 // what is measured is what the browser resolves.
 const shared = merge(ALL.filter((b) => !inDark(b) && /^:root$/.test(b.selector)));
-const light = merge(ALL.filter((b) => !inDark(b) && /data-theme="light"/.test(b.selector)));
-const dark = merge(ALL.filter((b) => inDark(b) || /data-theme="dark"/.test(b.selector)));
+const light = merge(ALL.filter((b) => !inDark(b) && /data-color-scheme="light"/.test(b.selector)));
+const dark = merge(ALL.filter((b) => inDark(b) || /data-color-scheme="dark"/.test(b.selector)));
 
 const LIGHT = { ...shared, ...light };
 const DARK = { ...shared, ...dark };

@@ -585,7 +585,7 @@
   .task-stream-head code { margin-left: auto; color: var(--label); font-size: 11px; }
 
   /* 1ウィンドウ・ワークスペース: 左のキャンバス列は関係グラフ専用。 */
-  .stage aside, #flow { display:none!important; }
+  aside, #flow { display:none!important; }  /* aside は 2026-08-04 に .main-content へ移設。セレクタから .stage を外さないと再出現する */
   #canvasWrap { width:100%; }
   #taskPanel { position:static; inset:auto; width:auto; z-index:auto; flex:1; min-height:0; display:flex; flex-direction:column;
     padding:0; overflow:hidden; border:0; border-radius:0; background:var(--bg-1); }
@@ -692,6 +692,128 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
+
+  /* ══ PAPER ════════════════════════════════════════════════════════════════
+     The owner asked for the conversation to lose the cosmic feel and sit on
+     "a white that is not too white, like a notebook". Rather than rewrite the
+     several hundred rules below, this re-points the same variables they already
+     read, so one attribute flips the whole window. `data-theme` is set on <html>
+     by theme.js from appearance.theme; 'studio' keeps the original dark values.
+
+     Values are the light ramp measured off claude.ai and recorded in
+     console-app/src/styles/tokens.css — the console window and this one are the
+     same product and must not drift into two different whites.
+     ═════════════════════════════════════════════════════════════════════════ */
+  :root[data-theme="paper"] {
+    color-scheme: light;
+    --bg-0: #faf9f5; --bg-1: #ffffff; --bg-2: #f0eee6; --bg-3: #e9e6dc;
+    --hairline: rgba(41,38,27,.10); --hairline-2: rgba(41,38,27,.18);
+    --ink: #141413; --dim: #3d3a33; --label: #6b6759; --faint: #8a8477;
+    --accent: #c2600f; --danger: #b83a18;
+  }
+
+  /* ── Conversation first ───────────────────────────────────────────────────
+     The window used to be a telemetry dashboard with a text field at the
+     bottom: no thread, no replies, nowhere for an answer to land. Three layers
+     now share the workspace box —
+
+       z0  .stage      the synapse, as ground rather than subject
+       z1  #chatLayer  the conversation
+       z3  .main-content  everything numeric, off-screen until ⚡詳細
+
+     Nothing was deleted to do this. synapse.js reaches into #canvasWrap,
+     #fleetHud, #telemetryHud, #resultList, #eventlog and #bgField by id at
+     module scope, so every one of them is still here and still written to;
+     they are merely no longer the first thing the owner sees. ───────────── */
+  .workspace { position: relative; }
+  .stage { position: absolute; inset: 0; z-index: 0; }
+  /* Ink on paper, not light in space.
+     Two things had to be true and only the second was obvious:
+
+     1. The filter goes on the <canvas>, not on #canvasWrap. The wrapper also holds
+        the LOD chips and the WORKING cat, and fading the wrapper faded those into
+        ghosts — visible in the first screenshot of this layout.
+     2. invert() alone is not enough. The scene draws bright additive lines on a
+        near-black ground, so inverting gives dark lines on a near-WHITE ground,
+        and that ground paints over the paper as a flat grey slab. Measured, not
+        guessed: the first attempt covered the window in #d8d8d6.
+        `mix-blend-mode: multiply` is what removes it — multiplying by white is
+        the identity, so the inverted background disappears into the paper and
+        only the lines, which inverted to dark, are left as marks. */
+  :root[data-theme="paper"] #canvasWrap { background: transparent; }
+  :root[data-theme="paper"] #canvasWrap canvas {
+    filter: invert(1) hue-rotate(180deg) saturate(.5);
+    mix-blend-mode: multiply; opacity: .42; }
+  /* LOD controls are a tool for looking at the scene; they belong with the rest of
+     the instrumentation, not on top of a conversation. */
+  :root[data-theme="paper"] #views { display: none; }
+  body.detail-on #views { display: flex !important; }
+
+  #chatLayer { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column;
+    min-height: 0; pointer-events: none; }
+  #chatScroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+  #thread { max-width: 760px; margin: 0 auto; padding: 30px 26px 12px; }
+  .chat-empty { display: grid; place-content: center; min-height: 52vh; text-align: center; }
+  .chat-empty h2 { margin: 0 0 6px; font: 600 26px/1.25 var(--sans, system-ui); letter-spacing: -.02em; color: var(--ink); }
+  .chat-empty p { margin: 0; color: var(--faint); font-size: 14px; }
+  .turn { margin: 0 0 22px; }
+  .turn.owner { display: flex; justify-content: flex-end; }
+  .turn.owner .bubble { max-width: 78%; padding: 9px 15px; border-radius: 15px;
+    background: var(--bg-2); color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .turn .who { margin-bottom: 5px; color: var(--faint); font-size: 11.5px; }
+  .turn .md { color: var(--ink); font-size: 14px; line-height: 1.65; }
+  .turn .md p { margin: 0 0 11px; } .turn .md > :last-child { margin-bottom: 0; }
+  .turn .md code { background: var(--bg-2); padding: 1.5px 5px; border-radius: 5px; font-size: 12.5px; }
+  .turn .md pre { background: var(--bg-1); border: 1px solid var(--hairline);
+    border-radius: 10px; padding: 12px; overflow-x: auto; }
+  .turn .meta { margin-top: 9px; color: var(--faint); font-size: 11px; }
+  .turn.failed .who { color: var(--danger); }
+  .thinking { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
+  .thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: thinkPulse 1.15s var(--ease-out) infinite; }
+  @keyframes thinkPulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
+
+  /* ── ⚡詳細: everything numeric, one slide away ─────────────────────────── */
+  .main-content { position: absolute; inset: 0 0 0 auto; z-index: 3;
+    width: min(880px, 68vw); display: flex; flex-direction: column; min-height: 0;
+    background: var(--bg-0); border-left: 1px solid var(--hairline);
+    transform: translateX(101%); visibility: hidden;
+    transition: transform var(--dur-state) var(--ease-out), visibility 0s linear var(--dur-state); }
+  body.detail-on .main-content { transform: none; visibility: visible;
+    transition: transform var(--dur-state) var(--ease-out); }
+  .detail-head { flex: none; display: flex; align-items: baseline; gap: 10px;
+    padding: 10px 12px; border-bottom: 1px solid var(--hairline); }
+  .detail-head b { color: var(--ink); font: 600 13px var(--sans, system-ui); }
+  .detail-head span { flex: 1; color: var(--faint); font-size: 11px; }
+  .detail-head button { border: 0; background: none; color: var(--label); font-size: 16px; cursor: pointer;
+    width: 26px; height: 26px; border-radius: 50%; }
+  .detail-head button:hover { background: var(--bg-2); color: var(--ink); }
+  .detail-trigger { flex: none; border: 1px solid var(--hairline); background: var(--bg-1);
+    color: var(--dim); border-radius: 999px; padding: 4px 11px; cursor: pointer;
+    font: 600 11px var(--mono); letter-spacing: .04em;
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+  .detail-trigger:hover { background: var(--bg-2); color: var(--ink); }
+  .detail-trigger[aria-expanded="true"] { background: var(--bg-3); color: var(--ink); }
+  .detail-trigger:active { transform: scale(.97); }
+
+  /* The numbers the owner called hard to read stay reachable, not resident. */
+  header .stats { display: none; }
+  body.detail-on header .stats { display: inline-flex; }
+  .statusline { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px;
+    color: var(--dim); font: 11.5px var(--mono); }
+  .statusline i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .statusline.busy i { background: var(--accent); animation: thinkPulse 1.15s var(--ease-out) infinite; }
+  .statusline.attention i { background: var(--danger); }
+
+  /* ── The composer, as one pill ───────────────────────────────────────────── */
+  .cmdbar { position: relative; z-index: 2; justify-content: center; gap: 0;
+    padding: 8px 26px 16px; border-top: 0; background: transparent; }
+  .cmdbar .ci { display: none; }
+  #ccmd { max-width: 760px; height: 46px; padding: 0 15px; border-radius: 999px;
+    background: var(--bg-1); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; }
+  :root[data-theme="paper"] #ccmd { box-shadow: 0 1px 2px rgba(41,38,27,.05); }
+  .cmdbar .fchip { flex: none; margin-left: -46px; }
+  .cmdbar #liveBtn { margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -699,7 +821,8 @@
   <div class="app">
     <header>
       <span id="mark"></span>
-      <h1>BigKiji Universe</h1><span class="sub">Orchestration Synapse Canvas</span>
+      <h1>BigKiji</h1><span class="sub">Orchestration Synapse Canvas</span>
+      <span id="statusLine" class="statusline"><i></i><span id="statusText">待機中</span></span>
       <span class="stats">
         <span>ev/min<b id="sEvm">0</b></span><span class="sep"></span>
         <span>T+<b id="sUp">0:00</b></span><span class="sep"></span>
@@ -709,6 +832,8 @@
         <span>pi-tok<b id="sTok">0/0</b></span><span class="sep"></span>
         <b id="sMode">…</b><span class="sep"></span><b id="sBuild" title="Renderer build identity">BUILD·…</b>
       </span>
+      <button id="detailBtn" class="detail-trigger" type="button" aria-expanded="false"
+        title="数値・艦隊・ログ・ターミナル">⚡ 詳細</button>
       <button id="settingsBtn" class="settings-trigger" title="Voice and system settings (⌘,)">⌁</button>
     </header>
     <!-- 横並びワークスペース: 左＝シナプス映像 / 右＝ターミナル・カード -->
@@ -727,6 +852,9 @@
         <div id="popups"></div>
         <div id="tip"></div>
       </div>
+    </div>
+    <div class="main-content">
+      <div class="detail-head"><b>詳細</b><span>テレメトリ・艦隊・ログ・ターミナル</span><button id="detailClose" type="button" aria-label="閉じる">×</button></div>
       <div id="results">
         <div class="rhead"><span data-i18n="mission">MISSION OUTPUT</span><span data-i18n="missionSub">…</span></div>
         <div id="resultList"><div class="empty" data-i18n="missionEmpty">…</div></div>
@@ -746,8 +874,6 @@
         <div id="eventlog"></div>
         <button id="liveChip">↓ LIVE</button>
       </aside>
-    </div>
-    <div class="main-content">
       <div class="term-container">
         <div id="terminalResizeHandle" class="terminal-resize-handle" role="separator" tabindex="0"
           aria-label="Resize terminal pane width" aria-orientation="vertical"></div>
@@ -802,6 +928,16 @@
         </div><!-- /.term -->
       </div><!-- /.term-container -->
     </div><!-- /.main-content -->
+    <div id="chatLayer">
+      <div id="chatScroll">
+        <div id="thread">
+          <div id="chatEmpty" class="chat-empty">
+            <h2>こんにちは</h2>
+            <p>何をしましょうか？</p>
+          </div>
+        </div>
+      </div>
+    </div>
     </div><!-- /.workspace -->
     <div id="flow"></div>
     <div id="fileDetailPopup" role="dialog" aria-live="polite"></div>
@@ -1013,6 +1149,142 @@
     import { mountAudioWaveField } from '../../domain/3d-canvas/components/audio-wave-field.js';
     window.bkAudioWave = mountAudioWaveField(document.getElementById('canvasWrap'));
   </script>
+  <script src="./markdown.js"></script>
+  <script>
+  // The conversation this window never had.
+  //
+  // Until 2026-08-04 the Canvas had an input box and nowhere for an answer to
+  // go: #ccmd handed the text to piPrompt() in synapse.js and the reply was
+  // never rendered anywhere. The owner asked three times for a conversational
+  // app and was looking at a telemetry dashboard each time.
+  //
+  // Nothing new is invented here. The turn contract is the one App.jsx already
+  // uses — conversationTurn() resolves to { reply, model, degraded, error } —
+  // and the markup comes from BKMarkdown, the same renderer the console window
+  // uses. This is the missing surface, not a second implementation.
+  (function () {
+    const thread = document.getElementById('thread');
+    const scroll = document.getElementById('chatScroll');
+    const empty = document.getElementById('chatEmpty');
+    const input = document.getElementById('ccmd');
+    const statusText = document.getElementById('statusText');
+    const statusLine = document.getElementById('statusLine');
+    if (!thread || !input) return;
+
+    const atBottom = () => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
+    function append(node) {
+      const stick = atBottom();
+      if (empty && empty.parentNode) empty.remove();
+      thread.appendChild(node);
+      if (stick) scroll.scrollTop = scroll.scrollHeight;
+      return node;
+    }
+    function el(cls, html) {
+      const node = document.createElement('div');
+      node.className = cls;
+      if (html != null) node.innerHTML = html;
+      return node;
+    }
+    // Owner text is never parsed as markup: it goes in as a text node.
+    function ownerTurn(text) {
+      const turn = el('turn owner');
+      const bubble = el('bubble');
+      bubble.textContent = text;
+      turn.appendChild(bubble);
+      return append(turn);
+    }
+    function pendingTurn() {
+      const turn = el('turn agent');
+      turn.innerHTML = '<div class="who">BigKiji</div><div class="thinking"><i></i><span>考えています…</span></div>';
+      return append(turn);
+    }
+    function settle(node, turn, ms) {
+      const failed = !!turn.error;
+      node.className = 'turn agent' + (failed ? ' failed' : '');
+      const who = failed ? 'BigKiji · 応答できませんでした' : 'BigKiji';
+      const body = failed
+        ? `<div class="md"></div>`
+        : `<div class="md">${window.BKMarkdown ? window.BKMarkdown.renderMarkdown(turn.reply || '') : ''}</div>`;
+      node.innerHTML = `<div class="who">${who}</div>${body}`;
+      if (failed) node.querySelector('.md').textContent = String(turn.error);
+      const bits = [];
+      if (turn.model) bits.push(turn.model);
+      if (turn.degraded) bits.push('fallback');
+      if (Number.isFinite(ms)) bits.push(`${(ms / 1000).toFixed(1)}s`);
+      if (bits.length) node.appendChild(el('meta', '')).textContent = bits.join(' · ');
+      scroll.scrollTop = scroll.scrollHeight;
+    }
+    function setStatus(text, state) {
+      if (statusText) statusText.textContent = text;
+      if (statusLine) statusLine.className = 'statusline' + (state ? ' ' + state : '');
+    }
+
+    let busy = false;
+    async function send(text) {
+      if (busy) return;
+      busy = true;
+      ownerTurn(text);
+      const node = pendingTurn();
+      setStatus('応答中', 'busy');
+      const began = Date.now();
+      try {
+        const turn = (await window.bigkiji.conversationTurn(text, {})) || {};
+        settle(node, turn, Date.now() - began);
+      } catch (error) {
+        settle(node, { error: String((error && error.message) || error) }, Date.now() - began);
+      } finally {
+        busy = false;
+        setStatus('待機中', '');
+      }
+    }
+    window.bkSendConversation = send;
+
+    // synapse.js owns #ccmd's keydown for /media, /parallel and the shell
+    // destination. Rather than fight it for the element, this listens in the
+    // capture phase and only claims the plain-AI case, leaving every command
+    // form exactly where it was.
+    input.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key !== 'Enter') return;
+      const value = input.value.trim();
+      if (!value) return;
+      if (/^\/(media|parallel)\s+/i.test(value)) return;   // synapse.js handles these
+      if (document.getElementById('piBtn')?.classList.contains('on') !== true) return; // shell mode
+      // stopImmediatePropagation, not stopPropagation: synapse.js's own keydown
+      // listener is on this same element, and stopPropagation does not stop
+      // listeners on the node the event targets. Only this ordering — classic
+      // script before deferred module — makes ours the one that runs first.
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      input.value = '';
+      send(value);
+    }, true);
+
+    // ⚡詳細 — the numbers, on request rather than always.
+    const detailBtn = document.getElementById('detailBtn');
+    const detailClose = document.getElementById('detailClose');
+    function setDetail(on) {
+      document.body.classList.toggle('detail-on', on);
+      if (detailBtn) detailBtn.setAttribute('aria-expanded', String(on));
+    }
+    detailBtn?.addEventListener('click', () => setDetail(!document.body.classList.contains('detail-on')));
+    detailClose?.addEventListener('click', () => setDetail(false));
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && document.body.classList.contains('detail-on')) setDetail(false);
+    });
+
+    // One honest line instead of six gauges: what is actually running.
+    window.bigkiji?.onRunEvent?.((run) => {
+      if (!run) return;
+      const status = String(run.status || '');
+      if (/AWAITING/i.test(status)) setStatus('承認待ち', 'attention');
+      else if (/RUNNING|EXECUT/i.test(status)) setStatus('実行中', 'busy');
+      else if (!busy) setStatus('待機中', '');
+    });
+  }());
+  </script>
+
+  <script src="./theme.js"></script>
   <script type="module" src="../../domain/3d-canvas/components/synapse.js"></script>
 </body>
 </html>

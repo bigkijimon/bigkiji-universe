@@ -12,6 +12,9 @@ import { startIpc } from './lib/ipc.js';
 // settings-modal.js does the same for window.BKSettings. Two windows must never grow two
 // different settings dialogs.
 import '../../markdown.js';
+// Sets data-theme on <html> and keeps it in step with the setting. Same file the tray
+// and the canvas load with <script src>, so all three windows cannot disagree.
+import '../../theme.js';
 import '../../settings-modal.js';
 import '../../settings-modal.css';
 import '@xterm/xterm/css/xterm.css';

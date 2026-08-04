@@ -15,17 +15,23 @@
    dark) live inside each theme block.
 
    Theme switching: the OS/nativeTheme drives prefers-color-scheme, so Auto is
-   free. :root[data-theme="light"/"dark"] repeats the same values as an escape
-   hatch for future per-window overrides — attribute specificity (0,2,0) beats
+   free. :root[data-color-scheme="light"/"dark"] repeats the same values as an
+   escape hatch for per-window overrides — attribute specificity (0,2,0) beats
    the media-query :root (0,1,0) regardless of source order.
 
-   ⚠ The dark values appear twice (media query + [data-theme="dark"]).
+   ⚠ The attribute is data-COLOR-SCHEME, not data-theme. `data-theme` carries the
+     design language (paper | studio, settings-store.js THEMES) and is set by
+     theme.js on <html> for all three windows; these two blocks answer the
+     different question of light vs dark. They were both called data-theme until
+     2026-08-04, which would have made one silently shadow the other.
+
+   ⚠ The dark values appear twice (media query + [data-color-scheme="dark"]).
      Keep the two blocks byte-identical when editing.
    ========================================================================== */
 
 /* ---------- LIGHT (default + forced) ---------- */
 :root,
-:root[data-theme="light"] {
+:root[data-color-scheme="light"] {
   /* Without this, <select> popups and native scroll UI stay dark. */
   color-scheme: light;
 
@@ -135,7 +141,7 @@
 }
 
 /* ---------- DARK (forced; byte-identical to the media block above) ---------- */
-:root[data-theme="dark"] {
+:root[data-color-scheme="dark"] {
   color-scheme: dark;
 
   --bg-000: 60 2.1% 18.4%;

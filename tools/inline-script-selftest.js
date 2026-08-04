@@ -93,6 +93,29 @@ for (const file of htmlFiles) {
   });
 }
 
+// The external scripts those windows load, checked the same way.
+//
+// The inline blocks above are only half of what ships. settings-modal.js alone is 50 KB
+// of nested template literals building HTML — one stray backtick and the settings window
+// is as dead as the tray was, in exactly the same silent way, and nothing was parsing it.
+// `check:imports` resolves relative imports; it does not parse.
+{
+  const external = fs.readdirSync(UI).filter((name) => name.endsWith('.js')).sort();
+  ok(`the ${external.length} external UI scripts parse`, () => {
+    assert.ok(external.length >= 5, `expected the shipped UI scripts, found ${external.join(', ') || 'none'}`);
+    assert.ok(external.includes('settings-modal.js'), 'settings-modal.js is the biggest one and the reason for this check');
+    for (const name of external) {
+      const code = fs.readFileSync(path.join(UI, name), 'utf8');
+      // Same split as the inline blocks: these files are a mix of classic scripts loaded
+      // with <script src> and ES modules imported by other modules, and `export` is legal
+      // in exactly one of the two grammars.
+      const type = /^\s*(?:export|import)\b/m.test(code) ? 'module' : 'text/javascript';
+      try { parseOrThrow({ code, type }, name); }
+      catch (error) { throw new Error(`${name}: ${error.message}`); }
+    }
+  });
+}
+
 // The specific shape that shipped, as a guard on the extractor itself: if the regex
 // above ever stops finding script bodies, every check turns into a no-op and this
 // catches that rather than the next outage doing it.

@@ -11,6 +11,26 @@ const PI_AGENT_NAME_FALLBACK = 'PiAgent';
 const RENDER_PRIORITIES = ['auto', 'performance', 'graphics'];
 // 'auto' maps to nativeTheme.themeSource = 'system'; the other two force it either way.
 const COLOR_SCHEMES = ['auto', 'light', 'dark'];
+// The design languages the owner can pick between.
+//
+// 'studio' is the original: near-black ground, emerald glow, the 3D scene in front.
+// 'paper' is the new default — the owner asked on 2026-08-04 for the conversation surface
+// to lose the cosmic feel and sit on "a white that is not too white, like a notebook".
+// Its ground is #faf9f5, the light bg-100 already measured off claude.ai and recorded in
+// console-app/src/styles/tokens.css.
+//
+// Two, not three. A 'slate' entry was drafted here and removed: it would have been
+// paper's dark ramp under a second name, and the comment on `colorScheme` below already
+// states the rule — the design language and whether it is light or dark are two different
+// questions. Paper with colorScheme 'dark' IS the warm dark version; naming it separately
+// would give the owner two controls that partly mean the same thing.
+//
+// Naming them here rather than in CSS is what lets the setting be validated. Until now
+// there was a Theme <select> in the settings window with one option in it, and
+// normalize() overwrote whatever it was given with 'studio' — so the control was decor.
+const THEMES = ['paper', 'studio'];
+// Bumped when the default theme changes and saved files must be moved with it.
+const THEME_MIGRATION = 1;
 // Sound-effect buses. Each one is an independent gain node in the renderer audio engine.
 const SFX_CATEGORIES = ['ui', 'alert', 'ambient'];
 
@@ -84,9 +104,11 @@ const DEFAULTS = Object.freeze({
     viewport: 'desktop',
   },
   appearance: {
-    theme: 'studio',
-    // Which design language ('studio') and whether it is light or dark are two different
-    // questions, so they are two different settings rather than one list of four themes.
+    // Paper, not studio. The owner looked at the app on 2026-08-04 and asked for the
+    // conversation surface to drop the cosmic look entirely.
+    theme: 'paper',
+    // Which design language and whether it is light or dark are two different questions,
+    // so they are two different settings rather than one list of six themes.
     // 'auto' follows the OS, which is what nativeTheme.themeSource = 'system' means.
     colorScheme: 'auto',
     // Console session drawer. Open by default — there is already a real history to show.
@@ -96,6 +118,10 @@ const DEFAULTS = Object.freeze({
     reducedGlow: true,
     reduceMotion: false,
     renderPriority: 'auto',
+    // themeMigration is deliberately NOT defaulted here. _normalize() reads it from the
+    // merged object, so a value in DEFAULTS would make every saved file look
+    // already-migrated and the move to Paper would reach nobody. It is stamped on save
+    // instead; absent means "not yet migrated", which is exactly true of an old file.
   },
   piAgent: {
     displayName: PI_AGENT_NAME_FALLBACK,
@@ -242,7 +268,23 @@ class SettingsStore {
     next.preview.preferredPort = clamp(next.preview.preferredPort, 1024, 65500, 4317);
     next.preview.enabled = next.preview.enabled !== false; next.preview.liveReload = next.preview.liveReload !== false;
     next.preview.viewport = ['desktop', 'tablet', 'mobile'].includes(next.preview.viewport) ? next.preview.viewport : 'desktop';
-    next.appearance.theme = 'studio';
+    // Validated, not pinned. This line used to read `= 'studio'` — it discarded whatever
+    // was saved, so the Theme control could never change anything and a saved choice
+    // never survived a restart.
+    // Changing the default is not enough to reach a machine that has already run.
+    //
+    // Every existing settings.json holds `"theme": "studio"`, because the line this
+    // replaced wrote it on every save. None of those is a choice — the <select> had one
+    // option — so leaving them alone would ship Paper to nobody. This moves a saved
+    // 'studio' across once and stamps a flag, after which the owner's pick is honoured
+    // forever, including picking Studio back. Same shape as the mode migration in
+    // cli-preferences.js and RETIRED_CHAT_MODELS above; the alternative is the failure
+    // we already had this week, where a new default never arrived.
+    if (Number(next.appearance.themeMigration || 0) < THEME_MIGRATION && next.appearance.theme === 'studio') {
+      next.appearance.theme = 'paper';
+    }
+    next.appearance.themeMigration = THEME_MIGRATION;
+    next.appearance.theme = THEMES.includes(next.appearance.theme) ? next.appearance.theme : 'paper';
     next.appearance.colorScheme = COLOR_SCHEMES.includes(next.appearance.colorScheme)
       ? next.appearance.colorScheme : 'auto';
     next.appearance.consoleSidebar = next.appearance.consoleSidebar !== false;
@@ -296,4 +338,4 @@ class SettingsStore {
   }
 }
 
-module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, COLOR_SCHEMES, SFX_CATEGORIES, normalizePaths };
+module.exports = { SettingsStore, DEFAULTS, PI_AGENT_NAME_MAX, PI_AGENT_NAME_FALLBACK, RENDER_PRIORITIES, COLOR_SCHEMES, THEMES, SFX_CATEGORIES, normalizePaths };

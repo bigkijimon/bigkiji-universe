@@ -1,0 +1,44 @@
+# Design decisions — accumulated
+
+The owner asked (2026-08-04, while away) that minor decisions be settled by discussing
+them with the local Pi rather than waiting, and that every one be **recorded here** so the
+data accumulates and real runs get more accurate instead of re-deciding the same thing.
+
+Rules for this file:
+- One row per decision. **Who decided** is part of the record: `owner` outranks `pi`,
+  and `pi` decisions are provisional — the owner can overturn any of them cheaply.
+- Anything with a security, money, or data-loss consequence is **not** minor and does not
+  belong here; it waits for the owner.
+- A decision with no reason is not a decision. The reason column is required.
+
+| # | Date | Decision | Who | Reason |
+|---|---|---|---|---|
+| 1 | 2026-08-04 | Canvas becomes the conversation window; Console is retired **last**, only after Canvas proves it carries approvals, work steps, artifacts and the terminal | owner | One window. Two surfaces that both talk is what made the app confusing |
+| 2 | 2026-08-04 | The menu-bar window stays resident — no hide-on-blur — and remembers where it was dragged | owner | A window that vanishes when you click elsewhere cannot be moved anywhere useful |
+| 3 | 2026-08-04 | Telemetry (`ev/min`, fleet, relay, logs) goes behind a ⚡詳細 drawer, default off | owner | "数字や表示が多くてわかりにくい" |
+| 4 | 2026-08-04 | Default theme is `paper` (#faf9f5), modern and simple; `studio` (the cosmic look) is **kept** as a choice, not deleted | owner | Owner asked to drop the space feel from the conversation surface, not to destroy the existing design |
+| 5 | 2026-08-04 | Themes are **two**, not three. `slate` was drafted and dropped | claude | It was `paper` + `colorScheme: dark` under a second name. settings-store.js's own comment already says design language and light/dark are two different questions |
+| 6 | 2026-08-04 | The light/dark escape hatch attribute is renamed `data-color-scheme`; `data-theme` now carries the design language | claude | Both were called `data-theme`. Latent collision — one would have silently shadowed the other |
+| 7 | 2026-08-04 | With an empty conversation, the particle field stays **fully visible at low opacity** rather than hiding until first message | pi | An empty thread over a still field reads as sterile; a faint field is depth, not distraction. Provisional — overturn freely |
+| 8 | 2026-08-04 | Particle "gravity" must be **additive on top of** the deterministic hash-seeded position, bounded (lerp ≤ 0.3) | docs/v3/06-rendering.md §3.3 | Deterministic placement is what gives the owner spatial memory of their own vault. Replacing it makes the universe unrecognisable between runs |
+| 9 | 2026-08-04 | Particle motion moves into the **vertex shader**; the per-frame JS loop goes | claude | `synapse.js:424-429` integrates every file on the CPU every frame. Stardust already does it on the GPU for 30k points, so the pattern exists in-repo |
+| 10 | 2026-08-04 | The particle design knowledge goes into `product-design/references/particle-fields.md`, not a new skill | claude | The owner's own rule, recorded in `skill-registry.js` CATEGORIES: one skill per category, and UI work folds into the big existing one |
+
+## Open, waiting on the owner
+
+| Question | Why it is not minor |
+|---|---|
+| Does the synapse show at all on the paper theme, or only on studio? | Needs a screenshot judgement. If the inverted field reads as dirt rather than a faint line drawing, the answer changes the whole look of the default theme |
+| Should a transient `model-unavailable` mark the model unusable in the capability registry? | Get it wrong and one GPU hiccup permanently blacklists the best local model |
+
+## Measured facts worth not rediscovering
+
+- `pi` accepts both `qwen3.5:35b-a3b` and `ollama/qwen3.5:35b-a3b`. The `Model not found`
+  seen at 13:28 was **transient**, not a name bug — an early diagnosis that said otherwise
+  was wrong and was reverted.
+- BKU's skill registry indexes **119** skills. Selection runs on SKILL.md frontmatter, not
+  on `references/*`, so knowledge added as a reference file needs its trigger words added
+  to the description or it is never selected.
+- Short Japanese UI queries select **nothing**: 「ボタンのホバーを磨きたい」 → no skill,
+  while the same request with more words selects `product-design`. `pruneCommonTerms()`
+  leaves that skill only 16 distinguishing grams. Not yet fixed.
