@@ -330,6 +330,74 @@ const WebSocket = require('ws');
     assert.ok(!/state your own position/.test(without), 'a run with nothing open must not be given a question list');
   }
 
+  // Self-repair: it asks why, it does not stop to ask permission, and it remembers.
+  {
+    const { CoreExecutionCoordinator } = require('../src/domain/pi-agent/core-execution-coordinator');
+    const { FailureMemory, signatureOf } = require('../src/domain/pi-agent/failure-memory');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'core-execution-coordinator.js'), 'utf8');
+
+    // A. The repair ran the whole loop and then stopped for approval in every mode,
+    // including the hands-off one — which is why an unattended run never finished.
+    assert.match(source, /REPAIR_RUNS_UNATTENDED/, 'the decision has to be one word to find and to reverse');
+    assert.match(source, /this\._emit\(run, 'repair-released'\); this\._release\(run\)/,
+      'a released repair has to actually be released');
+    assert.ok(!/run\.status = 'AWAITING_APPROVAL'; this\._emit\(run, 'repair-awaiting-approval'\); return;/.test(source),
+      'and must not still claim to be waiting on the way past');
+
+    // B. The diagnosis is read-only and belongs to the assignment it explains. A repair
+    // that could acquire write permission the original plan lacked would be an
+    // escalation, not a repair.
+    const planned = [];
+    const coordinator = Object.create(CoreExecutionCoordinator.prototype);
+    coordinator.taskRunner = {
+      get: (id) => (id === 'task-a' ? { failureReason: 'quota-exhausted', error: 'gemini quota spent' } : null),
+      plan: (task) => { planned.push(task); return { ...task, status: 'queued', disclosure: {} }; },
+    };
+    coordinator.taskToRun = new Map();
+    coordinator.failures = new FailureMemory({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fm-')), 'm.json') });
+    coordinator._pick = () => 'qwen';
+    const run = { id: 'run-1', prompt: 'build a browser game', cwd: process.cwd(), repairCycle: 0, planHash: 'h', assignments: [] };
+    const failing = { taskId: 'task-a', role: 'leader', provider: 'gemini', model: 'gemini-x', write: true, status: 'failed' };
+    run.assignments.push(failing);
+    assert.equal(coordinator._planDiagnosis(run, failing), true);
+    assert.equal(planned.length, 1);
+    assert.equal(planned[0].metadata.write, false, 'a diagnosis may never be given write permission');
+    assert.equal(planned[0].metadata.kind, 'diagnosis');
+    assert.equal(planned[0].metadata.diagnosisFor, 'task-a', 'it has to be attributable to what it explains');
+    assert.match(planned[0].prompt, /Classified as: quota-exhausted/, 'the classification was computed and never used before');
+    assert.match(planned[0].prompt, /read-only\. Do not edit files/);
+    assert.match(planned[0].prompt, /CAUSE:/); assert.match(planned[0].prompt, /FIX:/);
+    assert.equal(run.assignments.at(-1).kind, 'diagnosis');
+    assert.equal(run.assignments.at(-1).write, false);
+    assert.equal(coordinator._planDiagnosis(run, failing), false, 'asked once, not once per cycle');
+
+    // The answer has to reach the retry, or asking was theatre.
+    assert.match(source, /Diagnosis: \$\{assignment\.diagnosis\.cause\}/, 'the repair prompt carries the cause');
+    assert.match(source, /Smallest fix: \$\{assignment\.diagnosis\.fix\}/);
+
+    // A diagnosis is not a deliverable: it must not satisfy a quality check, and a
+    // failed diagnosis must not become another thing to repair.
+    assert.match(source, /item\.kind !== 'diagnosis' && item\.status === 'completed'/, 'maker-checker excludes diagnoses');
+    assert.match(source, /item\.status !== 'completed' && item\.kind !== 'diagnosis'/, 'and so does the failed set');
+
+    // D. The memory learns, and can be disappointed.
+    const memory = coordinator.failures;
+    const sig = signatureOf({ reason: 'quota-exhausted', check: 'leader' });
+    assert.equal(memory.lookup({ signature: sig }), null, 'nothing is known before anything happens');
+    memory.record({ signature: sig, prompt: 'build a browser game', cause: 'quota spent', fix: 'route to glm first', runId: 'run-1' });
+    const known = memory.lookup({ signature: sig });
+    assert.equal(known.fix, 'route to glm first');
+    assert.equal(known.resolved, false, 'untried is stored as untried, never dressed up as proven');
+    memory.record({ signature: sig, prompt: 'build a browser game', runId: 'run-2' });
+    assert.equal(memory.lookup({ signature: sig }).occurrences, 2, 'a repeat is a count, not a second entry');
+    memory.resolve({ signature: sig, ok: false });
+    assert.equal(memory.lookup({ signature: sig }), null, 'a remedy that has only ever failed is not recalled');
+    memory.resolve({ signature: sig, ok: true });
+    assert.equal(memory.lookup({ signature: sig }).resolved, true, 'and it comes back once it has worked');
+    assert.match(memory.lookup({ prompt: 'make a game for the browser' })?.source || '', /wording/,
+      'a request that has not failed yet can still be warned about the wall it is walking into');
+  }
+
   // A live handle must never reach the session file.
   //
   // Measured 2026-08-05: a task carrying its abort timer went into JSON.stringify and
@@ -354,5 +422,5 @@ const WebSocket = require('ws');
   }
 
   await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened');
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened · the repair asks why, does not stop to ask permission, and remembers the answer');
 })().catch((error) => { console.error(error); process.exit(1); });

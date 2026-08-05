@@ -11,6 +11,11 @@ const { reviewResult } = require('./critique');
 const { costOf, contextUse } = require('./pricing');
 const { isolate, collectDiff, release } = require('./worktree');
 const deliberate = require('./deliberation');
+const { FailureMemory, signatureOf } = require('./failure-memory');
+
+// Whether a repair waits for the owner. False in every mode by the owner's decision of
+// 2026-08-05 — one word to change back if `plan` should ever stop again.
+const REPAIR_RUNS_UNATTENDED = true;
 
 const ROLE_BLUEPRINT = Object.freeze([
   // GLM, not Gemini. Gemini's quota is limit:0 — a billing plan, not a key — so this
@@ -132,10 +137,15 @@ function publicRun(run) {
 class CoreExecutionCoordinator extends EventEmitter {
   constructor({ taskRunner, settingsProvider = () => ({}), preview = null, registry = new ModelCapabilityRegistry(),
     skills = new SkillRegistry(), memory = new deliberate.DeliberationMemory({ root: knowledge.ROOT }),
-    available = null, breaker = new CircuitBreaker() } = {}) {
+    available = null, breaker = new CircuitBreaker(),
+    failures = new FailureMemory({ root: knowledge.ROOT }) } = {}) {
     super();
     if (!taskRunner) throw new Error('CoreExecutionCoordinator requires TaskRunner');
     this.taskRunner = taskRunner;
+    // What went wrong before, and what fixed it. The repair loop retried without ever
+    // asking why, and nothing remembered the answer, so the same wall was hit three
+    // times a run and again on the next one. See failure-memory.js.
+    this.failures = failures;
     // The owner's skills are their record of what already went wrong. Indexing them here
     // means every specialist gets the relevant standing rules instead of rediscovering
     // them: one sub-agent burned 428s of GPU on a workflow the skill file already ruled
@@ -484,6 +494,23 @@ class CoreExecutionCoordinator extends EventEmitter {
     const run = id && this.runs.get(id);
     if (!run) return;
     const assignment = run.assignments.find((item) => item.taskId === task.id);
+    // A finished diagnosis belongs to the assignment it was asked about, not to itself.
+    if (assignment?.kind === 'diagnosis' && ['completed', 'failed'].includes(task.status)) {
+      const target = run.assignments.find((item) => item.taskId === assignment.diagnosisFor);
+      const said = String(task.output || '');
+      const cause = (said.match(/CAUSE:\s*(.+)/i) || [])[1] || '';
+      const fix = (said.match(/FIX:\s*(.+)/i) || [])[1] || '';
+      if (target && (cause || fix)) {
+        target.diagnosis = { cause: knowledge.cleanText(cause, 400), fix: knowledge.cleanText(fix, 400), provider: task.provider };
+        // Remembered now rather than at the end, because a run that dies mid-repair
+        // still learned something and the next run should not pay to learn it again.
+        this.failures.record({ signature: this._signature(run, target), prompt: run.prompt,
+          cause: target.diagnosis.cause, fix: target.diagnosis.fix, runId: run.id, provider: target.provider });
+        knowledge.recordEvent(run.id, { type: 'diagnosis', status: task.status, provider: task.provider,
+          evidence: `${target.role}: ${target.diagnosis.cause}` });
+        this.emit('diagnosis', { runId: run.id, role: target.role, ...target.diagnosis });
+      }
+    }
     if (!assignment) return;
     assignment.status = task.status; assignment.provider = task.provider; assignment.model = task.model || '';
     assignment.updatedAt = task.updatedAt;
@@ -544,7 +571,25 @@ class CoreExecutionCoordinator extends EventEmitter {
     if (!terminal) { this._emit(run, 'assignment'); return; }
     if (run.aborting || ['FAILED', 'COMPLETED'].includes(run.status)) { this._emit(run, 'assignment'); return; }
     if (run.stage === 'deliberation') { this._concludeDeliberation(run); return; }
-    const failed = run.assignments.filter((item) => item.status !== 'completed');
+    // A diagnosis is not a deliverable. It is read-only, it exists to explain the
+    // failures below it, and a diagnosis that itself fails must not become another
+    // thing to repair — that is how a repair loop turns into a repair loop about the
+    // repair loop.
+    const failed = run.assignments.filter((item) => item.status !== 'completed' && item.kind !== 'diagnosis');
+
+    // Ask why, once, before trying anything again.
+    //
+    // Until now the retry carried the error string and nothing else: a different
+    // provider, the same plan, no question asked. So the same wall was hit until
+    // maxRepairCycles ran out. This costs one read-only call — local first — and does
+    // not spend a repair cycle, because asking is not attempting.
+    if (failed.length && !run.diagnosed && run.repairCycle < run.maxRepairCycles) {
+      run.diagnosed = true;
+      let asked = 0;
+      for (const item of failed) asked += this._planDiagnosis(run, item) ? 1 : 0;
+      if (asked) { run.status = 'DIAGNOSING'; this._emit(run, 'diagnosis'); return; }
+    }
+
     if (failed.length && run.repairCycle < run.maxRepairCycles) {
       run.status = 'REPAIRING'; run.repairCycle += 1; this._emit(run, 'repair');
       let restarted = 0;
@@ -558,13 +603,29 @@ class CoreExecutionCoordinator extends EventEmitter {
           assignments: run.assignments.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
         run.disclosures = run.assignments.map((assignment) => this.taskRunner.get(assignment.taskId)?.disclosure).filter(Boolean);
         run.disclosureHash = aggregateDisclosureHash(run.disclosures);
-        run.status = 'AWAITING_APPROVAL'; this._emit(run, 'repair-awaiting-approval'); return;
+        run.status = 'AWAITING_APPROVAL';
+        // The repair does not stop to ask (owner decision, 2026-08-05). The first plan
+        // is approved as it always was; its repair is the continuation of work already
+        // approved, and stopping there was why an unattended run never finished. The
+        // safety gates are elsewhere and unchanged: SECURITY_BLOCKED is decided in
+        // _seal() before any of this, and an empty plan still waits because an empty
+        // plan is a bug and not permission.
+        if (REPAIR_RUNS_UNATTENDED || !this._needsApproval(run)) {
+          // Not 'repair-awaiting-approval'. It is not waiting, and a status that names
+          // a state it is not in is the class of lie this project keeps removing.
+          this._emit(run, 'repair-released'); this._release(run); return;
+        }
+        this._emit(run, 'repair-awaiting-approval'); return;
       }
     }
     run.status = failed.length ? 'FAILED' : 'VERIFYING';
     run.quality.checks = [
-      { id: 'specialists', pass: !failed.length, evidence: `${run.assignments.length - failed.length}/${run.assignments.length} assignments completed` },
-      { id: 'maker-checker', pass: run.assignments.some((item) => !item.write && item.status === 'completed'), evidence: 'Independent read-only checker assignment' },
+      // Diagnoses are not specialists. Counting them would inflate the denominator and,
+      // worse, let a completed diagnosis satisfy a run whose real work all failed.
+      { id: 'specialists', pass: !failed.length,
+        evidence: `${run.assignments.filter((item) => item.kind !== 'diagnosis' && item.status === 'completed').length}/${run.assignments.filter((item) => item.kind !== 'diagnosis').length} assignments completed` },
+      { id: 'maker-checker', pass: run.assignments.some((item) => !item.write && item.kind !== 'diagnosis' && item.status === 'completed'),
+        evidence: 'Independent read-only checker assignment' },
     ];
     const verified = run.quality.checks.every((check) => check.pass);
     clearTimeout(run.deadlineTimer); run.deadlineTimer = null;
@@ -578,6 +639,13 @@ class CoreExecutionCoordinator extends EventEmitter {
     // straight to a failed run was recalled forever with the same confidence as one
     // that shipped. This is the half that makes it a memory rather than a cache: the
     // failing check is named, so the entry carries why rather than only that.
+    // And tell the failure memory whether its remedy was any good. record() said the
+    // failure happened; without this the file would fill with confident advice that has
+    // never once been checked against an outcome.
+    for (const item of run.assignments) {
+      if (!item.diagnosis || item.kind === 'diagnosis') continue;
+      this.failures.resolve({ signature: this._signature(run, item), ok: run.status === 'COMPLETED' });
+    }
     this.memory.record(run.prompt, { ok: run.status === 'COMPLETED', runId: run.id,
       reason: run.quality.checks.filter((check) => !check.pass).map((check) => check.id).join(', ') || run.error || '' });
     this.emit('report', run.report);
@@ -892,6 +960,51 @@ class CoreExecutionCoordinator extends EventEmitter {
    * Move an assignment to another provider and plan the replacement task.
    * @returns {boolean}
    */
+  /** How this failure is remembered: its classification plus the check it broke. */
+  _signature(run, assignment) {
+    const task = this.taskRunner.get(assignment.taskId);
+    return signatureOf({ reason: String(task?.failureReason || 'unclassified'), check: assignment.role || '' });
+  }
+
+  /**
+   * Ask why it failed, before trying it again.
+   *
+   * Read-only by construction — `write: false`, so a repair can never acquire a
+   * permission the original plan did not have. Local first for the same reason the
+   * front desk is local: a diagnosis is cheap thinking about text we already hold, and
+   * paying a cloud provider to read an error message is how a failed run gets
+   * expensive. Anything already known about this signature is handed over, so the
+   * second occurrence starts where the first one finished instead of rediscovering it.
+   *
+   * @returns {boolean} true when a diagnosis was planned
+   */
+  _planDiagnosis(run, assignment) {
+    if (assignment.diagnosis || assignment.diagnosisAsked) return false;
+    const failedTask = this.taskRunner.get(assignment.taskId);
+    const reason = String(failedTask?.failureReason || 'unclassified');
+    const known = this.failures.lookup({ signature: this._signature(run, assignment), prompt: run.prompt });
+    const provider = this._pick('debug', ['qwen', 'glm', 'gemini', 'claude-code']);
+    if (!provider) return false;
+    assignment.diagnosisAsked = true;
+    const prompt = `BIGKIJI DIAGNOSIS ${run.id}\nOwner goal: ${run.prompt}\n`
+      + `The ${assignment.role} assignment failed on ${assignment.provider} (${assignment.model || 'unknown model'}).\n`
+      + `Classified as: ${reason}\n`
+      + `Error: ${knowledge.cleanText(failedTask?.error, 800)}\n`
+      + (known ? `Seen ${known.occurrences} time(s) before. Recorded cause: ${known.cause || 'none'}. Recorded fix: ${known.fix || 'none'}.\n` : '')
+      + 'This is read-only. Do not edit files, run builds, or start anything.\n'
+      + 'Answer in exactly two lines and nothing else:\nCAUSE: <one sentence naming the single cause>\nFIX: <one sentence naming the smallest change that would avoid it>';
+    const task = this.taskRunner.plan({
+      id: `${assignment.taskId}-diagnosis-${run.repairCycle}`,
+      provider, model: resolveModel(provider, run.prompt, 'debug', { write: false }), cwd: run.cwd, planHash: run.planHash,
+      prompt, metadata: { runId: run.id, kind: 'diagnosis', diagnosisFor: assignment.taskId, write: false },
+    });
+    this.taskToRun.set(task.id, run.id);
+    run.assignments.push({ taskId: task.id, kind: 'diagnosis', role: 'diagnosis', provider, model: task.model,
+      write: false, title: `Why the ${assignment.role} assignment failed`, status: task.status,
+      disclosureHash: task.disclosure?.disclosureHash || '', diagnosisFor: assignment.taskId });
+    return true;
+  }
+
   /**
    * One more go at the same model, for the one failure that is usually not the model's.
    *
@@ -937,7 +1050,12 @@ class CoreExecutionCoordinator extends EventEmitter {
     const task = this.taskRunner.plan({
       id: `${assignment.taskId}-repair-${run.repairCycle}`,
       provider: next, model, cwd: run.cwd, planHash: run.planHash,
-      prompt: `${oldTask?.prompt || run.prompt}\nPrevious provider failed: ${knowledge.cleanText(oldTask?.error, 500)}\nContinue only unfinished work and verify the repair.`,
+      // The diagnosis leads, the error follows. This line used to be the error string
+      // alone, which told the replacement provider what happened and nothing about why
+      // — so it re-ran the same plan and hit the same wall, three times, by design.
+      prompt: `${oldTask?.prompt || run.prompt}\n`
+        + (assignment.diagnosis ? `Diagnosis: ${assignment.diagnosis.cause}\nSmallest fix: ${assignment.diagnosis.fix}\n` : '')
+        + `Previous provider failed: ${knowledge.cleanText(oldTask?.error, 500)}\nContinue only unfinished work and verify the repair.`,
       metadata: { ...(oldTask?.metadata || {}), runId: run.id, repairCycle: run.repairCycle, fallbackFrom: assignment.provider },
     });
     this.taskToRun.set(task.id, run.id); assignment.taskId = task.id; assignment.provider = next; assignment.model = model; assignment.status = task.status;

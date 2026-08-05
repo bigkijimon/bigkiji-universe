@@ -96,7 +96,8 @@
     "test:model-fleet": "node tools/model-fleet-selftest.js",
     "test:pricing": "node tools/pricing-selftest.js",
     "test:worktree": "node tools/worktree-selftest.js",
-    "test:retention": "node tools/retention-selftest.js"
+    "test:retention": "node tools/retention-selftest.js",
+    "doctor": "node tools/doctor.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",
