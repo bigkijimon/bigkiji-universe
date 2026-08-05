@@ -32,4 +32,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Chromium refuses to start rather than run unsandboxed, and its SUID helper
+      # ships from npm owned by the unprivileged runner user. Giving it the ownership
+      # and mode it asks for keeps the sandbox on, which is the point of the check —
+      # passing --no-sandbox would make the smoke run prove less than it looks like.
+      - name: Let Chromium's SUID sandbox helper do its job
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - run: xvfb-run -a env SMOKE=1 ./node_modules/.bin/electron .
