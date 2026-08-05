@@ -7,6 +7,13 @@ on:
 permissions:
   contents: read
 
+# Several pushes in a row left macOS jobs reported as "failure" with no failed step
+# — they had been cancelled mid-run while the faster Linux job finished. Saying so
+# explicitly means a red badge is a real failure and not a queue artefact.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -45,4 +52,8 @@ jobs:
         run: |
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-      - run: xvfb-run -a env SMOKE=1 ./node_modules/.bin/electron .
+      # A hosted runner has no GPU, so Three.js cannot get a WebGL context and the
+      # canvas takes the app down with it. SwiftShader renders in software, which
+      # keeps the smoke run testing what it says it tests — that the windows come up
+      # — instead of skipping the part most likely to break.
+      - run: xvfb-run -a env SMOKE=1 ./node_modules/.bin/electron . --use-gl=swiftshader --enable-unsafe-swiftshader

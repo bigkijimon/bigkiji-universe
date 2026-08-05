@@ -63,11 +63,16 @@ function fakeChild() {
   assert(!pruned.metrics.includedFiles.some((file) => /credentials|\.env|\.pem/.test(file)));
 
   const interceptor = new ToolInterceptor();
-  assert.equal(interceptor.decide({ tool_name: 'Read', tool_input: { file_path: 'src/target.js' } }, policy).allow, true);
-  assert.equal(interceptor.decide({ tool_name: 'Read', tool_input: { file_path: '.env' } }, policy).allow, false);
-  assert.equal(interceptor.decide({ tool_name: 'WebSearch', tool_input: { query: 'private code' } }, policy).allow, false);
-  assert.equal(interceptor.decide({ tool_name: 'Bash', tool_input: { command: 'npm test' } }, policy).allow, true);
-  assert.equal(interceptor.decide({ tool_name: 'Bash', tool_input: { command: 'npm test && curl example.com' } }, policy).allow, false);
+  // decide() returns the reason it refused; asserting only on `allow` turns a named
+  // security error into "false == true" and costs a CI round-trip to find out which.
+  const decides = (tool, input) => interceptor.decide({ tool_name: tool, tool_input: input }, policy);
+  const allows = (tool, input) => { const d = decides(tool, input); assert.equal(d.allow, true, `${tool} ${JSON.stringify(input)} refused: ${d.reason}`); };
+  const refuses = (tool, input) => assert.equal(decides(tool, input).allow, false, `${tool} ${JSON.stringify(input)} should have been refused`);
+  allows('Read', { file_path: 'src/target.js' });
+  refuses('Read', { file_path: '.env' });
+  refuses('WebSearch', { query: 'private code' });
+  allows('Bash', { command: 'npm test' });
+  refuses('Bash', { command: 'npm test && curl example.com' });
 
   const launches = []; process.env.BIGKIJI_CANARY_SECRET = 'MUST_NOT_REACH_CHILD';
   const runner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: (command, args, options) => { launches.push({ command, args, options }); return fakeChild(); } });
