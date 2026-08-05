@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { isInside } = require('../../core/path-config');
-const { SecurityPolicy, isSensitivePath } = require('../pi-core/security/security-policy');
+const { SecurityPolicy, isSensitivePath, canonical } = require('../pi-core/security/security-policy');
 
 const PAID = Object.freeze(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
@@ -13,9 +13,21 @@ function expand(value) {
   return path.resolve(text);
 }
 
+// The allowed roots and the path being checked against them must be canonicalised by
+// the *same* function, or the comparison is between two spellings of one place.
+//
+// This used to call fs.realpathSync while SecurityPolicy.assertPath called
+// fs.realpathSync.native. On macOS and Linux they agree, so nothing showed. On
+// Windows the JS implementation leaves 8.3 short names alone and the native one
+// expands them, so a root recorded as
+//   C:\Users\RUNNER~1\AppData\Local\Temp\...\project
+// was compared against a target resolved to
+//   C:\Users\runneradmin\AppData\Local\Temp\...\project
+// and every read of a file inside the sandbox was refused as
+// SECURITY_PATH_OUTSIDE_READ. It fails closed, so it was never a hole — but the app
+// could not read its own working directory on Windows (measured in CI, 2026-08-05).
 function existingRealPath(value) {
-  const absolute = expand(value);
-  try { return fs.realpathSync(absolute); } catch (_) { return absolute; }
+  return canonical(expand(value));
 }
 
 function findSandbox(cwd, vaultRoot) {

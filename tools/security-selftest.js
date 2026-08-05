@@ -62,6 +62,18 @@ function fakeChild() {
   assert(!pruned.prompt.includes('ABCDEFGHIJKLMNOPQRSTUV')); assert(!pruned.prompt.includes('never-send'));
   assert(!pruned.metrics.includedFiles.some((file) => /credentials|\.env|\.pem/.test(file)));
 
+  // Both sides of the sandbox comparison must canonicalise the same way. When the
+  // roots went through fs.realpathSync and the target through fs.realpathSync.native,
+  // macOS and Linux agreed and Windows did not: 8.3 short names are expanded by one
+  // and not the other, so every read inside the sandbox was refused. Pin it at the
+  // source, because the behavioural check only fires on a platform that has short names.
+  // Comments are stripped first — the file explains the bug in prose, and the check
+  // is about what the code does. Same idiom as the forbidden-field check below.
+  const sandboxSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'sandbox-policy.js'), 'utf8')
+    .split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+  assert.doesNotMatch(sandboxSource, /fs\.realpathSync(?!\.native)/,
+    'sandbox-policy must canonicalise through security-policy.canonical, not its own realpath');
+
   const interceptor = new ToolInterceptor();
   // decide() returns the reason it refused; asserting only on `allow` turns a named
   // security error into "false == true" and costs a CI round-trip to find out which.
