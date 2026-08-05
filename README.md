@@ -468,14 +468,14 @@ the [Code of Conduct](CODE_OF_CONDUCT.md).
 This is free, runs entirely on your own machine, and has no paid tier. Nothing in
 it phones home and nothing is metered — the compute you spend is your own.
 
-If it saves you an afternoon, you can say thanks:
+There is no support link here yet — the one that was here pointed at a GitHub
+Sponsors page that is not enabled, which is worse than none. When there is a real
+one it will go in `.github/FUNDING.yml` and appear as the repository's Sponsor
+button rather than as a badge in this file.
 
-<a href="https://github.com/sponsors/bigkijimon">
-  <img src="https://img.shields.io/badge/GitHub-Sponsors-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub" />
-</a>
-
-Support is a donation, not a purchase: there is no feature behind it, no
-priority queue, and no tier. Nothing is withheld from anyone who does not pay.
+Whatever that ends up being, it will be a donation and not a purchase: no feature
+behind it, no priority queue, no tier. Nothing is withheld from anyone who does
+not pay.
 
 ## License
 

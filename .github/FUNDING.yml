@@ -1,8 +1,18 @@
 # GitHub renders these as the "Sponsor" button on the repository.
 #
-# github: は個人宛の手数料が0%で、日本の口座へJPYのまま着金する（＝手取りが一番良い）。
-# Buy Me a Coffee は全プロジェクト共通の顔として併記する方針だが、
-# ★ハンドル名が未確定なので、決まったら下の行のコメントを外して <handle> を置き換えること。
-# 存在しないURLを載せると404のボタンが出るので、確定するまでは github: だけにしている。
-github: [bigkijimon]
+# ★2026-08-06 時点、この2つはどちらもまだ使えない。有効な行が1つも無いので、
+#   このファイルは今のところ何も表示しない（GitHub側も認識していないことを確認済み）。
+#
+#   github:            アカウント bigkijimon で GitHub Sponsors が**未有効**。
+#                      https://github.com/sponsors/bigkijimon はプロフィールへ
+#                      リダイレクトするだけで、寄付ページとして存在しない。
+#                      個人宛は手数料0%・JPYのまま日本の口座へ着金するので、
+#                      有効化すれば手取りは一番良い。
+#   buy_me_a_coffee:   ハンドル名が未確定。全プロジェクト共通の顔にする方針。
+#                      口座通貨にJPYを選べない（USD建て着金→円転で為替が2回）点は
+#                      承知のうえで、認知と導線の統一を取る判断。
+#
+# どちらか決まったら、該当行のコメントを外すこと。存在しないURLを載せると
+# 404のSponsorボタンが出るだけで、無いより悪い。
+# github: [bigkijimon]
 # buy_me_a_coffee: <handle>
