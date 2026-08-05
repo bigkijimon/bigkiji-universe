@@ -55,7 +55,10 @@ function fakeChild() {
   assert.equal(redactPayload('commit a1b2c3d4e5f6a7b8.js').findings.length, 0, 'the shape match must not fire on ordinary text');
 
   const pruned = new ContextPruner().prepare({ prompt: 'Review secureFeature in src/target.js', policy });
-  assert(pruned.metrics.includedFiles.includes('src/target.js')); assert(!pruned.prompt.includes('owner@example.com'));
+  // Vault-relative, in the platform's own separator — build it the same way rather
+  // than hardcoding a forward slash, which only holds on macOS and Linux.
+  const TARGET = path.join('src', 'target.js');
+  assert(pruned.metrics.includedFiles.includes(TARGET)); assert(!pruned.prompt.includes('owner@example.com'));
   assert(!pruned.prompt.includes('ABCDEFGHIJKLMNOPQRSTUV')); assert(!pruned.prompt.includes('never-send'));
   assert(!pruned.metrics.includedFiles.some((file) => /credentials|\.env|\.pem/.test(file)));
 
@@ -69,7 +72,7 @@ function fakeChild() {
   const launches = []; process.env.BIGKIJI_CANARY_SECRET = 'MUST_NOT_REACH_CHILD';
   const runner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: (command, args, options) => { launches.push({ command, args, options }); return fakeChild(); } });
   const task = runner.plan({ id: 'secure-codex', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project });
-  assert(task.disclosure?.disclosureHash); assert(task.disclosure.files.some((file) => file.path === 'src/target.js'));
+  assert(task.disclosure?.disclosureHash); assert(task.disclosure.files.some((file) => file.path === TARGET));
   runner.approve(task.id, { disclosureHash: task.disclosure.disclosureHash }); await runner.waitFor(task.id, 2000);
   assert.equal(launches.length, 1); assert.equal(launches[0].options.env.BIGKIJI_CANARY_SECRET, undefined);
   assert.equal(launches[0].options.env.OPENAI_API_KEY, undefined); assert(launches[0].args.includes('--ignore-user-config'));

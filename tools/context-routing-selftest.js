@@ -26,7 +26,10 @@ const policy = resolver.resolve(project); assert(policy.valid); resolver.assertP
 assert.throws(() => resolver.assertProvider(policy, 'kimi'), /blocked/);
 assert(resolver.resolve(os.homedir()).localOnly);
 const pruned = new ContextPruner().prepare({ prompt: 'Fix tokenSavings in target.js', policy });
-assert(pruned.metrics.includedFiles.includes('project/target.js'));
+// `includedFiles` holds paths relative to the vault root, in the platform's own
+// separator (ContextPruner uses path.relative). Hardcoding a forward slash here
+// made this check pass on macOS and fail on Windows for eight days.
+assert(pruned.metrics.includedFiles.includes(path.join('project', 'target.js')));
 assert(!pruned.prompt.includes('never-send'));
 // This asserted full - pruned, which is what produced `saved 5,774,005` from the
 // owner typing hello: fullContextTokens is every file the scan touched, and nothing

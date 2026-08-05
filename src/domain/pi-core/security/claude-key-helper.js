@@ -64,12 +64,17 @@ function loginKeychain(homedir = os.userInfo().homedir) {
  * The live access token, or null with a reason.
  * @returns {{token: string}|{error: string}}
  */
-function readToken({ keychain = loginKeychain(), now = Date.now(), run = execFileSync, env = process.env } = {}) {
+function readToken({ keychain = loginKeychain(), now = Date.now(), run = execFileSync,
+  env = process.env, platform = process.platform } = {}) {
   // An explicit key wins. It is what Anthropic accepts here, and reaching for a
   // credential store when the owner has already provided the credential is wrong.
   const explicit = String(env.ANTHROPIC_API_KEY || '').trim();
   if (explicit) return { token: explicit, source: 'ANTHROPIC_API_KEY' };
-  if (process.platform !== 'darwin') return { error: 'the login keychain is macOS only' };
+  // `platform` is injectable so the parsing, the field selection and the expiry
+  // window — none of which are macOS-specific — can be exercised on Linux and
+  // Windows too. Without it those five checks simply failed off macOS, which is
+  // how they sat red in CI while passing on the machine that wrote them.
+  if (platform !== 'darwin') return { error: 'the login keychain is macOS only' };
   let raw;
   try {
     raw = run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-w', keychain],
