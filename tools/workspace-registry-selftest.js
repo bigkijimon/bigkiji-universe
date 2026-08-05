@@ -17,7 +17,7 @@ const userData = path.join(home, 'ud');
 const docs = path.join(home, 'Documents');
 const mk = (...parts) => { const dir = path.join(...parts); fs.mkdirSync(dir, { recursive: true }); return dir; };
 
-const school = mk(docs, 'HSAcademy');
+const school = mk(docs, 'Alpha');
 const media = mk(docs, 'CreativeMedia');
 const vault = mk(docs, 'Notes'); mk(vault, '.obsidian');
 mk(docs, 'ComfyUI');
@@ -28,7 +28,7 @@ mk(docs, '.hidden');
 // ---- candidates are PROPOSED, never auto-registered --------------------------
 const proposed = candidates({ home, roots: [docs] });
 const names = proposed.map((entry) => entry.label).sort();
-assert.deepStrictEqual(names, ['ComfyUI', 'CreativeMedia', 'HSAcademy', 'Notes']);
+assert.deepStrictEqual(names, ['Alpha', 'ComfyUI', 'CreativeMedia', 'Notes']);
 assert.ok(!names.includes('.hidden'), 'dotfiles are not workspaces');
 assert.strictEqual(proposed.find((entry) => entry.label === 'Notes').isObsidianVault, true,
   'an Obsidian vault is worth flagging, but it is still just a candidate');
@@ -84,7 +84,7 @@ assert.strictEqual(registry.allows(path.join(school, 'node_modules', 'x.js')), t
 // so a development run cannot mutate the real one.
 const scratch = mk(home, 'scratch');
 assert.strictEqual(overrideRoots({}, home), null);
-const overridden = new WorkspaceRegistry({ userData, home, env: { BIGKIJI_WORKSPACES: `${scratch},~/Documents/HSAcademy` } });
+const overridden = new WorkspaceRegistry({ userData, home, env: { BIGKIJI_WORKSPACES: `${scratch},~/Documents/Alpha` } });
 assert.deepStrictEqual(overridden.list().map((root) => root.path), [scratch, school]);
 assert.ok(overridden.list().every((root) => root.overridden), 'an overridden list says so');
 assert.strictEqual(registry.list().length, 2, 'the override must not have written to the real registry');

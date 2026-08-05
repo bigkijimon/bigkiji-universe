@@ -40,7 +40,7 @@ const SAMPLES = [
   'ACE-Step v1.5 と ComfyUI を GPU 信号機で直列に回す',
   'ひらがなカタカナ漢字混在のテキストを分割する',
   'これをして、それをする。日本語には空白がない',
-  '予約システムの生徒名簿をUPCLASSから移行する',
+  '予約システムの利用者名簿を旧システムから移行する',
   '3d生成とAI動画のワークフロー',           // mixed-script token: task-cache bigrams across the seam
   'π',
   '㐀㐁㐂',                                 // extension A: separator for task-cache, indexed by the other two
