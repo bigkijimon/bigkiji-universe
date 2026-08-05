@@ -28,6 +28,20 @@ const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { ResearchBroker } = require('../pi-core/security/research-broker');
 
 // Providers are spawned only after PiAgent approval and are never kept resident.
+/**
+ * Ask a child to stop, and do not fall over if it already has.
+ *
+ * On POSIX, signalling a process that has exited is quietly ignored. On Windows,
+ * Node throws EINVAL from ChildProcess.kill, so shutting the daemon down while a
+ * task's child was mid-exit took the whole shutdown with it (measured in CI on
+ * windows-latest, 2026-08-05: `Error: kill EINVAL` out of TaskRunner.abort).
+ * Stopping something that has already stopped is the outcome we wanted anyway.
+ */
+function stopChild(child, signal) {
+  if (!child || child.exitCode != null || child.signalCode != null) return false;
+  try { return child.kill(signal); } catch (_) { return false; }
+}
+
 class TaskRunner extends EventEmitter {
   constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
     super();
@@ -128,8 +142,8 @@ class TaskRunner extends EventEmitter {
     if (!task) throw new Error(`Unknown task: ${id}`);
     if (task.child) {
       const child = task.child;
-      child.kill('SIGTERM');
-      const timer = setTimeout(() => { if (child.exitCode == null) child.kill('SIGKILL'); }, 2000);
+      stopChild(child, 'SIGTERM');
+      const timer = setTimeout(() => { if (child.exitCode == null) stopChild(child, 'SIGKILL'); }, 2000);
       timer.unref?.();
       delete task.child;
     }
@@ -178,7 +192,7 @@ class TaskRunner extends EventEmitter {
     task.child.on('error', (err) => this.finish(task, 1, '', String(err.message)));
     task.child.on('close', (code, signal) => this.finish(task, signal ? 1 : (code || 0), '', signal ? `signal:${signal}` : 'process exited'));
     if (local) {
-      task.timeoutTimer = setTimeout(() => { if (task.child && task.status === 'running') { task.timedOut = true; task.child.kill('SIGTERM'); } }, this.qwenGuardrails.taskTimeoutMs);
+      task.timeoutTimer = setTimeout(() => { if (task.child && task.status === 'running') { task.timedOut = true; stopChild(task.child, 'SIGTERM'); } }, this.qwenGuardrails.taskTimeoutMs);
       task.timeoutTimer.unref?.();
     }
     return this.public(task);
@@ -209,7 +223,7 @@ class TaskRunner extends EventEmitter {
     if (!text) return;
     if (redacted.blocked) {
       this.emit('security', { taskId: task.id, provider: task.provider, decision: 'DENY', reason: 'SECURITY_CRITICAL_SECRET_IN_MODEL_OUTPUT', at: new Date().toISOString() });
-      task.error = 'SECURITY_CRITICAL_SECRET_IN_MODEL_OUTPUT'; task.child?.kill('SIGTERM'); return;
+      task.error = 'SECURITY_CRITICAL_SECRET_IN_MODEL_OUTPUT'; stopChild(task.child, 'SIGTERM'); return;
     }
     if (isError) task.error = `${task.error}\n${text}`.trim().slice(-8000);
     else task.output = `${task.output}\n${text}`.trim().slice(-16000);
