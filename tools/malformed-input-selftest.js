@@ -22,15 +22,18 @@ let checks = 0;
 const ok = (label, fn) => { fn(); checks += 1; if (process.env.VERBOSE) console.log(`  ok  ${label}`); };
 
 const { SandboxPolicyResolver } = require('../src/domain/pi-agent/sandbox-policy');
+const { canonical } = require('../src/domain/pi-core/security/security-policy');
 const { specText } = require('../src/domain/pi-agent/fast-api-router');
 
 // ── sandbox.json: hand-edited, so every field is whatever the owner typed ──────
 // `declared.map is not a function` threw out of the DaemonEngine constructor
 // (daemon.js:142), which is not inside a try. The daemon never started.
 {
-  // realpath: macOS resolves /var to /private/var, and the resolver normalises,
-  // so comparing the raw mkdtemp path would fail on a correct implementation.
-  const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-malformed-')));
+  // The fixture must be canonicalised by the same function the resolver uses, or the
+  // comparison is between two spellings of one place. macOS resolves /var to
+  // /private/var; Windows expands 8.3 short names only in the native implementation,
+  // which is why fs.realpathSync here disagreed with the resolver on that runner.
+  const vault = canonical(fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-malformed-')));
   const taskRoot = path.join(vault, 'project');
   const shared = path.join(vault, 'shared');
   fs.mkdirSync(path.join(taskRoot, '.pi'), { recursive: true });

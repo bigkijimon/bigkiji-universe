@@ -23,6 +23,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { canonical } = require('../pi-core/security/security-policy');
 
 const GIT_TIMEOUT_MS = 30000;
 const MAX_PATCH_CHARS = 20000;
@@ -179,7 +180,9 @@ function slug(value) {
 }
 
 function realpath(dir) {
-  try { return fs.realpathSync(dir); } catch (_) { return String(dir || ''); }
+  // Same resolver as the sandbox check uses, so a path compared across the two
+  // subsystems cannot be two spellings of one place (8.3 short names on Windows).
+  try { return canonical(dir); } catch (_) { return String(dir || ''); }
 }
 
 function firstLine(text) {

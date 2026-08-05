@@ -12,6 +12,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { canonical } = require('../src/domain/pi-core/security/security-policy');
 const { execFileSync } = require('child_process');
 const worktree = require('../src/domain/pi-agent/worktree');
 
@@ -125,7 +126,7 @@ ok('empty work is cleaned up; work with something in it is kept and named', () =
   assert.ok(fs.existsSync(used.path));
   // git reports resolved paths, and on macOS /var/folders is a symlink to
   // /private/var/folders, so the comparison has to resolve too.
-  assert.deepStrictEqual(worktree.listAbandoned(dir, { parent }), [fs.realpathSync(used.path)],
+  assert.deepStrictEqual(worktree.listAbandoned(dir, { parent }), [canonical(used.path)],
     'and a later run can find what was left');
   worktree.release(used);
   assert.deepStrictEqual(worktree.listAbandoned(dir, { parent }), []);
