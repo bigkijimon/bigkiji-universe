@@ -13,9 +13,9 @@ relationships PiAgent is working on, an integrated terminal (`node-pty` + `@xter
 a loopback daemon, and a standalone `bigkiji` CLI/TUI that attaches to the same daemon.
 
 On macOS the app hides its dock icon and lives in the menu bar (`app.dock.hide()` in
-`src/core/main.js`). Windows and Linux build targets exist in `package.json` and CI runs the
-test suite on macOS, Windows and Linux, but the tray-resident behaviour and the cmux bridge
-are macOS-specific.
+`src/core/main.js`). Windows and Linux build targets exist in `package.json`, and CI runs
+the suite on all three, but the tray-resident behaviour and the cmux bridge are
+macOS-specific and **Windows is not verified** ([docs/known-issues.md](docs/known-issues.md)).
 
 ---
 
@@ -77,15 +77,19 @@ SMOKE=1 npx electron .
 npm test
 ```
 
-`npm test` runs 30 steps in sequence: `check:imports` followed by all **29** `test:*`
-scripts (`test:architecture`, `test:security`, `test:routing`, `test:deliberation`,
-`test:assets`, `test:context`, `test:pi-core`, `test:daemon`, `test:workspaces`,
-`test:tools`, `test:ui-3d`, `test:cli-render`, … — see the `scripts` block of
-`package.json`). Every declared `test:*` script is reachable from `npm test`; none are
-orphaned. Individual suites can be run directly, e.g. `npm run test:security`.
+`npm test` runs all **61** `test:*` scripts in sequence (`test:architecture`,
+`test:security`, `test:routing`, `test:deliberation`, `test:assets`, `test:context`,
+`test:pi-core`, `test:daemon`, `test:workspaces`, `test:tools`, `test:ui-3d`,
+`test:cli-render`, … — see the `scripts` block of `package.json`). Every declared
+`test:*` script is reachable from `npm test`; none are orphaned. Individual suites can be
+run directly, e.g. `npm run test:security`.
+
+Each one is a plain Node script under `tools/` with no test framework, and prints a single
+line naming what it checked.
 
 CI (`.github/workflows/ci.yml`) runs `npm ci && npm test` on macOS, Windows and Ubuntu, and
-runs the Electron smoke test under `xvfb` on Ubuntu.
+runs the Electron smoke test under `xvfb` on Ubuntu. It is **not green** — see
+[docs/known-issues.md](docs/known-issues.md) for exactly what fails and what does not.
 
 ---
 
