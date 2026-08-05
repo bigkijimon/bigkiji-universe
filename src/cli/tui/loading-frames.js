@@ -257,7 +257,7 @@ function buildMonoFrameSets() {
 //     row 0   ears        row 2   eyes — a HOLE, not ink
 //     row 1   head        row 3   chin
 //
-// Eyes as holes is from docs/reference-analysis.md §1: the reference bat is strictly
+// Eyes as holes is from the private reference-analysis note (not in this repo) §1: the reference bat is strictly
 // 1-bit and punches its two eyes out of the silhouette in every frame. On a 2x4 canvas
 // that is the only way an eye can exist at all.
 //
@@ -399,7 +399,7 @@ const MARKS = new Map();
  *
  * `frame` animates it. The cat was a still here and a dot in the footer, which is
  * backwards: the footer has one row and cannot hold a cat, and the panel has three
- * rows and was holding a photograph of one. docs/reference-analysis.md §1 measures the
+ * rows and was holding a photograph of one. the private reference-analysis note (not in this repo) §1 measures the
  * reference at six frames on a 400 ms loop with poses that differ a lot; all six exist
  * in the sprite already and nothing was drawing them here.
  */
@@ -427,7 +427,7 @@ function buildCatMark(colored, frame = 0) {
   const grid = grids[((frame % grids.length) + grids.length) % grids.length];
   // Crop relative to the top of the animal, not to the top of the sprite.
   //
-  // Half the frames bob the whole cat down a pixel (reference-analysis.md §1 — the bat
+  // Half the frames bob the whole cat down a pixel (the private reference-analysis note §1 — the bat
   // bobs in anti-phase with its wings, baked into the art). Cropping at fixed sprite
   // rows meant the bob slid the face through the window: three of the six poses lost
   // the nose off the bottom and gained a blank row at the top, so the mark stopped

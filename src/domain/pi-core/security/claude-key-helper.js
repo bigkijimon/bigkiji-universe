@@ -12,7 +12,7 @@
 // So the sandbox did not merely hide a file, it hid the keychain itself. Measured
 // 2026-08-03, reading the same item twice with nothing changed but HOME:
 //
-//     HOME=/Users/yuma        exit 0
+//     HOME=/Users/you         exit 0
 //     HOME=<sandbox>          exit 44   (item not found)
 //
 // which is exactly what Claude Code reported as "Not logged in · Please run

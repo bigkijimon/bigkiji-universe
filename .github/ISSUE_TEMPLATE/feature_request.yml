@@ -1,0 +1,19 @@
+name: Feature request
+description: Propose a change. Please open a Discussion first for anything large.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today? Describe the situation, not the solution.
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried or considered

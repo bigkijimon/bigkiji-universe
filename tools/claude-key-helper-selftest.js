@@ -7,7 +7,7 @@
 // Claude Code's credential — it hid the store the credential is in. Measured
 // 2026-08-03, same item, same command, nothing changed but HOME:
 //
-//     HOME=/Users/yuma   exit 0
+//     HOME=/Users/you    exit 0
 //     HOME=<sandbox>     exit 44   (item not found)
 //
 // That is the whole of "Not logged in · Please run /login". The fix is the

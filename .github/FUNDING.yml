@@ -1,0 +1,8 @@
+# GitHub renders these as the "Sponsor" button on the repository.
+#
+# github: は個人宛の手数料が0%で、日本の口座へJPYのまま着金する（＝手取りが一番良い）。
+# Buy Me a Coffee は全プロジェクト共通の顔として併記する方針だが、
+# ★ハンドル名が未確定なので、決まったら下の行のコメントを外して <handle> を置き換えること。
+# 存在しないURLを載せると404のボタンが出るので、確定するまでは github: だけにしている。
+github: [bigkijimon]
+# buy_me_a_coffee: <handle>

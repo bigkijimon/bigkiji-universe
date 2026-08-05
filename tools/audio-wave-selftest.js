@@ -1,7 +1,7 @@
 'use strict';
 // Selftest for the audio-reactive background wave (src/domain/3d-canvas/components/audio-wave-field.js).
 //
-// The pure functions are exercised against known inputs taken from docs/reference-analysis.md
+// The pure functions are exercised against known inputs taken from the private reference-analysis note (not in this repo)
 // (note -> hue measured off SE1.mp4, ring counts and point budgets from SE3.mp4). The source
 // text is then checked for the two house rules this layer could plausibly break: no
 // backdrop-filter (it destroys Electron vibrancy) and no new third-party dependency.
@@ -69,7 +69,7 @@ function cueHueMapInput() {
   const wave = await import(pathToFileURL(modulePath).href);
 
   // -------------------------------------------------------------------------
-  // pitch class -> hue (measured from SE1.mp4, docs/reference-analysis.md §3)
+  // pitch class -> hue (measured from SE1.mp4, the private reference-analysis note (not in this repo) §3)
   // -------------------------------------------------------------------------
   assert.equal(wave.pitchClassToHue(0), 32, 'C -> 32deg');
   assert.equal(wave.pitchClassToHue(2), 99, 'D -> 99deg');

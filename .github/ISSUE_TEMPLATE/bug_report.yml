@@ -1,0 +1,35 @@
+name: Bug report
+description: Something behaves differently from what the docs say.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations: { required: true }
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `npm run doctor`
+      description: This reports your OS, Node version, and which external CLIs were detected.
+      render: shell
+    validations: { required: true }
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node -v`. This project needs >=24 <27.
+    validations: { required: true }
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen
+      options: [Menu-bar app, CLI (bigkiji), TUI monitor (bigkiji monitor), Phone PWA, Daemon, Not sure]
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: From your data root's `logs/`. Redact anything you would not post publicly.
+      render: shell

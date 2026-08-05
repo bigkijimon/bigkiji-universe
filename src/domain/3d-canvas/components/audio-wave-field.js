@@ -6,7 +6,7 @@
 // per frame is enough. Microphone capture lives on a separate AudioContext in
 // voice-live.js and is deliberately NOT visualised here.
 //
-// The look follows docs/reference-analysis.md §5 (`SE3.mp4`, strumsurfer.com/play):
+// The look follows the private reference-analysis note (not in this repo) §5 (`SE3.mp4`, strumsurfer.com/play):
 //   * a full-height disc of ADDITIVE point splats, re-sampled every single frame — the
 //     per-frame grain is the signature, a smooth interpolated mesh reads as dead;
 //   * 2–7 concentric rings / radial webs, ring spacing = the audible wavelength;

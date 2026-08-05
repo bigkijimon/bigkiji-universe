@@ -440,6 +440,27 @@ Honest list of what is not settled:
 
 ---
 
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
+setup and the check you are expected to run. Vulnerabilities go through
+[SECURITY.md](SECURITY.md), not the public issue tracker. Participation is under
+the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Support
+
+This is free, runs entirely on your own machine, and has no paid tier. Nothing in
+it phones home and nothing is metered — the compute you spend is your own.
+
+If it saves you an afternoon, you can say thanks:
+
+<a href="https://github.com/sponsors/bigkijimon">
+  <img src="https://img.shields.io/badge/GitHub-Sponsors-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub" />
+</a>
+
+Support is a donation, not a purchase: there is no feature behind it, no
+priority queue, and no tier. Nothing is withheld from anyone who does not pay.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

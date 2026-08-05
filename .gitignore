@@ -15,3 +15,14 @@ src/components/UI/console-dist/
 # Isolated copies of the repo, one per provider, created by src/domain/pi-agent/worktree.js.
 # Working space: git worktree already refuses to track them, but the parent dir is ours.
 .bigkiji/
+
+# ── 公開リポジトリに載せないもの（2026-08-05）─────────────────────
+# 運用プレイブック。アプリのコードではなく、オーナー環境の手順書。
+# 中には社内の実パスや姉妹事業の名前が入っている。skill-registry.js は
+# ~/.claude/skills も読むので、ここに無くてもアプリは動く。
+/skills/
+# 第三者の動画9本のフレーム単位解析。画面内のコードと字幕を逐語転記しており、
+# 他人の著作物の複製にあたる。設計判断の根拠としてローカルには残す。
+/docs/reference-analysis.md
+# 社内の役割サンドボックス構成と内部監査の引用。
+/AI_ORGANIZATION_HANDBOOK.md

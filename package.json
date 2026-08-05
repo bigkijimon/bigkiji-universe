@@ -1,16 +1,14 @@
 {
   "name": "bigkiji-universe",
   "version": "2.5.0",
-  "description": "BigKiji Universe OS — menu-bar orchestration synapse app",
+  "description": "Menu-bar orchestrator for external AI coding CLIs. Every paid run is planned locally, pruned, redacted, and sealed into a hash-verified disclosure manifest you approve before anything is spawned.",
   "author": "BigKiji Universe Contributors",
   "main": "src/core/main.js",
   "private": true,
   "license": "Apache-2.0",
   "bin": {
     "bigkiji": "./tools/bigkiji",
-    "Bigkiji": "./tools/bigkiji",
-    "kiji": "./tools/bigkiji",
-    "Kiji": "./tools/bigkiji"
+    "kiji": "./tools/bigkiji"
   },
   "engines": {
     "node": ">=24 <27"
@@ -174,5 +172,25 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "vite": "^6.0.7"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bigkijimon/bigkiji-universe.git"
+  },
+  "homepage": "https://github.com/bigkijimon/bigkiji-universe#readme",
+  "bugs": {
+    "url": "https://github.com/bigkijimon/bigkiji-universe/issues"
+  },
+  "keywords": [
+    "electron",
+    "ai-agents",
+    "local-first",
+    "claude-code",
+    "ollama",
+    "apple-silicon",
+    "cli",
+    "orchestration",
+    "menubar",
+    "three-js"
+  ]
 }

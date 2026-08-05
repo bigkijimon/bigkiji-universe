@@ -262,10 +262,8 @@ Two different files are named `sandbox.json` and they have different readers:
 | `~/.pi/agent/sandbox.json` + each department's `.pi/sandbox.json` | the `pi-sandbox@0.6.1` package, via macOS `sandbox-exec` | what any Pi process on this machine may read, write and reach over the network |
 | `app/.pi/sandbox.json` | this app's `SandboxPolicyResolver` | which vault paths a run may touch and which paid providers may be offered |
 
-The Pi one governs every department, not just this app, so its reference lives in the
-vault where all five department configs already grant read access — not here:
-
-**`~/Documents/CEOBigKiji/Executive_Office/knowledge/pi-sandbox-リファレンス.md`**
+The Pi one governs every workspace, not just this app, so its reference lives in the
+maintainer's vault rather than in this repository.
 
 Two facts from it that change how policy must be written, both verified against
 `pi-sandbox`'s own `README.md` and `src/config.ts:78`:

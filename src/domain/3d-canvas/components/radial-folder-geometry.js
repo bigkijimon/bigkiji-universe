@@ -28,7 +28,7 @@ export function radialShellPoint(key, shell, baseRadius, flatten = 0.64) {
 // unreadable however bright they were drawn.
 //
 // The disc fixes it by making position mean something, exactly as the reference clip
-// does (docs/reference-analysis.md §2): **angle is categorical, radius is continuous.**
+// does (the private reference-analysis note (not in this repo) §2): **angle is categorical, radius is continuous.**
 // One folder owns one direction; depth and recency decide how far out. Every strand
 // then runs inward along its own arm, nothing crosses, and a folder reads as a clump
 // because its files genuinely share a sector.
