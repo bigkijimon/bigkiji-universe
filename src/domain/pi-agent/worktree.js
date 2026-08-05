@@ -165,10 +165,15 @@ function listAbandoned(repo, { parent = path.join(repo, WORKTREE_DIR) } = {}) {
   // git reports resolved paths, and on macOS the temp directory is a symlink
   // (/var/folders -> /private/var/folders), so comparing the two as written never matches.
   const real = realpath(parent);
+  // Resolve before returning, not only before filtering. git prints forward slashes
+  // even on Windows, so handing its spelling back meant a caller comparing against a
+  // resolved path — which is what every other path in this codebase is — never
+  // matched: 'C:/Users/.../run-5-leader' against 'C:\Users\...\run-5-leader'.
+  // The filter was already right; only the value being returned was not.
   return out.split('\n')
     .filter((line) => line.startsWith('worktree '))
-    .map((line) => line.slice('worktree '.length))
-    .filter((dir) => realpath(dir).startsWith(real));
+    .map((line) => realpath(line.slice('worktree '.length)))
+    .filter((dir) => dir.startsWith(real));
 }
 
 function countChangedFiles(patch) {
