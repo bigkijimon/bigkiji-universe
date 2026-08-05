@@ -598,7 +598,17 @@ class DaemonEngine extends EventEmitter {
     const run = this.coordinator.submit({ prompt: `${written.goal || text}\n\nOwner answers: ${text}`,
       promptSpec, planHash: spec.planHash || null, cwd: this.workspace, mode });
     this.runSessions.set(run.id, session.id);
-    const reply = spec.promptSpecText || written.goal || text;
+    // The run brief prints the goal and the constraints under the run line, so sending
+    // the whole spec here as well put the same paragraph on screen twice — measured on
+    // the owner's machine 2026-08-05, a 20-page textbook spec appeared in the brief and
+    // again immediately below it. Split rather than deduplicated at render time: the
+    // brief says what is being built, this says how it will be done and judged, and
+    // `/runs` still shows the goal long after this reply has scrolled away.
+    const detail = [
+      written.steps?.length ? `Steps:\n${asList(written.steps).map((step, i) => `  ${i + 1}. ${step}`).join('\n')}` : '',
+      written.acceptance?.length ? `Acceptance:\n${asList(written.acceptance).map((item) => `  · ${item}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n');
+    const reply = detail || spec.promptSpecText || written.goal || text;
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'TASK', text: reply,
       turnId, provider: spec.provider, latencyMs: spec.latencyMs });
     const output = { accepted: true, kind: 'TASK', reply, sessionId: session.id, turnId, provider: spec.provider,

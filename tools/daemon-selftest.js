@@ -212,6 +212,12 @@ const WebSocket = require('ws');
     assert.equal(second.run.promptSpec.steps.length, 2);
     assert.deepStrictEqual(second.run.promptSpec.questions, [], 'the answered question must not travel on as unanswered');
     assert.equal(second.provider, 'ollama', 'the spec turn is served by the front desk, not by a second conversation turn');
+    // The run brief already prints goal and constraints under the run line. Sending
+    // the whole spec in the reply as well put the same paragraph on screen twice.
+    assert.match(second.reply, /Steps:/, 'the reply carries the half the brief does not');
+    assert.match(second.reply, /Acceptance:/);
+    assert.ok(!/^Goal:/m.test(second.reply), 'and must not repeat the goal the brief is already showing');
+    assert.ok(!/^Constraints:/m.test(second.reply), 'nor the constraints');
     assert.equal(spec.facilitatorPending, null, 'the pending question is cleared once answered');
 
     // An open question is not a licence to reinterpret anything typed later. Past the
