@@ -10,7 +10,7 @@ const { spawn } = require('child_process');
 const { DaemonClient } = require('../server/daemon-client');
 const { TUIMonitor } = require('../../cli/tui/monitor');
 const { StickyScreen, modelPanel } = require('../../cli/tui/renderer');
-const { buildFooter, footerHeightFor } = require('../../cli/tui/footer');
+const { buildFooter, footerHeightFor, runningAgents } = require('../../cli/tui/footer');
 const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
 const {
   glyphs, lower, phrase, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
@@ -198,6 +198,11 @@ async function repl(client) {
   // Footer-only repaint: never touches the header or the scrolling relay above.
   const paintFooter = (force = false) => {
     if (!sticky.active) return;
+    // The running block grows and shrinks with the work, so the reserved height has to
+    // follow it. Without this the extra rows would be drawn over the transcript and the
+    // input line would sit somewhere other than where readline believes it is.
+    // setFooterHeight() is a no-op when the number has not changed.
+    sticky.setFooterHeight(footerHeightFor(frameSet, runningAgents(live).length));
     const { lines, inputIndex } = buildFooter({ cols: sticky.cols, mode, state: live, phase: phaseInfo, comment,
       busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet });
     inputOffset = inputIndex;

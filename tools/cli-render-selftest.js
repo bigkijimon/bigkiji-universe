@@ -821,6 +821,45 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 1;
 }
 
+// Who is working right now, fixed on screen, one colour each.
+//
+// The owner asked for both after watching four specialists share one brown and having
+// to hunt the transcript to find out whether anything was running at all.
+{
+  const { runningAgents, footerHeightFor } = require('../src/cli/tui/footer');
+  const { providerColor } = require('../src/domain/terminal/cli-theme');
+  const state = { runs: [{ id: 'run-1', status: 'EXECUTING',
+    promptSpec: { goal: 'Build a browser shooter with Three.js' },
+    assignments: [
+      { role: 'leader', provider: 'codex', title: 'Architecture and integration', status: 'running', stepsDone: 6, stepsTotal: 10 },
+      { role: 'ui', provider: 'gemini', title: 'UI and frontend', status: 'running', stepsDone: 3, stepsTotal: 10 },
+      { role: 'debug', provider: 'glm', title: 'Diagnostics', status: 'queued' },
+      { role: 'done', provider: 'qwen', title: 'finished', status: 'completed' }] }] };
+  const agents = runningAgents(state);
+  assert.equal(agents.length, 3, 'a finished assignment is not something that is running');
+  // The reserved height has to follow the block, or the rows land on the transcript.
+  assert.ok(footerHeightFor(undefined, 3) > footerHeightFor(undefined, 0), 'the footer grows with the work');
+  assert.equal(footerHeightFor(undefined, 0), footerHeightFor(undefined, 0), 'and nothing is reserved when nothing runs');
+
+  const painted = buildFooter({ cols: 100, mode: 'plan', state, phase: { phase: 'EXECUTE' } }).lines
+    .filter(Boolean).join('\n');
+  const flat = stripAnsi(painted);
+  assert.match(flat, /Build a browser shooter with Three\.js/, 'the work goes above the gauges');
+  assert.match(flat, /leader\s+codex/); assert.match(flat, /6\/10/, 'a published step count becomes a gauge');
+  // `—` is not 0. A gauge invented for an assignment that published no total would be
+  // the same lie as a progress percentage for a run that has not started.
+  assert.ok(!/debug.*0\/0/.test(flat), 'an unpublished count must not be drawn as zero progress');
+  for (const provider of ['codex', 'gemini', 'glm']) {
+    assert.ok(painted.includes(providerColor(provider)), `${provider} has to be its own colour`);
+  }
+  assert.notEqual(providerColor('codex'), providerColor('gemini'), 'two AIs in one colour is the thing being fixed');
+  // Nothing running draws nothing at all: an idle machine repainting an empty panel
+  // every 67ms is chrome that stops being read.
+  const idle = stripAnsi(buildFooter({ cols: 100, mode: 'plan', state: { runs: [] } }).lines.filter(Boolean).join('\n'));
+  assert.ok(!/Build a browser shooter/.test(idle));
+  checks += 8;
+}
+
 // A specialist that answers with a whole file must not bury the report.
 //
 // maxLines counts source lines, and a whole file arrives as one. Measured 2026-08-05:

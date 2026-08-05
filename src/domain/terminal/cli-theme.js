@@ -60,6 +60,29 @@ const MODE_COLORS = Object.freeze({
   demo: { accent: PALETTE.warning, strong: PALETTE.orangeBright, border: PALETTE.warning, prompt: PALETTE.warning },
 });
 
+// One colour per AI, so a glance at the running block says who is working.
+//
+// The owner asked for this after watching four specialists share one brown: the only
+// way to tell codex from glm was to read the word, which defeats the point of a status
+// row you are meant to take in without reading. Hues are chosen to stay inside the warm
+// identity where they can (codex, claude) and to leave it only where distinctness
+// matters more than harmony (gemini, qwen) — a palette nobody can tell apart is not a
+// palette. NO_COLOR strips every one of them through raw().
+const PROVIDER_COLORS = Object.freeze({
+  'claude-code': raw('38;2;217;119;6'), claude: raw('38;2;217;119;6'),
+  codex: raw('38;2;255;179;71'),
+  gemini: raw('38;2;110;168;254'),
+  glm: raw('38;2;168;134;255'),
+  qwen: raw('38;2;120;196;150'), ollama: raw('38;2;120;196;150'),
+  'local-qwen': raw('38;2;120;196;150'), 'pi-agent-core': raw('38;2;120;196;150'),
+  diagnosis: raw('38;2;185;161;141'),
+});
+/** The colour for a provider id, or the muted default for one nobody has coloured. */
+function providerColor(provider) {
+  const id = String(provider || '').toLowerCase();
+  return PROVIDER_COLORS[id] || PALETTE.muted;
+}
+
 function normalizeMode(value) {
   const mode = String(value || '').toLowerCase();
   // One instruction in, a finished thing to look at. Kept distinct from auto-edit
@@ -84,4 +107,4 @@ function rainbow(width, mode = 'plan') {
   return Array.from({ length: Math.max(1, width) }, (_, index) => `${colors[index % colors.length]}━`).join('') + RESET;
 }
 
-module.exports = { NO_COLOR, PALETTE, DARK_PALETTE, LIGHT_PALETTE, schemeName, MODE_COLORS, normalizeMode, transportMode, themeFor, paint, stripAnsi, rainbow };
+module.exports = { NO_COLOR, PROVIDER_COLORS, providerColor, PALETTE, DARK_PALETTE, LIGHT_PALETTE, schemeName, MODE_COLORS, normalizeMode, transportMode, themeFor, paint, stripAnsi, rainbow };

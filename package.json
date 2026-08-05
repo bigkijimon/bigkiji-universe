@@ -25,7 +25,7 @@
     "pretest": "npm run build:console",
     "dist": "node tools/build-host.js",
     "dist:mac": "node tools/stamp-build.js && APPLE_KEYCHAIN_PROFILE=BigKijiNotary electron-builder --mac dmg zip --arm64 --x64",
-    "dist:local": "node tools/stamp-build.js && electron-builder --mac --dir --arm64 -c.mac.identity=\"BigKiji Universe Dev Signer\" -c.mac.notarize=false -c.mac.forceCodeSigning=false",
+    "dist:local": "node tools/stamp-build.js && electron-builder --mac --dir --arm64 -c.mac.identity=\"BigKiji Universe Dev Signer\" -c.mac.notarize=false -c.mac.forceCodeSigning=false -c.mac.timestamp=none",
     "dist:win": "electron-builder --win nsis zip --x64 --arm64",
     "dist:linux": "electron-builder --linux AppImage deb --x64 --arm64",
     "dist:dir": "electron-builder --mac --dir --arm64",

@@ -22,6 +22,7 @@
 const path = require('path');
 const { stripAnsi, themeFor } = require('../../domain/terminal/cli-theme');
 const { bar, clip, phaseChips, phaseName, progressOf } = require('./renderer');
+const { providerColor } = require('../../domain/terminal/cli-theme');
 const { lower, phrase, stringWidth } = require('./transcript');
 const { LOADING_TEXT, frameRows, loadingFrames } = require('./loading-frames');
 
@@ -163,6 +164,36 @@ function buildFooter(options = {}) {
   const vectorLeftPlain = `phase vector  ${plain(chips)}`; // measured by spread() in display columns
   lines.push(MARGIN + spread(vectorLeft, meter, inner, vectorLeftPlain, meterPlain).text);
 
+  // The running block — what is being built, then a gauge per specialist.
+  //
+  // Fixed, not scrolled away: the owner asked to be able to see who is working without
+  // hunting for it in the transcript, and every AI gets its own colour so the row is
+  // readable at a glance rather than by reading. A specialist with no published step
+  // count gets no bar — `—` is not 0, and a gauge invented to fill the space would be
+  // the same lie as a progress percentage for an unstarted run.
+  const agents = runningAgents(state, AGENT_LIMIT);
+  if (agents.length) {
+    const goal = agents.find((agent) => agent.goal)?.goal || '';
+    if (goal) lines.push(`${MARGIN}${C.dim}${clip(goal, inner)}${C.reset}`);
+    else lines.push(`${MARGIN}${C.dim}${clip('working', inner)}${C.reset}`);
+    const roleWidth = Math.min(10, Math.max(...agents.map((agent) => agent.role.length)));
+    for (const agent of agents) {
+      const tint = providerColor(agent.provider);
+      const known = Number.isFinite(agent.done) && Number.isFinite(agent.total) && agent.total > 0;
+      const percent = known ? Math.max(0, Math.min(100, Math.round((agent.done / agent.total) * 100))) : 0;
+      const gauge = known ? `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${agent.done}/${agent.total}${C.reset}`
+        : `${C.dim}${'─'.repeat(METER_WIDTH)} ${DASH}${C.reset}`;
+      const gaugePlain = known ? `${bar(percent, METER_WIDTH)} ${agent.done}/${agent.total}` : `${'─'.repeat(METER_WIDTH)} ${DASH}`;
+      const head = `${clip(lower(agent.role), roleWidth).padEnd(roleWidth)}  ${lower(agent.provider)}`;
+      const room = inner - stringWidth(head) - stringWidth(gaugePlain) - 4;
+      const note = room > 6 ? clip(agent.title, room) : '';
+      const leftPlain = note ? `${head}  ${note}` : head;
+      const left = `${tint}${clip(lower(agent.role), roleWidth).padEnd(roleWidth)}${C.reset}  ${tint}${lower(agent.provider)}${C.reset}`
+        + (note ? `  ${C.muted}${note}${C.reset}` : '');
+      lines.push(MARGIN + spread(left, gauge, inner, leftPlain, gaugePlain).text);
+    }
+  }
+
   // Rows n+2 / n+4 — the rules that frame the input line
   const rule = `${MARGIN}${C.border}${'─'.repeat(inner)}${C.reset}`;
   lines.push(rule);
@@ -246,6 +277,47 @@ function workSegment(state = {}) {
   return [assignments.length ? `${done}/${assignments.length}` : '', minutes, left].filter(Boolean).join(' · ');
 }
 
-function footerHeightFor(frameSet = loadingFrames()) { return Math.max(1, Number(frameSet?.rows) || 1) + ROWS_BELOW_ART; }
+/**
+ * The specialists working right now, in the order they were assigned.
+ *
+ * Read from the live state rather than tracked separately: the daemon already
+ * publishes every assignment of every run, and a second copy would be a second thing
+ * to fall out of date. Diagnoses are included — a run that is working out why it broke
+ * is working, and hiding that is how "is it stuck?" gets asked.
+ *
+ * @returns {Array<{role:string, provider:string, title:string, done:number, total:number, goal:string}>}
+ */
+function runningAgents(state = {}, limit = 3) {
+  const runs = (Array.isArray(state?.runs) ? state.runs : [])
+    .filter((run) => !['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED'].includes(run?.status));
+  const out = [];
+  for (const run of runs) {
+    const goal = String(run?.promptSpec?.goal || run?.promptPreview || '').replace(/\s+/g, ' ').trim();
+    for (const item of (Array.isArray(run.assignments) ? run.assignments : [])) {
+      if (!['running', 'queued', 'awaiting_approval'].includes(String(item.status || ''))) continue;
+      out.push({ role: String(item.role || item.kind || '?'), provider: String(item.provider || ''),
+        title: String(item.title || '').replace(/\s+/g, ' ').trim(), goal,
+        // Steps finished over steps planned. Absent is absent: a gauge drawn from a
+        // total nobody published would be a number invented to fill a bar.
+        done: Number(item.stepsDone ?? NaN), total: Number(item.stepsTotal ?? NaN),
+        status: String(item.status || '') });
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
 
-module.exports = { buildFooter, footerHeightFor, workSegment, formatElapsed, formatTokens, tokenTotals, shellLabel, agentLabel, ROWS_BELOW_ART };
+const AGENT_LIMIT = 3;
+/**
+ * @param {object} frameSet
+ * @param {number} agents how many agent rows the block will draw
+ */
+function footerHeightFor(frameSet = loadingFrames(), agents = 0) {
+  const count = Math.max(0, Math.min(AGENT_LIMIT, Math.trunc(Number(agents) || 0)));
+  // One row of context above the gauges — the owner asked for the work, then the bars —
+  // and nothing at all when nothing is running, because an idle machine drawing an
+  // empty panel every 67ms is chrome that stops being read.
+  return Math.max(1, Number(frameSet?.rows) || 1) + ROWS_BELOW_ART + (count ? count + 1 : 0);
+}
+
+module.exports = { buildFooter, footerHeightFor, runningAgents, AGENT_LIMIT, workSegment, formatElapsed, formatTokens, tokenTotals, shellLabel, agentLabel, ROWS_BELOW_ART };
