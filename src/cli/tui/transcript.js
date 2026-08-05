@@ -547,6 +547,13 @@ function runBrief(run = {}, options = {}) {
   if (flat(spec.goal)) rows.push(`goal: ${flat(spec.goal)}`);
   const constraints = list(spec.constraints);
   if (constraints.length) rows.push(`constraints: ${constraints.join(' / ')}`);
+  // What this plan already knows not to do. The failure memory is consulted before
+  // anything is planned, and a remedy applied invisibly is indistinguishable from luck
+  // — the owner has to be able to see that the wall was remembered rather than hit.
+  const wall = run.knownFailure;
+  if (wall && wall.fix) {
+    rows.push(`avoiding a known failure (seen ${wall.occurrences}${DASH === '—' ? '×' : 'x'}): ${flat(wall.fix)}`);
+  }
   // Decided by the fleet, not by the owner. Hands-off mode answers its own open
   // questions so nothing stops mid-run; this is where those answers are declared, so
   // the owner reviewing the finished thing can see what was settled for them.

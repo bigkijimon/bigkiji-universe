@@ -890,6 +890,14 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   }, { width: 100 })).join('\n');
   assert.match(handsOff, /decided for you: どのジャンルにしますか？/,
     'what hands-off settled without asking has to be visible on the plan');
+  // A remedy applied invisibly is indistinguishable from luck.
+  const remembered = plainLines(T.renderEvent('run', {
+    id: 'run-3', status: 'AWAITING_APPROVAL', assignments: [],
+    knownFailure: { fix: 'route to glm before gemini', cause: 'quota spent', occurrences: 2 },
+    promptSpec: { goal: 'build a game', constraints: [], questions: [] },
+  }, { width: 100 })).join('\n');
+  assert.match(remembered, /avoiding a known failure \(seen 2/, 'the owner has to see the wall was remembered, not hit');
+  assert.match(remembered, /route to glm before gemini/);
   assert.match(lines, /\/answer run-msesmjj9 <your answer>/, 'and so does the way to answer it');
   const quiet = plainLines(T.renderEvent('run', {
     id: 'run-7', status: 'AWAITING_APPROVAL', assignments: [],

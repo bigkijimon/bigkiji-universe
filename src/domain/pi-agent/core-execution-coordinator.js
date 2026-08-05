@@ -218,6 +218,23 @@ class CoreExecutionCoordinator extends EventEmitter {
     const lenses = Math.max(0, Math.min(deliberate.LENSES.length, Number(routing.deliberationLenses ?? 2)));
     const recalled = lenses >= 2 ? this.memory.lookup(text) : null;
     if (recalled) run.deliberation = recalled;
+    // Do not walk into a wall we have already hit.
+    //
+    // The failure memory is consulted before anything is planned, not only after
+    // something has broken. A remedy that has worked before arrives as a constraint on
+    // the plan, so the specialists start where the last repair finished instead of
+    // rediscovering it — which is the whole of "同じ失敗を繰り返さない". Wording-matched,
+    // so a request that has never failed can still be warned.
+    const wall = this.failures.lookup({ prompt: text });
+    if (wall && wall.fix) {
+      run.knownFailure = { signature: wall.signature, cause: wall.cause, fix: wall.fix,
+        occurrences: wall.occurrences, resolved: !!wall.resolved };
+      run.promptSpec = { ...(run.promptSpec || {}),
+        constraints: [...(Array.isArray(run.promptSpec?.constraints) ? run.promptSpec.constraints : []),
+          `Known failure here (seen ${wall.occurrences}×): ${wall.cause || 'cause not recorded'} — ${wall.fix}`] };
+      knowledge.recordEvent(run.id, { type: 'failure-recalled', status: run.status, provider: run.leader,
+        evidence: `${wall.signature} ×${wall.occurrences}: ${wall.fix}` });
+    }
     if (!recalled && deliberate.needed(text, { lenses })) this._planDeliberation(run, lenses);
     else this._planExecution(run);
 
