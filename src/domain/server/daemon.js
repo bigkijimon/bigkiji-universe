@@ -72,13 +72,42 @@ function isLoopback(req) {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+/** True for a bind address that only this machine can reach. */
+function isLoopbackBind(address) {
+  const value = String(address || '');
+  return value === '127.0.0.1' || value === '::1' || value === 'localhost';
+}
+
+/**
+ * Refuse to start on an address the LAN can reach unless the owner asked for it.
+ *
+ * `loadConfig` defaults `bind` to 127.0.0.1, but remote.json is a plain file the owner
+ * (or an older build) can edit, and a value of '0.0.0.0' there is silent: the daemon
+ * comes up looking identical and every device on the network can reach /api/turn behind
+ * one bearer token. Measured on 2026-08-05 — `lsof` showed `*:8777 (LISTEN)` while the
+ * shipped default said otherwise. A typo in a config file should fail loudly at startup,
+ * not widen the attack surface quietly, so LAN binds now need BIGKIJI_ALLOW_LAN=1.
+ */
+function assertBindAllowed(bind) {
+  if (isLoopbackBind(bind)) return;
+  if (process.env.BIGKIJI_ALLOW_LAN === '1') {
+    console.warn(`[BIGKIJI DAEMON] binding ${bind} — reachable from the network (BIGKIJI_ALLOW_LAN=1)`);
+    return;
+  }
+  throw new Error(
+    `refusing to bind ${bind}: reachable from the network. `
+    + 'Set "bind" to 127.0.0.1 in remote.json, or set BIGKIJI_ALLOW_LAN=1 to allow it deliberately.',
+  );
+}
+
 /**
  * The mode a request is allowed to run in.
  *
  * Loopback — the CLI and the Electron window, running as the owner on the owner's
  * machine — gets what it asked for. Anything else gets 'plan' and waits for a human,
- * because the daemon listens on 0.0.0.0 and a token on the LAN must not be able to buy
- * unattended writes. Requesting a mode is not the same as being allowed one.
+ * because the daemon can be told to listen beyond loopback (BIGKIJI_ALLOW_LAN=1) and a
+ * token on the LAN must not be able to buy unattended writes. Requesting a mode is not
+ * the same as being allowed one.
  */
 function effectiveMode(req, requested) {
   const wanted = String(requested || '');
@@ -1392,6 +1421,7 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
     socket.on('close', () => sockets.delete(socket));
   });
   const ping = setInterval(() => { for (const client of clients) if (!client.writableEnded) client.write(': ping\n\n'); }, 15000); ping.unref();
+  assertBindAllowed(config.bind);
   server.listen(config.port, config.bind, () => {
     const pidFile = engine.stateRoot === STATE_ROOT ? PID_FILE : path.join(engine.stateRoot, 'daemon.pid');
     // The state directory normally exists because ensureLayout ran first. When it does
