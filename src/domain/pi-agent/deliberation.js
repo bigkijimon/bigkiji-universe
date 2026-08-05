@@ -13,9 +13,9 @@
 //   * The merge is code, not a model. Consolidation is set arithmetic over steps, so it
 //     costs nothing, is deterministic, and cannot hallucinate a step nobody proposed.
 
-const fs = require('fs');
 const path = require('path');
 const { keywords, jaccard } = require('./task-cache');
+const { readList, writeList } = require('./json-list-store');
 
 // Local first: the free lens always participates, so a deliberation still happens when
 // nothing paid is available. Roles map to the capability registry's existing vocabulary.
@@ -100,19 +100,9 @@ class DeliberationMemory {
     this.threshold = threshold; this.limit = limit;
   }
 
-  read() {
-    try { const value = JSON.parse(fs.readFileSync(this.file, 'utf8')); return Array.isArray(value.plans) ? value : { version: 1, plans: [] }; }
-    catch (_) { return { version: 1, plans: [] }; }
-  }
+  read() { return readList(this.file, 'plans'); }
 
-  write(memory) {
-    try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ ...memory, plans: memory.plans.slice(-this.limit) }, null, 2), { mode: 0o600 });
-      fs.renameSync(tmp, this.file);
-    } catch (_) {}
-  }
+  write(memory) { writeList(this.file, 'plans', memory, this.limit); }
 
   /**
    * The closest plan that has not proved itself wrong.

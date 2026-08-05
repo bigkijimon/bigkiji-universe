@@ -68,13 +68,22 @@ const MODE_COLORS = Object.freeze({
 // identity where they can (codex, claude) and to leave it only where distinctness
 // matters more than harmony (gemini, qwen) — a palette nobody can tell apart is not a
 // palette. NO_COLOR strips every one of them through raw().
+// The three the GUI already had keep the GUI's exact values. multi-terminal-manager.js
+// has coloured providers in the window for as long as it has existed — #d97757 for
+// claude-code, #8b5cf6 for glm, #34d399 for everyone else — and shipping a second
+// palette here would have meant the same model wearing two colours depending on which
+// surface the owner happened to be looking at. That file is a browser IIFE and cannot
+// require this module, so the two are kept in step by value and by this note; change
+// one, change the other.
 const PROVIDER_COLORS = Object.freeze({
-  'claude-code': raw('38;2;217;119;6'), claude: raw('38;2;217;119;6'),
+  'claude-code': raw('38;2;217;119;87'), claude: raw('38;2;217;119;87'),   // #d97757
+  glm: raw('38;2;139;92;246'),                                            // #8b5cf6
+  qwen: raw('38;2;52;211;153'), ollama: raw('38;2;52;211;153'),           // #34d399
+  'local-qwen': raw('38;2;52;211;153'), 'pi-agent-core': raw('38;2;52;211;153'),
+  // The rest the GUI never distinguished; these are new and stay inside the warm
+  // identity where they can.
   codex: raw('38;2;255;179;71'),
   gemini: raw('38;2;110;168;254'),
-  glm: raw('38;2;168;134;255'),
-  qwen: raw('38;2;120;196;150'), ollama: raw('38;2;120;196;150'),
-  'local-qwen': raw('38;2;120;196;150'), 'pi-agent-core': raw('38;2;120;196;150'),
   diagnosis: raw('38;2;185;161;141'),
 });
 /** The colour for a provider id, or the muted default for one nobody has coloured. */

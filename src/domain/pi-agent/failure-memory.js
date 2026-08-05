@@ -23,9 +23,9 @@
 //   * Untried is stored as untried. `—` is not 0, and "no evidence yet" must never be
 //     read as "proven".
 
-const fs = require('fs');
 const path = require('path');
 const { keywords, jaccard } = require('./task-cache');
+const { readList, writeList } = require('./json-list-store');
 
 const flat = (value, limit) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, limit);
 
@@ -52,21 +52,9 @@ class FailureMemory {
     this.limit = limit;
   }
 
-  read() {
-    try {
-      const value = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      return Array.isArray(value.failures) ? value : { version: 1, failures: [] };
-    } catch (_) { return { version: 1, failures: [] }; }
-  }
+  read() { return readList(this.file, 'failures'); }
 
-  write(memory) {
-    try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ ...memory, failures: memory.failures.slice(-this.limit) }, null, 2), { mode: 0o600 });
-      fs.renameSync(tmp, this.file);
-    } catch (_) {}
-  }
+  write(memory) { writeList(this.file, 'failures', memory, this.limit); }
 
   /**
    * What is known about this failure, if anything.

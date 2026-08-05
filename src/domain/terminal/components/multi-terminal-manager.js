@@ -3,6 +3,9 @@
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[char]));
 
+  // Same three values as PROVIDER_COLORS in cli-theme.js, which colours the same
+  // providers in the terminal. This file is a browser IIFE and cannot require that
+  // module, so they are kept in step by value: change one, change the other.
   const providerColor = (provider) => provider === 'claude-code'
     ? '#d97757' : provider === 'glm' ? '#8b5cf6' : '#34d399';
 
