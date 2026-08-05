@@ -443,8 +443,12 @@ Honest list of what is not settled:
   Treat Windows as unsupported until that is closed.
 - **Not published to a registry.** `package.json` sets `"private": true`; install from a
   clone.
-- **No release badges.** CI exists (`.github/workflows/ci.yml`) but no external status,
-  coverage or package service is configured for this repository, so none is linked here.
+- **CI is not green.** `.github/workflows/ci.yml` runs the full suite on three operating
+  systems and an Electron smoke run; Linux and the smoke run pass, the other two do not.
+  What is failing and what has already been fixed is written down in
+  [docs/known-issues.md](docs/known-issues.md) rather than left for you to discover.
+- **No release badges.** No external status, coverage or package service is configured
+  for this repository, so none is linked here.
 
 ---
 
