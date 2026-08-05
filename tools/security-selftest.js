@@ -89,7 +89,10 @@ function fakeChild() {
   const launches = []; process.env.BIGKIJI_CANARY_SECRET = 'MUST_NOT_REACH_CHILD';
   const runner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: (command, args, options) => { launches.push({ command, args, options }); return fakeChild(); } });
   const task = runner.plan({ id: 'secure-codex', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project });
-  assert(task.disclosure?.disclosureHash); assert(task.disclosure.files.some((file) => file.path === TARGET));
+  // Not TARGET. `includedFiles` carries the platform's own separator, but the
+  // disclosure manifest deliberately normalises to forward slashes — it is hashed and
+  // shown to the owner, so the same file has to spell the same on every machine.
+  assert(task.disclosure?.disclosureHash); assert(task.disclosure.files.some((file) => file.path === 'src/target.js'));
   runner.approve(task.id, { disclosureHash: task.disclosure.disclosureHash }); await runner.waitFor(task.id, 2000);
   assert.equal(launches.length, 1); assert.equal(launches[0].options.env.BIGKIJI_CANARY_SECRET, undefined);
   assert.equal(launches[0].options.env.OPENAI_API_KEY, undefined); assert(launches[0].args.includes('--ignore-user-config'));
