@@ -7,12 +7,15 @@ on:
 permissions:
   contents: read
 
-# Several pushes in a row left macOS jobs reported as "failure" with no failed step
-# — they had been cancelled mid-run while the faster Linux job finished. Saying so
-# explicitly means a red badge is a real failure and not a queue artefact.
+# Group runs per ref, but do not cancel one to start another. cancel-in-progress
+# looked right and was not: a rerun counts as a new run on the same ref, so asking
+# for the result cancelled the attempt that was producing it, and every job that had
+# not finished yet was reported as "failure" with no failed step. On a project where
+# the whole matrix takes a few minutes, letting runs finish costs less than not being
+# able to trust what they say.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
