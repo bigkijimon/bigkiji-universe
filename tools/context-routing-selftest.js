@@ -110,8 +110,12 @@ dataRootModule.writePointer(ud, { dataRoot: path.join(fakeHome, 'pointed') });
 assert.strictEqual(dataRootModule.resolveDataRoot({ userData: ud, env: {}, home: fakeHome }).dataRoot, path.join(fakeHome, 'pointed'));
 
 // Reference mode must keep each root pointing at its existing location.
-const layout = dataRootModule.dataLayout(path.join(fakeHome, 'newroot'), { sessionsRoot: '/legacy/sessions' });
-assert.strictEqual(layout.sessionsRoot, '/legacy/sessions');
+// dataLayout runs the override through path.resolve, so on Windows a bare
+// '/legacy/sessions' comes back as 'D:\legacy\sessions'. Build an absolute path the
+// platform agrees with and assert the override survives, not how it is spelled.
+const legacySessions = path.resolve(path.sep, 'legacy', 'sessions');
+const layout = dataRootModule.dataLayout(path.join(fakeHome, 'newroot'), { sessionsRoot: legacySessions });
+assert.strictEqual(layout.sessionsRoot, legacySessions);
 assert.strictEqual(layout.ideasRoot, path.join(fakeHome, 'newroot', 'ideas'));
 
 // The migration whitelist must never include the owner's vault or foreign scripts.

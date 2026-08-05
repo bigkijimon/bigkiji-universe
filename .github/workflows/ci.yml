@@ -32,9 +32,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Install scripts are gated in this project, so `npm ci` leaves electron/dist
+      # empty and the binary is fetched on first launch. Fetch it explicitly, because
+      # the next step needs the files to exist.
+      - name: Fetch the Electron binary
+        run: node node_modules/electron/install.js
       # Chromium refuses to start rather than run unsandboxed, and its SUID helper
-      # ships from npm owned by the unprivileged runner user. Giving it the ownership
-      # and mode it asks for keeps the sandbox on, which is the point of the check —
+      # arrives owned by the unprivileged runner user. Giving it the ownership and
+      # mode it asks for keeps the sandbox on, which is the point of the check —
       # passing --no-sandbox would make the smoke run prove less than it looks like.
       - name: Let Chromium's SUID sandbox helper do its job
         run: |
