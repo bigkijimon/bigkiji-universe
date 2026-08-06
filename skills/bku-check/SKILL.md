@@ -111,3 +111,43 @@ report on a phone is that the owner can verify the claim, not just read it.
   ACE-Step share this machine's memory, and two at once means an OOM.
 - **iCloud upload is background work.** Never tell the owner "it has synced". Say what
   was written locally and let them confirm on the phone.
+
+## Never put a file BigKiji writes into the model's context
+
+Measured 2026-08-07, session `session-mshrjht0-5cb915.jsonl`: every run the owner asked
+for from their phone ended in `STALE_DISCLOSURE_MANIFEST`, every task went `blocked`, and
+the material they wanted was never produced.
+
+The disclosure manifest seals a sha256 of every file a provider may read and re-hashes
+at launch. In one session:
+
+| sealed | distinct hashes | file |
+|---|---|---|
+| 92 | **12** | `knowledge/task_state.json` |
+| 92 | 1 | `knowledge/knowledge_graph.json` |
+| — | 1 | every other sealed file |
+
+Nothing external was editing it. **BigKiji rewrites it itself** — `recordEvent()` →
+`saveState()` runs the moment a run is planned, which lands between `prepare()` sealing
+the slices and `start()` re-hashing them. The verifier was right every time; the app was
+sealing a promise it was about to break.
+
+The rule that comes out of it:
+
+> **A file the app writes while it runs is never context.** State, sessions, knowledge
+> and logs are a diary. `reports/`, `ideas/` and `Generated/` are deliverables and stay
+> readable.
+
+`ContextPruner` takes `dataRoots` for this and `path-config.workingRoots()` names them.
+Two things that look like details and are not:
+
+- **Canonicalise both sides with `security-policy.canonical`**, never `path.resolve`. On
+  macOS the directory walk yields `/private/var/…` while `path.resolve` leaves `/var/…`,
+  so the exclusion silently never fires and the bug looks fixed.
+- **Do not relax `verifyDisclosureManifest`.** The temptation is to hash more leniently.
+  That trades a broken run for a broken guarantee.
+
+Symptoms worth recognising early: `run FAILED` with every assignment `blocked`, an error
+that names the manifest, and a `fullContextTokens` in the millions. The last one means
+the workspace is too wide — a daemon started from the home directory takes the home
+directory as its workspace, which is how the diary got in range in the first place.

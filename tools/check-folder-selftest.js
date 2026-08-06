@@ -149,6 +149,28 @@ function rest() {
       assert.match(body, /JavaScript disabled/,
         'the iOS Quick Look limitation is the one fact that stops us promising a bare HTML file is playable');
       assert.match(body, /faststart/, 'and the video recipe is what makes a deliverable checkable at all');
+      assert.match(body, /task_state\.json/,
+        'the file that broke every run has to be named, or the rule is an abstraction nobody applies');
+
+      // ---- what stops us building a unit the course already teaches ------------
+      //
+      // Measured 2026-08-07: an entire unit was designed around `How much is it?` and
+      // `I would like ~, please` — a 100% duplicate of u03 and u07 — because only
+      // RolePlayBook #2 had been read and content/materials/thailand.ts had not. It was
+      // caught by accident, one step before production. The same pass also reported
+      // "there are no 3D characters" after searching for .glb, when fourteen of them
+      // exist as rendered PNGs. Both facts live in this skill; losing it costs a
+      // duplicate unit or a re-drawn cast.
+      const lesson = registry.scan().find((entry) => entry.id === 'lesson-video');
+      assert.ok(lesson, 'skills/lesson-video must be discoverable');
+      assert.equal(lesson.origin, 'app');
+      assert.match(String(registry.brief('タイ教材の新しいユニットを作りたい')), /Skill: lesson-video/,
+        'and it has to be selected exactly when a new unit is being designed');
+      const guide = fs.readFileSync(path.join(APP_SKILLS, 'lesson-video', 'SKILL.md'), 'utf8');
+      assert.match(guide, /thailand\.ts/, 'the existing curriculum has to be findable from the skill');
+      assert.match(guide, /テキストブック/, 'and so do the characters that already exist');
+      assert.match(guide, /non_diegetic_music/,
+        'BGM baked into a clip cannot be swapped later — the one irreversible mistake in this pipeline');
     }
 
     fs.rmSync(root, { recursive: true, force: true });

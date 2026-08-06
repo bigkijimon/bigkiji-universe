@@ -28,6 +28,12 @@ src/components/UI/console-dist/
 # check-folder-selftest fails without it. It names no sister business and no path that
 # src/core/path-config.js does not already state in the open.
 !/skills/bku-check/
+# Same reasoning for lesson-video. It is not a playbook about the owner's machine; it is
+# what stops the agent from building a unit the course already teaches (measured
+# 2026-08-07: a whole unit was designed as a 100% duplicate of u03 and u07 before anyone
+# opened content/materials/thailand.ts) and from re-generating characters that already
+# exist. Losing it costs a duplicate unit, which is the expensive kind of mistake here.
+!/skills/lesson-video/
 # 第三者の動画9本のフレーム単位解析。画面内のコードと字幕を逐語転記しており、
 # 他人の著作物の複製にあたる。設計判断の根拠としてローカルには残す。
 /docs/reference-analysis.md
