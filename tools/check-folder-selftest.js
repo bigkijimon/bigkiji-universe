@@ -118,9 +118,13 @@ function rest() {
     assert.equal(paths.checkRoot,
       path.join('/Users/test', 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'BigkijiUniverse-Check'),
       'iCloud Drive is the only place both the Mac and the phone can reach without a server');
+    // Resolved on both sides: a POSIX literal like '/Volumes/Share/check' becomes
+    // 'D:\Volumes\Share\check' on Windows, which is the platform being right and the
+    // assertion being wrong. The same trap as the fixtures fixed on 2026-08-06.
+    const override = path.resolve('/Volumes/Share/check');
     const overridden = createPathConfig({ appRoot: path.join(__dirname, '..'), home: '/Users/test',
-      env: {}, saved: { checkRoot: '/Volumes/Share/check' } });
-    assert.equal(overridden.checkRoot, '/Volumes/Share/check',
+      env: {}, saved: { checkRoot: override } });
+    assert.equal(overridden.checkRoot, override,
       'a machine on a different iCloud account must be able to point this somewhere real');
     // `~` expands against the running process's home, the same as every other saved
     // path here (uiRoot, knowledgeRoot). Pinned so the inconsistency is a choice.
