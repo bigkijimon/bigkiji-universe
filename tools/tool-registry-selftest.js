@@ -162,10 +162,20 @@ assert.strictEqual(expandPath('~/x', home), path.join(home, 'x'), 'tilde expansi
   assert.match(empty.detail, /no nodes/);
 
   // An executable that answers is connected; one that cannot run is not.
-  const cli = await probe(by('graphify'), { timeoutMs: 2000 });
-  assert.strictEqual(cli.ok, true);
-  assert.strictEqual(cli.status, STATUS.CONNECTED);
-  assert.match(cli.detail, /graphify 0\.0\.0/);
+  // The fixture is a `#!/bin/sh` script, which Windows cannot execute — there is no
+  // shebang there and an extensionless file is not runnable. That is the fixture not
+  // applying, not the probe being wrong, so this runs where the fixture is valid.
+  // Whether the registry should find `graphify.cmd` on Windows is a product question
+  // and is part of "Windows is not verified" in the README, not something to paper
+  // over by rewriting the fixture until the assertion goes green.
+  if (process.platform === 'win32') {
+    console.log('  (skipped: the CLI fixture is a POSIX shell script — see README, Windows is not verified)');
+  } else {
+    const cli = await probe(by('graphify'), { timeoutMs: 2000 });
+    assert.strictEqual(cli.ok, true);
+    assert.strictEqual(cli.status, STATUS.CONNECTED);
+    assert.match(cli.detail, /graphify 0\.0\.0/);
+  }
 
   // ---- settings normalisation ----------------------------------------------
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-tools-settings-'));
