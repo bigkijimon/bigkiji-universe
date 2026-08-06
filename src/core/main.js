@@ -17,6 +17,7 @@ const APP_ROOT = path.resolve(__dirname, '..', '..');
   loadEnvFiles({ dataRoot, appRoot: APP_ROOT, dotenv, expand });
 }
 const { createPathConfig } = require('./path-config');
+const { signalChild, signalPid } = require('./child-signal');
 let savedPaths = {};
 try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}
 const PATHS = createPathConfig({ appRoot: APP_ROOT, userData: app.getPath('userData'), saved: savedPaths });
@@ -152,7 +153,7 @@ function spawnShell() {
     child.stdout.on('data', (d) => onData(d.toString()));
     child.stderr.on('data', (d) => onData(d.toString()));
     child.on('exit', () => { if (!quitting) setTimeout(spawnShell, 500); });
-    pty = { write: (d) => child.stdin.write(d), resize: () => {}, kill: () => child.kill() };
+    pty = { write: (d) => child.stdin.write(d), resize: () => {}, kill: () => signalChild(child) };
     ptyMode = 'pipe';
     bus.push({ source: 'system', type: 'info', text: `node-pty unavailable — running in pipe mode (${err.code || err.message})` });
   }
@@ -1347,7 +1348,9 @@ async function stopDaemonForMigration() {
     const alive = await fetch('http://127.0.0.1:8777/health').then((r) => r.ok).catch(() => false);
     if (!alive) return true;
     if (attempt === 11) {
-      try { process.kill(Number(fs.readFileSync(PATHS.daemonPidFile, 'utf8').trim()), 'SIGTERM'); } catch (_) {}
+      // An empty or half-written pid file reads as '', and Number('') is 0 — which
+      // asks the kernel to signal this entire process group rather than the daemon.
+      try { signalPid(fs.readFileSync(PATHS.daemonPidFile, 'utf8').trim(), 'SIGTERM'); } catch (_) {}
     }
   }
   return false;

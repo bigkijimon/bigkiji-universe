@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { signalChild } = require('../../../core/child-signal');
 
 const DEFAULT_ROOT = path.join(require('os').homedir(), 'ComfyUI');
 const WORKFLOWS = Object.freeze({
@@ -203,7 +204,7 @@ class ComfyUIMediaBridge extends EventEmitter {
   }
 
   shutdown() {
-    if (this.child && this.child.exitCode == null) this.child.kill('SIGTERM');
+    signalChild(this.child, 'SIGTERM');
     this.child = null;
   }
 }

@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 const { EventEmitter } = require('events');
 const fs = require('fs');
+const { signalChild } = require('../../core/child-signal');
 const { SecurityPolicy } = require('../pi-core/security/security-policy');
 // v13: 静的チェーン→動的チェーン（model-router.jsがキー実在を検知して可用ティアを構築。
 // GLMは確定実行時のみ参戦。quota沈黙・429検知でOllamaへ即降格する。
@@ -140,7 +141,9 @@ class PiBridge extends EventEmitter {
   }
 
   stop() {
-    if (this.proc) { try { this.proc.kill(); } catch (_) {} this.proc = null; }
+    // Pi is missing on any machine that has not installed it, and a failed spawn still
+    // leaves a ChildProcess here — one whose kill() would signal our process group.
+    if (this.proc) { signalChild(this.proc); this.proc = null; }
     this.emit('status', { running: false });
   }
 
