@@ -437,14 +437,13 @@ Honest list of what is not settled:
 - **Platform coverage is uneven.** Menu-bar residency (`app.dock.hide`) and the cmux bridge
   are macOS-only. The `bigkiji` launcher is a zsh script, so the CLI aliases assume a
   POSIX shell with zsh available.
-- **Windows is not verified.** CI runs the suite on Windows and it does not pass yet. Until
-  2026-08-05 CI had been red for an unrelated reason since 2026-08-02, so nothing off macOS
-  was being checked at all; fixing that surfaced a run of real Windows defects, since fixed:
-  the sandbox compared 8.3 short names against expanded ones and refused every read, aborting
-  a task whose child had already exited threw `EINVAL`, and abandoned worktrees were returned
-  in git's spelling rather than a resolved one. What remains is a libuv assertion
-  (`!(handle->flags & UV_HANDLE_CLOSING)`) during teardown on Windows. Linux passes.
-  Treat Windows as unsupported until that is closed.
+- **Windows runs the suite green, but is otherwise unexercised.** All 62 selftests pass on
+  windows-latest as of 2026-08-06. Getting there fixed six defects that had been invisible
+  while CI could only run on macOS — two of them real product bugs, including a sandbox check
+  that compared 8.3 short names against expanded ones and so refused every read inside the
+  sandbox. See [docs/known-issues.md](docs/known-issues.md). That is the test suite, not the
+  application: the tray-resident behaviour, the cmux bridge and the zsh launcher are still
+  macOS-only, and nobody has run the app itself on Windows for real.
 - **Not published to a registry.** `package.json` sets `"private": true`; install from a
   clone.
 - **CI is not green.** `.github/workflows/ci.yml` runs the full suite on three operating
