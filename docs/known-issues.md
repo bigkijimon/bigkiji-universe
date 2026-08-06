@@ -74,7 +74,7 @@ real child must still stop.
 | | ubuntu | macOS | windows |
 |---|---|---|---|
 | Before (12 runs on `main`) | 5/12 green | **0/12** | 12/12 |
-| After (5 consecutive reruns of `2e733dc`) | **5/5** | **5/5** | **5/5** |
+| After (5 consecutive reruns of `9ada81a`) | **5/5** | **5/5** | **5/5** |
 
 ### What was ruled out on the way, and what the wrong guess cost
 
