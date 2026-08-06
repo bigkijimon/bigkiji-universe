@@ -14,8 +14,9 @@ a loopback daemon, and a standalone `bigkiji` CLI/TUI that attaches to the same 
 
 On macOS the app hides its dock icon and lives in the menu bar (`app.dock.hide()` in
 `src/core/main.js`). Windows and Linux build targets exist in `package.json`, and CI runs
-the suite on all three, but the tray-resident behaviour and the cmux bridge are
-macOS-specific and **Windows is not verified** ([docs/known-issues.md](docs/known-issues.md)).
+the suite on all three — green on Windows and Linux. The tray-resident behaviour, the cmux
+bridge and the zsh launcher are macOS-specific, and the app itself has not been run on
+Windows ([docs/known-issues.md](docs/known-issues.md)).
 
 ---
 
@@ -88,8 +89,9 @@ Each one is a plain Node script under `tools/` with no test framework, and print
 line naming what it checked.
 
 CI (`.github/workflows/ci.yml`) runs `npm ci && npm test` on macOS, Windows and Ubuntu, and
-runs the Electron smoke test under `xvfb` on Ubuntu. It is **not green** — see
-[docs/known-issues.md](docs/known-issues.md) for exactly what fails and what does not.
+runs the Electron smoke test under `xvfb` on Ubuntu. Windows, Linux and the smoke run are
+green; the macOS leg is intermittently torn down by the runner before it can finish, which
+is measured and written up in [docs/known-issues.md](docs/known-issues.md).
 
 ---
 
@@ -446,9 +448,10 @@ Honest list of what is not settled:
   macOS-only, and nobody has run the app itself on Windows for real.
 - **Not published to a registry.** `package.json` sets `"private": true`; install from a
   clone.
-- **CI is not green.** `.github/workflows/ci.yml` runs the full suite on three operating
-  systems and an Electron smoke run; Linux and the smoke run pass, the other two do not.
-  What is failing and what has already been fixed is written down in
+- **The macOS CI leg is flaky, and it is not this code.** Windows, Linux and the Electron
+  smoke run pass. The macOS job is sent SIGTERM from outside three to four seconds into
+  `test:daemon`, at unremarkable memory, while another leg runs the identical code to
+  completion — the selftest instruments itself under CI and says so. Written up in
   [docs/known-issues.md](docs/known-issues.md) rather than left for you to discover.
 - **No release badges.** No external status, coverage or package service is configured
   for this repository, so none is linked here.
