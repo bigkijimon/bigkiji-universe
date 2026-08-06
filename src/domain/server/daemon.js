@@ -1442,8 +1442,24 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
     engine.publish('error', { source: 'daemon', error: String(error.message).slice(0, 200) });
     process.exit(1);
   });
-  const close = () => { clearInterval(ping); for (const socket of sockets) socket.close(); wss.close(); engine.shutdown(); server.close(() => process.exit(0)); };
-  process.once('SIGTERM', close); process.once('SIGINT', close);
+  // Shutting down and leaving the process are two different jobs. `close` used to do
+  // both, so the only correct teardown was unusable from a test — which is why the
+  // selftests each hand-rolled a partial one, closed the HTTP server but not the
+  // WebSocket server, and called process.exit() with a close still in flight. POSIX
+  // tolerates that; Windows aborts inside libuv with
+  //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c
+  // Now `close(cb)` finishes and calls back, and whoever wanted to exit does it.
+  const close = (onClosed) => {
+    clearInterval(ping);
+    for (const socket of sockets) socket.close();
+    wss.close();
+    engine.shutdown();
+    server.close(() => { if (typeof onClosed === 'function') onClosed(); });
+  };
+  // A signal handler is called with the signal name, so it cannot be `close` itself —
+  // the name would arrive as `onClosed` and silently not be a function.
+  const closeAndExit = () => close(() => process.exit(0));
+  process.once('SIGTERM', closeAndExit); process.once('SIGINT', closeAndExit);
   return { server, engine, config, mobileDevices, close };
 }
 

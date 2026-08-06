@@ -111,8 +111,10 @@ fs.writeFileSync(path.join(dataRoot, 'secret.json'), '{"token":"must-not-escape"
   assert.strictEqual((await fetch(`${base}/health`)).status, 200,
     'the daemon has to still be alive after a read that failed');
 
-  listener.server.close(); engine.shutdown();
+  // Close through the daemon's own teardown and wait for it. Closing only the HTTP
+  // server left the WebSocket server open, and exiting with a close still in flight
+  // aborts inside libuv on Windows.
+  await new Promise((resolve) => listener.close(resolve));
   fs.rmSync(dataRoot, { recursive: true, force: true });
   console.log('assets route selftest: PASS · authenticated · Range + 416 + HEAD · traversal refused (raw, encoded and symlinked) · type from a fixed map · a failed read does not kill the daemon');
-  process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });

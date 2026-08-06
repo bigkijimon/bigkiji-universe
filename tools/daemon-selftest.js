@@ -5,6 +5,31 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { DaemonEngine, startDaemon, jsonSafe } = require('../src/domain/server/daemon');
+
+// Instrumentation for the intermittent CI kill (see docs/known-issues.md #1).
+// Across 12 runs this test was cut short on macOS 12/12 and on Linux 7/12, always
+// with "The runner has received a shutdown signal" and no failed assertion. Guessing
+// from the outside has not narrowed it, so the job says what it saw. Everything here
+// is quiet unless something actually happens, and none of it changes what is tested.
+if (process.env.CI) {
+  const t0 = Date.now();
+  const at = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+  const mb = (n) => `${Math.round(n / 1024 / 1024)}MB`;
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT']) {
+    process.on(sig, () => {
+      const m = process.memoryUsage();
+      console.error(`[selftest] ${sig} received at ${at()} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)}`);
+      process.exit(1);   // report it rather than dying silently
+    });
+  }
+  process.on('exit', (code) => console.error(`[selftest] exit ${code} at ${at()}`));
+  // A heartbeat pins how far it got. unref'd so it never holds the process open.
+  const beat = setInterval(() => {
+    const m = process.memoryUsage();
+    console.error(`[selftest] alive ${at()} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)} handles=${process._getActiveHandles?.().length ?? '?'}`);
+  }, 5000);
+  beat.unref();
+}
 const { daemonSpawnEnv } = require('../src/domain/server/daemon-client');
 const WebSocket = require('ws');
 
@@ -421,6 +446,6 @@ const WebSocket = require('ws');
     clearTimeout(timer);
   }
 
-  await new Promise((resolve) => listener.server.close(resolve)); engine.shutdown();
+  await new Promise((resolve) => listener.close(resolve));
   console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened · the repair asks why, does not stop to ask permission, and remembers the answer');
 })().catch((error) => { console.error(error); process.exit(1); });
