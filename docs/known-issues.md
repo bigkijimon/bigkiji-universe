@@ -82,9 +82,9 @@ All real, all invisible while CI was red, all now covered by a test:
 | Runner | State |
 |---|---|
 | electron-smoke | Passing |
-| ubuntu-latest | Passed once; otherwise shut down mid-run during `test:daemon` |
-| macos-latest | Same shutdown as ubuntu, at a similar elapsed time |
-| windows-latest | Runs the whole suite, then the libuv assertion at teardown |
+| ubuntu-latest | Passes when the job is allowed to finish; otherwise SIGTERM'd from outside |
+| macos-latest | Same, and has not yet been allowed to finish |
+| windows-latest | Runs the whole suite. The libuv assertion below is **fixed**; awaiting a green run to confirm |
 
 Timings from one run, which is the clearest evidence of the shape of problem 1:
 
@@ -109,7 +109,32 @@ Checked and ruled out while narrowing it:
   explained the message exactly.
 - Not a regression: ubuntu succeeded both before and after every candidate commit.
 
-What is left points at the environment rather than the code — a resource ceiling
-or a preemption that `test:daemon` is simply the longest-running thing to be
-sitting in when it arrives. Confirming that needs instrumentation inside the job
-(signal handlers and a heartbeat) rather than more guesses from outside.
+### Measured, 2026-08-06
+
+The selftest now instruments itself under CI, and the instrumentation answers it:
+
+```
+[selftest] alive 8.1s · rss=180MB heap=94MB handles=7     ← the runner that finished
+[selftest] exit 0 at 8.2s
+
+[selftest] SIGTERM received at 3.6s · rss=206MB heap=64MB ← the two that did not
+[selftest] exit 1 at 3.6s
+[selftest] SIGTERM received at 4.4s · rss=210MB heap=75MB
+[selftest] exit 1 at 4.4s
+```
+
+**The process does not fail. It is sent SIGTERM from outside**, three to four
+seconds in, while memory is unremarkable (~200MB) — and the third runner executes
+exactly the same code to completion. Combined with the runner's own
+"The runner has received a shutdown signal", the job is being torn down around the
+test rather than by it.
+
+That makes it a GitHub infrastructure condition, not a defect here, and no further
+change to this code will fix it. Adding step markers would not help either: the leg
+that survives runs the identical path.
+
+If it needs to stop being noise, the options are to retry the affected leg (which
+means a third-party action, and this project does not add dependencies without
+discussing them first) or to accept it and read the matrix as "Linux passes when it
+is allowed to finish". The instrumentation stays so the next occurrence is evidence
+rather than a mystery.
