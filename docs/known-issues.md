@@ -45,17 +45,29 @@ The daemon selftest starts a real detached daemon, and "Cleaning up orphan
 processes" appears in the same log. A detached child holding the runner's process
 group or stdio is the thread to pull first.
 
-## 2. Windows crashes at teardown
+## 2. Windows — **fixed, 2026-08-06**
 
-Windows gets further, then aborts inside libuv after `test:assets` passes:
+Windows now runs all 62 selftests green. Getting there took six defects, every one
+of them invisible while the suite could not run anywhere but macOS:
 
-```
-assets route selftest: PASS · ...
-Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
-```
+| What broke | Why only Windows |
+|---|---|
+| `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` | `startDaemon`'s `close` also called `process.exit`, so the tests hand-rolled a partial teardown and exited over a closing handle. POSIX tolerates that |
+| Sandbox refused every read inside itself | Roots resolved with `fs.realpathSync`, targets with `fs.realpathSync.native` — only the native one expands 8.3 short names |
+| `EINVAL` aborting a task | Signalling an already-exited child throws on Windows and is ignored on POSIX |
+| Worktrees not found again | `listAbandoned` returned git's spelling (forward slashes) while everything else is natively resolved |
+| Permission assertions | Windows has no POSIX mode bits; `fs.stat` reports a fixed value from the read-only flag |
+| Fixtures written as POSIX literals | `'/tmp/ComfyUI'` resolves to `D:\tmp\ComfyUI`; a `#!/bin/sh` script is not executable; a fake file list must be joined the way the code joins |
 
-A handle closed twice during shutdown. POSIX tolerates it; Windows asserts.
-Until this is closed, treat Windows as unsupported.
+Two of those — the sandbox comparison and the `EINVAL` — were real product defects
+rather than test problems. The sandbox one failed closed, so it was never a hole,
+but the app could not read its own working directory on Windows.
+
+Where a check genuinely cannot apply, it is skipped with the reason stated rather
+than deleted. The credential-lending suite goes further: read-only lending is a
+security property, so on Windows its summary line reads
+`read-only NOT CHECKED (no POSIX modes on this platform)`. A green tick that
+quietly stopped checking a security property would be worse than a red one.
 
 ## Fixed on the way here
 
@@ -84,7 +96,7 @@ All real, all invisible while CI was red, all now covered by a test:
 | electron-smoke | Passing |
 | ubuntu-latest | Passes when the job is allowed to finish; otherwise SIGTERM'd from outside |
 | macos-latest | Same, and has not yet been allowed to finish |
-| windows-latest | Runs the whole suite. The libuv assertion below is **fixed**; awaiting a green run to confirm |
+| windows-latest | **Green.** All 62 selftests pass |
 
 Timings from one run, which is the clearest evidence of the shape of problem 1:
 
