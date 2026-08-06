@@ -66,6 +66,13 @@ function createPathConfig({ appRoot, userData = '', dataRoot = '', env = process
     path.join(layout.modelsRoot, 'whisper', 'ggml-small.bin'),
     path.join(legacyModels, 'whisper', 'ggml-small.bin'),
   ], path.join(layout.modelsRoot, 'whisper', 'ggml-small.bin'));
+  // The folder the owner shares with their phone. iCloud Drive is the only place both
+  // ends can reach without a server, so the path is fixed rather than discovered —
+  // but `saved` still wins, because a machine signed into a different iCloud account
+  // would otherwise write into a folder that never syncs anywhere.
+  const checkRoot = expandHome(saved.checkRoot)
+    || path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'BigkijiUniverse-Check');
+
   const venvBin = process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'];
   const ttsVenvPython = firstExisting([
     path.join(layout.modelsRoot, 'tts', 'venv', ...venvBin),
@@ -80,6 +87,7 @@ function createPathConfig({ appRoot, userData = '', dataRoot = '', env = process
     vaultRoot,
     knowledgeRoot,
     graphPath,
+    checkRoot,
     dataRootSource: resolved.source || 'explicit',
     dataRootMode: resolved.mode || 'own',
     whisperModel,

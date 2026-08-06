@@ -715,8 +715,32 @@ function installSignalHandlers() {
   process.on('SIGINT', () => process.exit(130));
 }
 
+/**
+ * `bigkiji check` — what the phone has sent, ready to read.
+ *
+ * The download step is the whole reason this is a command rather than `ls`: with
+ * "Optimize Mac Storage" on, a file the phone uploaded is a zero-byte stub here until
+ * something asks iCloud for the bytes. Without this, the answer to "look at what I
+ * sent you" is an empty folder.
+ */
+async function printCheckFolder() {
+  const { createPathConfig } = require('../../core/path-config');
+  const check = require('../../core/check-folder');
+  const dirs = check.ensure(createPathConfig({ appRoot: APP_ROOT }).checkRoot);
+  const pulled = await check.materialise(dirs.input);
+  if (pulled.requested) {
+    console.log(`${A.dim}iCloud から ${pulled.arrived.length}/${pulled.requested} 件を取り寄せました${A.reset}`);
+    for (const name of pulled.stillPending) console.log(`${A.warning}まだ届いていません: ${name}${A.reset}`);
+  }
+  console.log(check.summarise(check.inventory(dirs.input), { now: Date.now() }));
+  console.log(`${A.dim}${dirs.root}${A.reset}`);
+}
+
 async function main(argv = process.argv.slice(2)) {
   installSignalHandlers();
+  // Before the daemon handshake on purpose: looking at what the phone sent is reading
+  // a folder, and it has to work when the engine is down or the owner is in a hurry.
+  if (String(argv[0] || '').replace(/^\//, '').toLowerCase() === 'check') { await printCheckFolder(); return; }
   const client = await ensureClient(); setMode(prefs.get().mode, false); const args = [...argv]; const autoAt = args.indexOf('--auto'); const auto = autoAt >= 0;
   if (auto) args.splice(autoAt, 1); const command = String(args[0] || '').replace(/^\//, '').toLowerCase();
   if (['monitor', 'tui'].includes(command) || args.includes('--tui')) { const monitor = new TUIMonitor({ client }); client.on('hud-request', () => launchHud()); await monitor.start(); return; }
