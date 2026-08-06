@@ -54,15 +54,28 @@ const children = () => (process._getActiveHandles?.() ?? [])
   .map((child) => `${child.pid}:${String(child.spawnfile || '?').split(/[\\/]/).pop()}`
     + ` ${String((child.spawnargs || [])[1] || '').slice(0, 24)}`.trimEnd())
   .join(' | ');
+// Descriptors are the resource this test could plausibly exhaust — it opens sockets,
+// spawns children and writes files — and the runner agent shares the limit with it.
+// A count here is the difference between "we ran the machine out" and "we did not".
+const fdDir = process.platform === 'darwin' ? '/dev/fd' : '/proc/self/fd';
+const fds = () => { try { return fs.readdirSync(fdDir).length; } catch (_) { return '?'; } };
 const mark = process.env.CI ? (what) => {
   const m = process.memoryUsage();
   const kids = children();
   try {
     fs.writeSync(2, `[selftest] ${at()} ${what} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)}`
-      + ` handles=${handles()}${kids ? `\n[selftest] ${at()} children: ${kids}` : ''}\n`);
+      + ` fds=${fds()} handles=${handles()}${kids ? `\n[selftest] ${at()} children: ${kids}` : ''}\n`);
   } catch (_) {}   // a closed fd 2 must not be the thing that fails the test
 } : () => {};
 if (process.env.CI) {
+  // What the machine was willing to give, printed once, so the counts above have
+  // something to be measured against.
+  try {
+    const limits = process.report?.getReport?.()?.userLimits || {};
+    const files = limits.open_files || {};
+    fs.writeSync(2, `[selftest] limits: open_files ${files.soft}/${files.hard}`
+      + ` · cpus=${os.cpus().length} · totalmem=${mb(os.totalmem())} · ${process.platform}\n`);
+  } catch (_) {}
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT']) {
     process.on(sig, () => {
       mark(`${sig} received`);
