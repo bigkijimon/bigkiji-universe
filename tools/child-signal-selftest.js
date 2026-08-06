@@ -86,8 +86,10 @@ const posix = process.platform !== 'win32';
   for (const empty of ['', '   ', 'not-a-pid', '0', '-1', undefined, null, '1.5']) {
     assert.equal(signalPid(empty, 'SIGTERM'), false, `a pid file reading ${JSON.stringify(empty)} must not signal anything`);
   }
-  assert.equal(signalPid(String(process.pid), 'SIGCONT'), true,
-    'a real pid is still signalled — SIGCONT because it is the one signal that proves delivery without ending the run');
+  // Signal 0 rather than a real one: it proves the call reached a live process without
+  // doing anything to it, and unlike SIGCONT it exists on Windows too — which the first
+  // version of this line did not, and Windows said so.
+  assert.equal(signalPid(String(process.pid), 0), true, 'a real pid is still signalled');
 
   console.log('child-signal selftest: PASS · a failed spawn is never signalled · the process group is not the target'
     + ' · a real child still stops · an empty pid file is not process group 0');
