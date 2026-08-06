@@ -11,23 +11,85 @@ const { DaemonEngine, startDaemon, jsonSafe } = require('../src/domain/server/da
 // with "The runner has received a shutdown signal" and no failed assertion. Guessing
 // from the outside has not narrowed it, so the job says what it saw. Everything here
 // is quiet unless something actually happens, and none of it changes what is tested.
+//
+// Measured 2026-08-06 against runs 31067333069 (survived) and 31068993728 (killed):
+// both reach the PASS line identically, and the kill lands ~113ms later, in the window
+// where the process would otherwise exit on its own. So the interesting moments are
+// the last few hundred milliseconds — which is exactly what the old instrumentation
+// could not see: its heartbeat was 5s apart and the process died at 3.3s, so not one
+// line of it was ever printed.
+const t0 = Date.now();
+const at = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+const mb = (n) => `${Math.round(n / 1024 / 1024)}MB`;
+// console.error reaches the runner through a pipe, and a write to a pipe is
+// asynchronous: whatever has not flushed when SIGTERM arrives is lost, and the line
+// that matters is always the last one. fs.writeSync goes to fd 2 before returning.
+// A count alone says something is open; it does not say what. Sockets and timers fail
+// a job in completely different ways, so the kinds are worth the one line they cost.
+const handles = () => {
+  const open = process._getActiveHandles?.() ?? [];
+  const kinds = new Map();
+  for (const handle of open) {
+    const kind = handle?.constructor?.name || 'unknown';
+    kinds.set(kind, (kinds.get(kind) || 0) + 1);
+  }
+  const detail = [...kinds].sort((a, b) => b[1] - a[1]).map(([kind, n]) => `${kind}×${n}`).join(' ');
+  // Where a socket points matters more than that it exists: a loopback pair is this
+  // test talking to its own daemon, and anything else is the test reaching off the
+  // machine, which is not something a selftest should ever be doing.
+  const peers = open.filter((handle) => handle?.constructor?.name === 'Socket')
+    .map((socket) => `${socket.remoteAddress || '?'}:${socket.remotePort || '?'}`);
+  const off = peers.filter((peer) => !/^(127\.|::1|::ffff:127\.|\?)/.test(peer));
+  return `${open.length}${detail ? ` [${detail}]` : ''}`
+    + `${peers.length ? ` peers=${[...new Set(peers)].join(',')}` : ''}`
+    + `${off.length ? ` OFFBOX=${off.length}` : ''}`;
+};
+// A child process is the one handle that can outlive this process and keep holding the
+// job's stdio, so when there is one, it gets named rather than counted.
+// The arguments are a whole agent prompt — thousands of characters of owner skills —
+// so only the binary and the first flag are worth printing. What matters is which
+// program is running and how many of them, not what it was asked to do.
+const children = () => (process._getActiveHandles?.() ?? [])
+  .filter((handle) => handle?.constructor?.name === 'ChildProcess')
+  .map((child) => `${child.pid}:${String(child.spawnfile || '?').split(/[\\/]/).pop()}`
+    + ` ${String((child.spawnargs || [])[1] || '').slice(0, 24)}`.trimEnd())
+  .join(' | ');
+// Descriptors are the resource this test could plausibly exhaust — it opens sockets,
+// spawns children and writes files — and the runner agent shares the limit with it.
+// A count here is the difference between "we ran the machine out" and "we did not".
+const fdDir = process.platform === 'darwin' ? '/dev/fd' : '/proc/self/fd';
+const fds = () => { try { return fs.readdirSync(fdDir).length; } catch (_) { return '?'; } };
+const mark = process.env.CI ? (what) => {
+  const m = process.memoryUsage();
+  const kids = children();
+  try {
+    fs.writeSync(2, `[selftest] ${at()} ${what} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)}`
+      + ` fds=${fds()} handles=${handles()}${kids ? `\n[selftest] ${at()} children: ${kids}` : ''}\n`);
+  } catch (_) {}   // a closed fd 2 must not be the thing that fails the test
+} : () => {};
 if (process.env.CI) {
-  const t0 = Date.now();
-  const at = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
-  const mb = (n) => `${Math.round(n / 1024 / 1024)}MB`;
+  // What the machine was willing to give, printed once, so the counts above have
+  // something to be measured against.
+  try {
+    const limits = process.report?.getReport?.()?.userLimits || {};
+    const files = limits.open_files || {};
+    fs.writeSync(2, `[selftest] limits: open_files ${files.soft}/${files.hard}`
+      + ` · cpus=${os.cpus().length} · totalmem=${mb(os.totalmem())} · ${process.platform}\n`);
+  } catch (_) {}
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT']) {
     process.on(sig, () => {
-      const m = process.memoryUsage();
-      console.error(`[selftest] ${sig} received at ${at()} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)}`);
+      mark(`${sig} received`);
       process.exit(1);   // report it rather than dying silently
     });
   }
-  process.on('exit', (code) => console.error(`[selftest] exit ${code} at ${at()}`));
+  // beforeExit fires when the loop drains, exit when the process is actually leaving.
+  // Which of the two is reached says whether anything was still holding it open.
+  process.on('beforeExit', () => mark('beforeExit'));
+  process.on('exit', (code) => mark(`exit ${code}`));
   // A heartbeat pins how far it got. unref'd so it never holds the process open.
-  const beat = setInterval(() => {
-    const m = process.memoryUsage();
-    console.error(`[selftest] alive ${at()} · rss=${mb(m.rss)} heap=${mb(m.heapUsed)} handles=${process._getActiveHandles?.().length ?? '?'}`);
-  }, 5000);
+  // 250ms while the runner kill was being hunted; back to 5s now that it is fixed,
+  // because at 250ms this prints more than the suite it is watching.
+  const beat = setInterval(() => mark('alive'), 5000);
   beat.unref();
 }
 const { daemonSpawnEnv } = require('../src/domain/server/daemon-client');
@@ -446,6 +508,12 @@ const WebSocket = require('ws');
     clearTimeout(timer);
   }
 
+  // The three marks around teardown are the point of the instrumentation: they say
+  // whether the kill lands before close() is reached, inside it, or after it while
+  // the process is winding down on its own.
+  mark('closing listener');
   await new Promise((resolve) => listener.close(resolve));
+  mark('listener closed');
   console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened · the repair asks why, does not stop to ask permission, and remembers the answer');
+  mark('pass printed');
 })().catch((error) => { console.error(error); process.exit(1); });

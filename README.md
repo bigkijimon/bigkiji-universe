@@ -439,8 +439,8 @@ Honest list of what is not settled:
 - **Platform coverage is uneven.** Menu-bar residency (`app.dock.hide`) and the cmux bridge
   are macOS-only. The `bigkiji` launcher is a zsh script, so the CLI aliases assume a
   POSIX shell with zsh available.
-- **Windows runs the suite green, but is otherwise unexercised.** All 62 selftests pass on
-  windows-latest as of 2026-08-06. Getting there fixed six defects that had been invisible
+- **The suite is green on all three platforms, but only Windows-the-app is unexercised.** All 63
+  selftests pass on macOS, Linux and Windows as of 2026-08-06. Getting there fixed six defects that had been invisible
   while CI could only run on macOS — two of them real product bugs, including a sandbox check
   that compared 8.3 short names against expanded ones and so refused every read inside the
   sandbox. See [docs/known-issues.md](docs/known-issues.md). That is the test suite, not the

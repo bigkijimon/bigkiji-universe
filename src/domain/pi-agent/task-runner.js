@@ -28,19 +28,9 @@ const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { ResearchBroker } = require('../pi-core/security/research-broker');
 
 // Providers are spawned only after PiAgent approval and are never kept resident.
-/**
- * Ask a child to stop, and do not fall over if it already has.
- *
- * On POSIX, signalling a process that has exited is quietly ignored. On Windows,
- * Node throws EINVAL from ChildProcess.kill, so shutting the daemon down while a
- * task's child was mid-exit took the whole shutdown with it (measured in CI on
- * windows-latest, 2026-08-05: `Error: kill EINVAL` out of TaskRunner.abort).
- * Stopping something that has already stopped is the outcome we wanted anyway.
- */
-function stopChild(child, signal) {
-  if (!child || child.exitCode != null || child.signalCode != null) return false;
-  try { return child.kill(signal); } catch (_) { return false; }
-}
+// Asking one to stop goes through the shared guard: a child that never started has no
+// pid, and signalling it signals this whole process group instead. See child-signal.js.
+const { signalChild: stopChild } = require('../../core/child-signal');
 
 class TaskRunner extends EventEmitter {
   constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {

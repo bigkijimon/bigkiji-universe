@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { signalChild } = require('./child-signal');
 const { sanitizeOwnerSpeech, sanitizeAgentSpeech, detectSpeechLanguage } = require('./tts-policy');
 
 const SYSTEM_VOICES = {
@@ -88,7 +89,7 @@ class NaturalTTSService extends EventEmitter {
   }
   stop() {
     clearTimeout(this.idleTimer); this.idleTimer = null;
-    if (this.proc) { try { this.proc.kill(); } catch (_) {} this.proc = null; }
+    if (this.proc) { signalChild(this.proc); this.proc = null; }
     this.starting = null;
     this._setStatus({ state: 'sleeping', ready: false, engine: 'system-neural', detail: 'Stopped after idle timeout' });
   }
