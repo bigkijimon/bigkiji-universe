@@ -6,9 +6,19 @@ refused an out-of-sync lock file) and nothing off macOS was being checked at all
 
 `npm test` is 62 selftests, 0 failures, exit 0 on the maintainer's macOS machine.
 
-## 1. Linux and macOS runners are shut down mid-suite
+## 1. Linux and macOS runners are shut down mid-suite — intermittently
 
-Both die inside `test:daemon`, at 33s (ubuntu) and 46s (macOS):
+Across 12 consecutive runs on `main`:
+
+| Runner | `npm test` outcome |
+|---|---|
+| ubuntu-latest | **succeeded 5 times**, cancelled 7 |
+| macos-latest | cancelled **12 times out of 12** |
+| windows-latest | always ran to completion (and then hit problem 2) |
+
+So the suite *can* pass on Linux — this is not a test that is simply broken, and
+not a regression from any one commit. It is intermittent, and macOS has never once
+got through. When it does die, it dies inside `test:daemon`, at 33-42s:
 
 ```
 > node tools/daemon-selftest.js
@@ -86,11 +96,20 @@ test (windows-latest) 17:56:24 → 18:00:00   ran 3m36s, reached teardown
 ```
 
 The Electron job on the same infrastructure finishes normally, so this is not the
-runner being generally unhealthy. Windows gets past the same test. Whatever it is,
-it is specific to `test:daemon` on POSIX runners.
+runner being generally unhealthy, and Windows gets past the same test.
 
-Things checked and ruled out while narrowing it: the selftest does not spawn a
-detached process (it calls `startDaemon` in-process and closes the server), and
-the one place that signals a pid read from a file (`src/core/main.js`) only does
-so after confirming a daemon is answering on the expected port, and is not on this
-path.
+Checked and ruled out while narrowing it:
+
+- The selftest spawns nothing detached — it calls `startDaemon` in-process and
+  closes the server and engine at the end.
+- The only place in the codebase that signals a pid read from a file
+  (`src/core/main.js`) fires solely after a daemon answers on the expected port,
+  and is not on this path. In particular nothing calls `process.kill(0, …)`,
+  which would signal the whole process group including the runner and would have
+  explained the message exactly.
+- Not a regression: ubuntu succeeded both before and after every candidate commit.
+
+What is left points at the environment rather than the code — a resource ceiling
+or a preemption that `test:daemon` is simply the longest-running thing to be
+sitting in when it arrives. Confirming that needs instrumentation inside the job
+(signal handlers and a heartbeat) rather than more guesses from outside.
