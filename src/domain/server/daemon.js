@@ -37,7 +37,7 @@ const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
-const { ConversationEngine, normalizeKeepAlive } = require('../pi-core/conversation-engine');
+const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion } = require('../pi-core/conversation-engine');
 const { isStatusQuestion, statusReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
@@ -55,7 +55,7 @@ const CONFIG_FILE = LAYOUT.remoteConfigFile;
 const PID_FILE = LAYOUT.daemonPidFile;
 const APP_VERSION = require('../../../package.json').version;
 // whisper/recordings locations for the mobile voice route
-const { createPathConfig } = require('../../core/path-config');
+const { createPathConfig, detectVault } = require('../../core/path-config');
 const PATHS = createPathConfig({ appRoot: APP_ROOT });
 
 // The modes the coordinator understands. 'plan' and 'ask' both wait for the owner before
@@ -142,6 +142,47 @@ function effectiveMode(req, requested) {
 function asList(value) {
   if (Array.isArray(value)) return value.map((entry) => String(entry)).filter(Boolean);
   return [value].filter(Boolean).map(String);
+}
+/**
+ * Where a run's files live.
+ *
+ * Launched from the home directory, the home directory became the workspace, and the
+ * sandbox then offered everything underneath it as candidate context. Measured on the
+ * owner's machine 2026-08-07: `fullContextTokens: 5,661,108` for a one-line request,
+ * with BigKiji's own data directory inside the scan — which is what put a file the app
+ * rewrites every few seconds into a sealed disclosure manifest.
+ *
+ * Home is never a project. detectVault() already knows how to find one (a directory
+ * containing `.obsidian/`) and is what the Electron app resolves with, so the daemon
+ * gives the same answer rather than a second one.
+ *
+ * Being told beats detecting: an explicit BIGKIJI_WORKSPACE, or a workspace handed in
+ * by a caller such as a test, is used exactly as given even if it is the home directory.
+ */
+function resolveWorkspace(requested, env = process.env, home = os.homedir()) {
+  const explicit = requested || env.BIGKIJI_WORKSPACE;
+  if (explicit) return { workspace: path.resolve(explicit), redirected: null };
+  const cwd = path.resolve(process.cwd());
+  if (path.resolve(home) !== cwd) return { workspace: cwd, redirected: null };
+  let vault = '';
+  try { vault = detectVault(env, {}, home); } catch (_) { vault = ''; }
+  // A detector that points back at home, or at somewhere that does not exist, has not
+  // found anything. Staying put and saying so beats inventing a directory.
+  if (!vault || path.resolve(vault) === cwd || !fs.existsSync(vault)) return { workspace: cwd, redirected: null };
+  return { workspace: path.resolve(vault), redirected: { from: cwd, to: path.resolve(vault) } };
+}
+
+/**
+ * The question out of a reply that ends in one.
+ *
+ * A model's reply is usually a paragraph with the question as its last sentence, and
+ * handing the whole paragraph to the spec writer as "the question" buries it. Split on
+ * sentence ends in both scripts; falls back to the tail if the reply is one long line.
+ */
+function lastSentence(reply) {
+  const text = String(reply || '').trim();
+  const parts = text.split(/(?<=[。.!?！？])\s*/).map((part) => part.trim()).filter(Boolean);
+  return (parts[parts.length - 1] || text).slice(0, 320);
 }
 /**
  * A value that can be written to the session log.
@@ -255,10 +296,21 @@ async function readJson(req, max = 1024 * 1024) {
 }
 
 class DaemonEngine extends EventEmitter {
-  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = process.env.BIGKIJI_WORKSPACE || process.cwd(),
+  constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = '',
     conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null } = {}) {
     super();
-    this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = path.resolve(workspace);
+    // Defaulted here rather than in the parameter list so resolveWorkspace can tell an
+    // explicit choice from a fallen-back one — process.cwd() in the signature makes the
+    // two indistinguishable, and only one of them may be overridden.
+    const resolved = resolveWorkspace(workspace);
+    this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = resolved.workspace;
+    // Shown, not silent. The owner has to be able to see that the daemon is working
+    // somewhere other than where they started it.
+    this.workspaceRedirect = resolved.redirected;
+    if (resolved.redirected) {
+      console.log(`workspace: started in the home directory — using ${resolved.redirected.to} instead`
+        + ' (set BIGKIJI_WORKSPACE to choose)');
+    }
     // Tests inject a throwaway stateRoot; production uses the resolved data layout,
     // where sessions/ideas are siblings of state/ rather than children of it.
     this.customState = path.resolve(stateRoot) !== path.resolve(STATE_ROOT);
@@ -267,7 +319,14 @@ class DaemonEngine extends EventEmitter {
     // How many jobs run at once. The owner sets it; 3 was a literal nobody could
     // reach. Local tasks are additionally serialised inside the runner, because they
     // all share one GPU — see canStart().
+    // The runner is told where BigKiji's own working files live so the context pruner
+    // never seals one into a disclosure manifest. Without this the daemon invalidates
+    // its own seal: recordEvent() writes task_state.json between sealing and verifying,
+    // and every run dies on STALE_DISCLOSURE_MANIFEST. Built through rootFor() so an
+    // injected stateRoot in tests is covered by the same exclusion as production.
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
+      dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
+        rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
       maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });
     this.conversation = conversationEngine || new ConversationEngine();
     // The front desk that turns a one-line request into a spec worth executing.
@@ -281,6 +340,10 @@ class DaemonEngine extends EventEmitter {
     // build from it. This is that router, on the path both surfaces actually use.
     this.facilitator = facilitator || new FastFacilitatorRouter();
     this.facilitatorPending = null;
+    // The last thing this session actually asked for, so a later "please start" has
+    // something to refer to. Without it a go-ahead is a word with no object and the
+    // only honest reading is chat. Cleared on /reset with the pending question.
+    this.lastRequest = null;
     this.ideas = ideaStore || new IdeaDraftStore({ root: rootFor('ideasRoot', 'ideas'), workspace: this.workspace });
     this.ideaEnhancements = new Map();
     this.knowledge = knowledgeStore;
@@ -488,9 +551,24 @@ class DaemonEngine extends EventEmitter {
     // while a question is open still answers the status question.
     const asked = this.facilitatorPending;
     if (asked && asked.sessionId === session.id && Date.now() - asked.at < FACILITATION_WINDOW_MS) {
-      return await this._answerTurn(session, clean, mode);
+      return await this._answerTurn(session, clean, mode, asked);
     }
     if (asked) { this.facilitatorPending = null; this.facilitator.reset(); }
+    // "please start" — a go-ahead for the request already on the table.
+    //
+    // With no question outstanding this fell through to the conversation model, which
+    // classified it CHAT (no verb to find) and created nothing. Measured on the owner's
+    // machine 2026-08-07: two explicit go-aheads in a row produced no run, and the model
+    // then reported that it had started. Nothing had.
+    //
+    // Scoped hard — same session, inside the same window, and only when this session
+    // has already made an actionable request that a go-ahead can refer to. A bare
+    // "yes" in a session that asked for nothing still means nothing. And the run this
+    // creates is a *plan*, so a wrong reading costs an approval prompt, not an action.
+    const open = this.lastRequest;
+    if (open && open.sessionId === session.id && Date.now() - open.at < FACILITATION_WINDOW_MS && isAffirmative(clean)) {
+      return await this._answerTurn(session, clean, mode, { request: open.text, questions: open.questions });
+    }
     const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
@@ -537,6 +615,13 @@ class DaemonEngine extends EventEmitter {
         this.facilitatorPending = { sessionId: session.id, questions: facilitation.questions, at: Date.now() };
       }
     }
+    // What a later go-ahead refers to. Recorded for anything the owner asked *for* —
+    // not for chat — and refreshed on every such turn, so "please start" always means
+    // the most recent request rather than something from an hour ago.
+    if (result.kind === 'TASK') {
+      this.lastRequest = { sessionId: session.id, text: clean, at: Date.now(),
+        questions: facilitation?.status === 'needs_clarification' ? facilitation.questions : [] };
+    }
     if (result.kind === 'TASK' && facilitation?.status !== 'needs_clarification') {
       const written = facilitation?.promptSpec || null;
       const goal = written?.goal || result.summary || clean;
@@ -565,6 +650,22 @@ class DaemonEngine extends EventEmitter {
     // renders `reply`; only the CLI knows what to do with `questions`, and a question
     // the owner cannot see is the same as one that was never asked.
     const reply = questions.length ? `${result.reply}\n\n${questionText(questions)}` : result.reply;
+    // A question the conversation model asked in prose is still a question.
+    //
+    // Only the facilitator's questions were ever registered, so when the model asked one
+    // itself — 「…教えていただけますでしょうか？」, turn 2 of the owner's session — the
+    // answer arrived with nothing waiting for it. Registered here so the next turn
+    // reaches _answerTurn carrying the request the question was about. Structural test
+    // (`？` at the end), because the model's own labelling is the part that failed.
+    //
+    // Restricted to TASK turns on purpose. A CHAT reply ends in a question constantly —
+    // the built-in fallback literally ends 「…気になっていますか？」 — and registering
+    // those would turn the next thing the owner typed, whatever it was, into a run.
+    // Conversation is allowed to be conversation.
+    if (!run && !questions.length && result.kind === 'TASK' && endsWithQuestion(result.reply)) {
+      this.facilitatorPending = { sessionId: session.id, questions: [lastSentence(result.reply)],
+        at: Date.now(), request: clean };
+    }
     const output = { accepted: true, kind: result.kind, reply, sessionId: session.id, turnId: result.turnId,
       provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
       questions, awaitingAnswer: questions.length > 0, requiresApproval: !!run || false };
@@ -583,6 +684,29 @@ class DaemonEngine extends EventEmitter {
    * Ollama must not take the turn down with it. A null here means "carry on with the
    * conversation model's fields", which is exactly the behaviour that shipped before.
    */
+  /**
+   * A spec written from (an earlier request + what the owner just said).
+   *
+   * `facilitator.answer` requires at least one question to hang the answer on; a plain
+   * go-ahead has none, so one is supplied that says what is actually being decided.
+   * Falls back to the ordinary path rather than failing the turn — an unwritable spec
+   * must not be the reason a go-ahead disappears again.
+   */
+  async _answerWith(request, questions, said) {
+    const asked = (questions || []).length ? questions : ['Proceed with the request as stated?'];
+    try {
+      return await this.facilitator.answer(request, asked, said, {
+        onStart: (provider) => this.publish('commentary', { source: 'Front desk', status: 'PLANNING',
+          text: `Writing a decision-complete spec with ${provider}.` }),
+      });
+    } catch (error) {
+      this.publish('commentary', { source: 'Front desk', status: 'DEGRADED',
+        text: `Could not write a spec from that answer (${String(error.message).slice(0, 120)}) — using the request on its own.` });
+      this.facilitator.reset();
+      return await this._facilitate(`${request}\n\nOwner answers: ${said}`);
+    }
+  }
+
   async _facilitate(ownerText) {
     try {
       return await this.facilitator.facilitate(ownerText, {
@@ -605,10 +729,17 @@ class DaemonEngine extends EventEmitter {
    * The reply is the spec, which is both the useful answer and the visible proof
    * that the expansion ran at all.
    */
-  async _answerTurn(session, text, mode) {
+  async _answerTurn(session, text, mode, pending = null) {
     const started = Date.now();
     this.facilitatorPending = null;
-    const spec = await this._facilitate(text);
+    // When the question came from somewhere other than the facilitator's own state —
+    // the conversation model asking in prose, or a bare go-ahead against an earlier
+    // request — the router has nothing remembered to attach the answer to, and
+    // facilitate() would write a spec whose whole goal is the word "yes". `answer()`
+    // exists for exactly this and is what /answer on a run already uses.
+    const spec = pending?.request
+      ? await this._answerWith(pending.request, pending.questions, text)
+      : await this._facilitate(text);
     const turnId = `turn-${started.toString(36)}-spec`;
     if (!spec?.promptSpec) {
       this.facilitator.reset();
@@ -627,6 +758,11 @@ class DaemonEngine extends EventEmitter {
     const run = this.coordinator.submit({ prompt: `${written.goal || text}\n\nOwner answers: ${text}`,
       promptSpec, planHash: spec.planHash || null, cwd: this.workspace, mode });
     this.runSessions.set(run.id, session.id);
+    // The goal stays on the table. In the owner's session the first run FAILED and the
+    // next thing typed was 「please start」 — a retry, which has to find something to
+    // retry. Kept rather than consumed for that reason; a second go-ahead makes a second
+    // plan, which is visible and needs approval, not a second action.
+    this.lastRequest = { sessionId: session.id, text: written.goal || text, at: Date.now(), questions: [] };
     // The run brief prints the goal and the constraints under the run line, so sending
     // the whole spec here as well put the same paragraph on screen twice — measured on
     // the owner's machine 2026-08-05, a 20-page textbook spec appeared in the brief and
@@ -1141,7 +1277,8 @@ class DaemonEngine extends EventEmitter {
 
   state() {
     return { source: 'bigkiji-daemon', version: 2, pid: process.pid, startedAt: this.startedAt, uptimeMs: Date.now() - this.startedAt,
-      workspace: this.workspace, activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
+      workspace: this.workspace, workspaceRedirect: this.workspaceRedirect,
+      activeSessionId: this.activeSessionId, sessions: this.sessions.list(24), runs: this.coordinator.snapshot(),
       tasks: this.runner.snapshot(),
       // The fleet by provider (who is up) and the record by model (what each tier
       // actually did). They are different questions and only the first was answered.
@@ -1465,4 +1602,4 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
 
 if (require.main === module) startDaemon();
 
-module.exports = { HANDS_OFF_ANSWER, jsonSafe, DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase };
+module.exports = { HANDS_OFF_ANSWER, jsonSafe, DaemonEngine, startDaemon, loadConfig, EVENT_CHANNEL, APP_ROOT, STATE_ROOT, effectiveMode, isLoopback, MODES, currentPhase, resolveWorkspace, lastSentence };

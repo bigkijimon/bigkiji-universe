@@ -12,6 +12,7 @@ const { ToolInterceptor } = require('../src/domain/pi-core/security/tool-interce
 const { SandboxPolicyResolver } = require('../src/domain/pi-agent/sandbox-policy');
 const { ContextPruner } = require('../src/domain/pi-agent/context-pruner');
 const { TaskRunner } = require('../src/domain/pi-agent/task-runner');
+const { createDisclosureManifest, verifyDisclosureManifest } = require('../src/domain/pi-core/security/disclosure-manifest');
 
 function fakeChild() {
   const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null;
@@ -103,6 +104,76 @@ function fakeChild() {
   fs.appendFileSync(path.join(project, 'src', 'target.js'), '\n// changed after approval preview\n');
   const blocked = staleRunner.approve(stale.id, { disclosureHash: stale.disclosure.disclosureHash });
   assert.equal(blocked.status, 'blocked'); assert.match(blocked.error, /STALE_DISCLOSURE_MANIFEST/);
+
+  // ---- BigKiji's own working files must never be sealed into a manifest --------
+  //
+  // Measured on 2026-08-07 in session-mshrjht0-5cb915.jsonl: every run ended in
+  // STALE_DISCLOSURE_MANIFEST and every task went `blocked`. `knowledge/task_state.json`
+  // was sealed 22 times with **12 distinct hashes** in one session; all twelve other
+  // sealed files had exactly one hash each. Nothing external was editing it — BigKiji
+  // rewrites it itself (`recordEvent()` → `saveState()`), and that write lands *between*
+  // prepare() sealing the slices and start() re-hashing them. The seal was never
+  // breakable by an attacker; it was broken by the app keeping a diary.
+  //
+  // The manifest is right and is not touched. What changes is what may go inside it.
+  {
+    const dataRoot = path.join(project, 'knowledge');
+    fs.mkdirSync(dataRoot, { recursive: true });
+    const stateFile = path.join(dataRoot, 'task_state.json');
+    const write = (events) => fs.writeFileSync(stateFile, JSON.stringify({ events, note: 'secureFeature' }));
+    write([]);
+    // A finished report is a deliverable, not a diary. It must keep reaching the model,
+    // so the exclusion is scoped to the churning roots and not to the data folder.
+    const reports = path.join(project, 'reports'); fs.mkdirSync(reports, { recursive: true });
+    fs.writeFileSync(path.join(reports, 'secureFeature-review.md'), '# secureFeature\nfindings\n');
+
+    const prompt = 'Review secureFeature in src/target.js';
+    const inside = (slices, name) => slices.some((item) => path.basename(item.path) === name);
+
+    // The reproduction: unguarded, the diary is a context candidate...
+    const bare = new ContextPruner().prepare({ prompt, policy });
+    assert(inside(bare.slices, 'task_state.json'),
+      'reproduction requires the state file to be sealed in the first place');
+    const manifest = createDisclosureManifest({ provider: 'codex', policy, slices: bare.slices, payload: bare.prompt });
+    // ...and a single recordEvent() later — which is what starting a run does — the
+    // seal no longer matches. This is the failure the owner saw, reproduced end to end.
+    write([{ type: 'run-planned' }]);
+    assert.equal(verifyDisclosureManifest(manifest, policy, bare.prompt), false,
+      'reproduction: BigKiji writing its own state file must invalidate its own seal');
+
+    // The fix: the pruner is told where the app's working files live and never scores
+    // them. Not "hash them more leniently" — they are simply not context.
+    const guarded = new ContextPruner({ dataRoots: [dataRoot] }).prepare({ prompt, policy });
+    assert(!inside(guarded.slices, 'task_state.json'),
+      'the app\'s own state file must not be a context candidate at all');
+    const sealed = createDisclosureManifest({ provider: 'codex', policy, slices: guarded.slices, payload: guarded.prompt });
+    write([{ type: 'run-planned' }, { type: 'run-started' }]);
+    assert.equal(verifyDisclosureManifest(sealed, policy, guarded.prompt), true,
+      'with the diary out of the seal, BigKiji writing to it must no longer block the run');
+
+    // Excluding the diary must not cost real files. Both the source under review and a
+    // finished report still reach the model.
+    assert(guarded.metrics.includedFiles.includes(TARGET), 'source under review must survive the exclusion');
+    assert(inside(guarded.slices, 'secureFeature-review.md'),
+      'reports/ is a deliverable, not a working file — excluding data roots must not swallow it');
+
+    // A nested path inside an excluded root is excluded too, and an unrelated file
+    // whose name merely starts the same way is not.
+    fs.mkdirSync(path.join(dataRoot, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(dataRoot, 'deep', 'secureFeature-cache.json'), '{"note":"secureFeature"}');
+    fs.writeFileSync(path.join(project, 'knowledge-notes.md'), '# secureFeature\nkept\n');
+    const nested = new ContextPruner({ dataRoots: [dataRoot] }).prepare({ prompt, policy });
+    assert(!inside(nested.slices, 'secureFeature-cache.json'), 'exclusion must apply to the whole subtree');
+    assert(inside(nested.slices, 'knowledge-notes.md'),
+      'a sibling whose name shares a prefix with the excluded root must not be excluded');
+
+    // Default is no exclusion, so nothing changes for callers that pass nothing.
+    assert(inside(new ContextPruner({}).prepare({ prompt, policy }).slices, 'task_state.json'));
+
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+    fs.rmSync(reports, { recursive: true, force: true });
+    fs.rmSync(path.join(project, 'knowledge-notes.md'), { force: true });
+  }
 
   const policyRunner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl: () => { throw new Error('must not launch stale policy'); } });
   const stalePolicy = policyRunner.plan({ id: 'stale-policy', provider: 'codex', prompt: 'Review secureFeature in src/target.js', cwd: project });

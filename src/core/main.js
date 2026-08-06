@@ -16,7 +16,7 @@ const APP_ROOT = path.resolve(__dirname, '..', '..');
   try { dataRoot = resolveDataRoot({ userData: defaultUserData() }).dataRoot; } catch (_) {}
   loadEnvFiles({ dataRoot, appRoot: APP_ROOT, dotenv, expand });
 }
-const { createPathConfig } = require('./path-config');
+const { createPathConfig, workingRoots } = require('./path-config');
 const { signalChild, signalPid } = require('./child-signal');
 let savedPaths = {};
 try { savedPaths = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).paths || {}; } catch (_) {}
@@ -88,7 +88,10 @@ const SHOW_CONSOLE = process.argv.includes('--show-console') || process.env.BIGK
 const CONSOLE_LEGACY = process.argv.includes('--console') || process.env.BIGKIJI_CONSOLE === '1' || SHOW_CONSOLE;
 const E2E_FIXTURE = process.env.BIGKIJI_E2E_FIXTURE || '';
 const bus = new Orchestrator();
-const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath, maxParallel: 5 });
+// dataRoots: BigKiji's own state/sessions/knowledge/logs are excluded from context, so
+// the app cannot seal a file it is about to rewrite. See workingRoots() in path-config.
+const taskRunner = new TaskRunner({ cwd: PATHS.vaultRoot, vaultRoot: PATHS.vaultRoot, graphPath: PATHS.graphPath,
+  dataRoots: workingRoots(PATHS), maxParallel: 5 });
 const fleetMetrics = new ModelStatusStore({ knowledge });
 // settingsStore is not constructed until app.whenReady(); the name is applied there.
 const { FleetMetricsStore } = require('./fleet-metrics-store');

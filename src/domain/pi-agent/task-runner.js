@@ -33,7 +33,7 @@ const { ResearchBroker } = require('../pi-core/security/research-broker');
 const { signalChild: stopChild } = require('../../core/child-signal');
 
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', dataRoots = [], spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
@@ -45,7 +45,10 @@ class TaskRunner extends EventEmitter {
     this.broker = broker;
     this.secretProvider = null;
     this.security = security; this.policy = new SandboxPolicyResolver({ vaultRoot, security });
-    this.pruner = new ContextPruner({ graphPath }); this.localPruner = new ContextPruner({ graphPath, maxFiles: 7, maxChars: 32000, maxTokens: 8192 });
+    // Both pruners get the same exclusion: a local task seals a manifest too, so
+    // leaving the local one unguarded would keep the failure alive on the cheap path.
+    this.pruner = new ContextPruner({ graphPath, dataRoots });
+    this.localPruner = new ContextPruner({ graphPath, dataRoots, maxFiles: 7, maxChars: 32000, maxTokens: 8192 });
     this.qwenGuardrails = qwenGuardrails;
     this.completions = new Map();
   }

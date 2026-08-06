@@ -104,4 +104,17 @@ function isInside(root, candidate) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-module.exports = { createPathConfig, expandHome, isInside, executableDefault, executablePath, detectVault };
+// The roots BigKiji rewrites while it is running.
+//
+// Anything under these is a diary entry, not context, and must never be sealed into a
+// disclosure manifest — the app would then invalidate its own seal the moment it
+// recorded the run it had just sealed. Measured 2026-08-07: `knowledge/task_state.json`
+// sealed 22 times, 12 distinct hashes, every run `blocked` on STALE_DISCLOSURE_MANIFEST.
+//
+// `reportsRoot` and `ideasRoot` are deliberately absent: they are written once and are
+// exactly the kind of thing a task should be able to read back.
+function workingRoots(paths = {}) {
+  return [paths.stateRoot, paths.sessionsRoot, paths.knowledgeRoot, paths.logsRoot].filter(Boolean);
+}
+
+module.exports = { createPathConfig, expandHome, isInside, executableDefault, executablePath, detectVault, workingRoots };

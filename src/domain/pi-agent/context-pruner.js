@@ -6,7 +6,7 @@ const textIndex = require('./text-index');
 const fs = require('fs');
 const path = require('path');
 const { isInside } = require('../../core/path-config');
-const { isSensitivePath } = require('../pi-core/security/security-policy');
+const { isSensitivePath, canonical } = require('../pi-core/security/security-policy');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 
 const TEXT_EXT = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.html', '.css', '.scss', '.py', '.sh', '.yml', '.yaml', '.toml', '.txt']);
@@ -42,8 +42,34 @@ function symbolRanges(symbols, hits, lineCount) {
 }
 
 class ContextPruner {
-  constructor({ graphPath = '', maxFiles = 10, maxChars = 48000, maxTokens = 12000 } = {}) {
+  constructor({ graphPath = '', maxFiles = 10, maxChars = 48000, maxTokens = 12000, dataRoots = [] } = {}) {
     this.graphPath = graphPath; this.maxFiles = maxFiles; this.maxChars = maxChars; this.maxTokens = Math.min(8192 * 4, Math.max(512, maxTokens)); this.cache = new Map();
+    // Where BigKiji keeps its own working files — state, sessions, knowledge, logs.
+    //
+    // These are not context; they are the app's diary. Sealing one into a disclosure
+    // manifest is a promise the app then breaks itself: measured on 2026-08-07,
+    // `knowledge/task_state.json` was sealed 22 times with **12 distinct hashes** in a
+    // single session while all twelve other sealed files had one each. `recordEvent()`
+    // writes it the moment a run is planned — after prepare() seals and before start()
+    // re-hashes — so every run died on STALE_DISCLOSURE_MANIFEST and every task went
+    // `blocked`. The verifier was right. The contents were wrong.
+    //
+    // Scoped to the churning roots, not to the whole data folder: `reports/` and
+    // `ideas/` are deliverables the model should still be able to read.
+    // Empty by default, so a caller that does not know where its data lives is unchanged.
+    //
+    // Canonicalised with the same function the sandbox uses, not path.resolve. Both
+    // sides of a path comparison have to normalise the same way or the comparison is
+    // decoration: on macOS the walk yields `/private/var/…` (allowRead is canonical)
+    // while `path.resolve` leaves `/var/…`, so every exclusion silently missed. The
+    // repository already paid for this lesson once — see the realpathSync.native note
+    // in security-selftest.js.
+    this.dataRoots = [...new Set((dataRoots || []).filter(Boolean).map(canonical))];
+  }
+
+  /** True for a path inside one of the app's own working roots. */
+  isWorkingFile(file) {
+    return this.dataRoots.some((root) => isInside(root, file));
   }
 
   read(file) {
@@ -61,7 +87,8 @@ class ContextPruner {
       for (const entry of entries) {
         if (out.length >= 1800) break;
         if (entry.name.startsWith('.')) continue;
-        const file = path.join(dir, entry.name); if (SKIP.test(file) || isSensitivePath(file)) continue;
+        const file = path.join(dir, entry.name);
+        if (SKIP.test(file) || isSensitivePath(file) || this.isWorkingFile(file)) continue;
         if (entry.isDirectory()) walk(file, depth + 1);
         else if (TEXT_EXT.has(path.extname(file).toLowerCase())) out.push(file);
       }

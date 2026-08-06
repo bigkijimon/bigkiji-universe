@@ -324,5 +324,143 @@ function ollama(value) {
       'and the owner\'s own pasted snippet is never cut — this runs on the model reply only');
   }
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not');
+  // ---- "please start" has to start something -----------------------------------
+  //
+  // Ground truth, session-mshrjht0-5cb915.jsonl on the owner's machine, 2026-08-07:
+  //
+  //     50 owner      please start
+  //     51 assistant  [CHAT] …お知らせください。
+  //     52 owner      そこファイルでいいです。お願いします
+  //     53 assistant  [CHAT] 開始しますね。処理が完了したら結果をお伝えします
+  //     54 owner      進んでますか？
+  //     55 assistant  実行中 0 件 · まだ依頼を受けていません
+  //
+  // Two explicit go-aheads, no run either time, and then a claim that work was under
+  // way. heuristicKind looks for a verb and a go-ahead has none, so guardedKind demoted
+  // every one of them to CHAT. What makes this the expensive kind of bug is turn 53:
+  // the owner was told about work that did not exist, and only found out at turn 55.
+  {
+    const { isAffirmative, heuristicKind, guardedKind, endsWithQuestion } = require('../src/domain/pi-core/conversation-engine');
+
+    // The two lines that failed, verbatim.
+    assert.ok(isAffirmative('please start'));
+    assert.ok(isAffirmative('そこファイルでいいです。お願いします'),
+      'an answer and a go-ahead on one line is the common shape — the answer is not lost, it is passed on');
+    for (const yes of ['はい', 'お願いします', 'はい、お願いします', 'ok', 'OK', 'go ahead', 'やってください', '進めて', 'それでいいです。お願いします'])
+      assert.ok(isAffirmative(yes), `${yes} is a go-ahead`);
+    for (const no of ['どうしようかな', 'what do you think about the layout', 'まだ決めていません', 'やっぱりやめておきます'])
+      assert.ok(!isAffirmative(no), `${no} must not be read as a go-ahead`);
+
+    // A go-ahead on its own is still not an instruction. This is the guard that keeps a
+    // polite acknowledgement in an ordinary conversation from starting a paid run: the
+    // vocabulary lives outside heuristicKind for exactly this reason.
+    assert.equal(heuristicKind('お願いします'), 'CHAT', 'a bare go-ahead is not, by itself, a task');
+    assert.equal(guardedKind('TASK', 'please start'), 'CHAT', 'nor may the model promote one on its own');
+
+    // Structural, not model-labelled: turn 2 of the same session ended in a question the
+    // conversation model asked in prose, and only facilitator questions were registered.
+    assert.ok(endsWithQuestion('どの Upclass プロジェクトからデータを抽出すべきか教えていただけますでしょうか？'));
+    assert.ok(!endsWithQuestion('処理が完了したら結果をお伝えするのでお待ちください。'),
+      'turns 51 and 53 do not end in a question — which is why the go-ahead path, not this one, is what fixes that session');
+  }
+
+  // ---- end to end: a go-ahead after a request produces a run --------------------
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-goahead-'));
+    const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace, { recursive: true });
+    // The front desk is stubbed: this test is about routing, not about spec quality.
+    // `answer()` is the method the fix depends on existing, so a stub that refuses to
+    // be called without a request would fail loudly rather than silently pass.
+    const seen = [];
+    const facilitator = {
+      pending: null,
+      async facilitate(text) { seen.push({ via: 'facilitate', text }); return { status: 'ready', provider: 'stub', promptSpec: { goal: text, steps: ['do it'] } }; },
+      async answer(request, questions, said) {
+        assert.ok(request, 'answer() must be given the request the go-ahead refers to');
+        seen.push({ via: 'answer', request, said });
+        return { status: 'ready', provider: 'stub', promptSpec: { goal: request, steps: ['do it'], acceptance: [said] } };
+      },
+      reset() {},
+    };
+    const asTask = new ConversationEngine({ fetchImpl: ollama({ kind: 'TASK', reply: 'Moving the materials now.', confidence: 0.95 }) });
+    const engine = new DaemonEngine({ stateRoot: path.join(root, 'state'), workspace, conversationEngine: asTask,
+      ideaStore: new IdeaDraftStore({ root: path.join(root, 'state', 'ideas'), workspace }),
+      knowledgeStore: { rememberIdea() {} }, facilitator });
+
+    // One session across every turn, the way the phone and the CLI actually talk: the
+    // go-ahead is scoped to the session that made the request, so a test that lets each
+    // turn open its own session would pass for the wrong reason.
+    const orphan = await engine.turn('お願いします');
+    assert.equal(orphan.run, null, 'a go-ahead in a session that has asked for nothing must not create a run');
+    const sid = orphan.sessionId;
+
+    // The request, then the go-ahead the owner actually typed.
+    const request = 'Upclassで作成した教材をBigkijiUniverse-Checkに移動してiPhoneで見れるようにしてください';
+    const asked = await engine.turn(request, { sessionId: sid });
+    assert.equal(asked.kind, 'TASK');
+    const started = await engine.turn('please start', { sessionId: sid });
+    assert.ok(started.run, 'the go-ahead has to produce a run — this is the turn that produced nothing');
+    assert.equal(started.kind, 'TASK');
+    const used = seen.find((item) => item.via === 'answer');
+    assert.ok(used, 'the go-ahead must be routed through answer(), not facilitated as if it were the request');
+    assert.match(used.request, /BigkijiUniverse-Check/, 'and the run must be about the request, not about the word "start"');
+    assert.equal(used.said, 'please start');
+
+    // A second go-ahead after a failure is a retry, so the goal stays on the table.
+    const retried = await engine.turn('そこファイルでいいです。お願いします', { sessionId: sid });
+    assert.ok(retried.run, 'the owner retrying after a failed run must not fall back into chat');
+
+    // Outside the window it is a new conversation, not an answer to an old one.
+    engine.lastRequest.at = Date.now() - (16 * 60 * 1000);
+    engine.facilitatorPending = null;
+    assert.equal((await engine.turn('はい', { sessionId: sid })).run, null, 'a go-ahead 16 minutes later refers to nothing');
+    engine.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ---- home is not a workspace --------------------------------------------------
+  //
+  // Started from the home directory, home became the workspace and every file under it
+  // became candidate context: `fullContextTokens: 5,661,108` for a one-line request on
+  // the owner's machine, 2026-08-07. That is also what put BigKiji's own data directory
+  // inside the scan, which is the precondition for the sealed-then-rewritten state file.
+  {
+    const { resolveWorkspace } = require('../src/domain/server/daemon');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-home-'));
+    const vault = path.join(home, 'Documents', 'Vault');
+    fs.mkdirSync(path.join(vault, '.obsidian'), { recursive: true });
+    const cwd = process.cwd();
+    try {
+      process.chdir(home);
+      // The real path matters: macOS resolves /var through a symlink, and a comparison
+      // where one side is canonical and the other is not silently never fires. Same
+      // class of bug as the pruner's data roots.
+      const real = fs.realpathSync.native(home);
+      const moved = resolveWorkspace('', {}, real);
+      assert.equal(moved.workspace, fs.realpathSync.native(vault), 'home must resolve to the vault, not to home');
+      assert.ok(moved.redirected, 'and the move has to be reportable — a silent relocation is worse than none');
+
+      // Being told beats detecting, even when what we are told is the home directory.
+      assert.equal(resolveWorkspace(vault, {}, real).workspace, path.resolve(vault));
+      assert.equal(resolveWorkspace('', { BIGKIJI_WORKSPACE: real }, real).workspace, real);
+      assert.equal(resolveWorkspace('', { BIGKIJI_WORKSPACE: real }, real).redirected, null);
+
+      // Anywhere that is not home is left alone — this must not follow the owner around.
+      process.chdir(vault);
+      assert.equal(resolveWorkspace('', {}, real).redirected, null, 'a real project directory is never redirected');
+
+      // Nothing to detect: stay put rather than invent a directory that does not exist.
+      const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-bare-'));
+      process.chdir(bare);
+      const realBare = fs.realpathSync.native(bare);
+      assert.equal(resolveWorkspace('', {}, realBare).workspace, realBare);
+      assert.equal(resolveWorkspace('', {}, realBare).redirected, null);
+      fs.rmSync(bare, { recursive: true, force: true });
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not · a go-ahead starts the request it refers to, and starts nothing when it refers to nothing · home is redirected to the vault, and being told still wins');
 })().catch((error) => { console.error(error); process.exit(1); });

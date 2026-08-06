@@ -61,6 +61,41 @@ function heuristicKind(text) {
   if (/(?:アイデア|思いつ|どうかな|できたら|将来|考えたい|検討したい|考えている|ならどう|はどうだろう|idea|maybe|what if|could we|構想|案)/i.test(text)) return 'IDEA';
   return 'CHAT';
 }
+// "Yes — go ahead." An answer, never an instruction standing on its own.
+//
+// Ground truth, session-mshrjht0-5cb915.jsonl, 2026-08-07:
+//
+//     50 owner      please start
+//     52 owner      そこファイルでいいです。お願いします
+//
+// Both produced `kind: CHAT` and no run, because heuristicKind looks for a verb and a
+// go-ahead has none. Two turns later the model said it had started, and `/status` said
+// "実行中 0 件 · まだ依頼を受けていません". The owner was told work was underway that had
+// never been requested of anything.
+//
+// This is deliberately NOT folded into heuristicKind: on its own 「お願いします」 must
+// stay CHAT, or every polite acknowledgement in a conversation starts a paid run. It
+// means "start" only when something is waiting to be started, so the daemon consults it
+// only when it is holding a request to apply the answer to.
+//
+// Matched at the END rather than as the whole string, because turn 52 is the common
+// shape: an answer and a go-ahead in one line. The whole line is then handed to the
+// spec writer, so the content in front of the go-ahead is not lost.
+//
+// Longest alternatives first — alternation is leftmost-first, so 「そう」 ahead of
+// 「そうです」 matches the short one and leaves 「です」 to fail the anchor.
+const AFFIRM = '(?:よろしくお願いします|お願いいたします|お願いします|やってください|進めてください|始めてください|実行してください'
+  + '|それでお願い|それでいい|お願い|よろしく|そうです|そうだね|やって|進めて|始めて|開始|実行して|大丈夫|はい|うん|ええ|そう'
+  + '|go ahead|sounds good|please go|please start|please do|do it|proceed|start|okay|yes|yeah|yep|sure|ok)';
+const AFFIRMATIVE = new RegExp(`(?:^|[\\s、,。.!！])${AFFIRM}[\\s、,。.!！]*$`, 'i');
+/** True when the owner's line ends in a go-ahead. Only meaningful next to a request. */
+function isAffirmative(text) { return AFFIRMATIVE.test(String(text || '').trim()); }
+
+// A reply ending in a question mark is asking one, whatever the model labelled it.
+// Structural on purpose: it must not depend on the model getting `kind` right, since
+// that is the part that failed.
+function endsWithQuestion(text) { return /[?？]\s*$/.test(String(text || '').trim()); }
+
 function guardedKind(modelKind, text) {
   const lexical = heuristicKind(text); const proposed = String(modelKind || '').toUpperCase();
   // A small conversational model may over-promote a reflective sentence into
@@ -335,5 +370,5 @@ class ConversationEngine extends EventEmitter {
     maxContextTokens: this.maxContextTokens, keepAlive: this.keepAlive }; }
 }
 
-module.exports = { ConversationEngine, heuristicKind, guardedKind, fallback, normalize, clean, deriveTitle, usableTitle, degradedPrefix,
-  normalizeKeepAlive, DEFAULT_KEEP_ALIVE };
+module.exports = { ConversationEngine, heuristicKind, guardedKind, isAffirmative, endsWithQuestion, fallback, normalize, clean,
+  deriveTitle, usableTitle, degradedPrefix, normalizeKeepAlive, DEFAULT_KEEP_ALIVE };
