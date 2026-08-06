@@ -34,7 +34,15 @@ const handles = () => {
     kinds.set(kind, (kinds.get(kind) || 0) + 1);
   }
   const detail = [...kinds].sort((a, b) => b[1] - a[1]).map(([kind, n]) => `${kind}×${n}`).join(' ');
-  return `${open.length}${detail ? ` [${detail}]` : ''}`;
+  // Where a socket points matters more than that it exists: a loopback pair is this
+  // test talking to its own daemon, and anything else is the test reaching off the
+  // machine, which is not something a selftest should ever be doing.
+  const peers = open.filter((handle) => handle?.constructor?.name === 'Socket')
+    .map((socket) => `${socket.remoteAddress || '?'}:${socket.remotePort || '?'}`);
+  const off = peers.filter((peer) => !/^(127\.|::1|::ffff:127\.|\?)/.test(peer));
+  return `${open.length}${detail ? ` [${detail}]` : ''}`
+    + `${peers.length ? ` peers=${[...new Set(peers)].join(',')}` : ''}`
+    + `${off.length ? ` OFFBOX=${off.length}` : ''}`;
 };
 // A child process is the one handle that can outlive this process and keep holding the
 // job's stdio, so when there is one, it gets named rather than counted.
