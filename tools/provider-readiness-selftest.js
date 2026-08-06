@@ -18,6 +18,13 @@ const fs = require('fs');
 const path = require('path');
 const { readiness, survey, credentialFor, PROVIDERS } = require('../src/domain/pi-agent/provider-readiness');
 
+// The code under test joins these with path.join, so the fixture has to as well —
+// a literal '/home/o/.claude/.credentials.json' never matches
+// '\\home\\o\\.claude\\.credentials.json' on Windows, and the check then reports
+// "not signed in" for a reason that has nothing to do with being signed in.
+const HOME = path.resolve(path.sep, 'home', 'o');
+const at = (...parts) => path.join(HOME, ...parts);
+
 let checks = 0;
 const ok = (label, fn) => { fn(); checks += 1; if (process.env.VERBOSE) console.log(`  ok  ${label}`); };
 
@@ -33,7 +40,7 @@ ok('with no credential of any kind, nothing paid is ready', () => {
 ok('a CLI login is a credential — this is the case that was broken', () => {
   // Claude Code and Codex have no API key to paste. Requiring one kept them
   // permanently unavailable while both were signed in and working.
-  const logged = { ...nothing, home: '/home/o', exists: (file) => ['/home/o/.claude/.credentials.json', '/home/o/.codex/auth.json'].includes(file) };
+  const logged = { ...nothing, home: HOME, exists: (file) => [at('.claude', '.credentials.json'), at('.codex', 'auth.json')].includes(file) };
   const claude = readiness('claude-code', logged);
   assert.equal(claude.ready, true, 'a signed-in Claude Code is available');
   assert.equal(claude.via, 'login');
@@ -43,7 +50,7 @@ ok('a CLI login is a credential — this is the case that was broken', () => {
 });
 
 ok('`claude` and `claude-code` are the same provider', () => {
-  const logged = { ...nothing, home: '/home/o', exists: (file) => file === '/home/o/.claude/.credentials.json' };
+  const logged = { ...nothing, home: HOME, exists: (file) => file === at('.claude', '.credentials.json') };
   assert.equal(readiness('claude', logged).id, 'claude-code');
   assert.equal(readiness('claude', logged).ready, true);
 });
@@ -90,7 +97,7 @@ ok('no credential value is ever returned in a reason', () => {
 });
 
 ok('an unreadable home directory is a missing login, not a crash', () => {
-  const hostile = { ...nothing, home: '/home/o', exists: () => { throw new Error('EACCES'); } };
+  const hostile = { ...nothing, home: HOME, exists: () => { throw new Error('EACCES'); } };
   assert.equal(readiness('claude-code', hostile).ready, false);
 });
 
