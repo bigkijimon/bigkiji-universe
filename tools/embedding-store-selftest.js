@@ -94,8 +94,16 @@ function fakeServer({ dims = 3, fail = false, calls = [] } = {}) {
   const meta = JSON.parse(fs.readFileSync(path.join(root, 'vectors', 'notes.json'), 'utf8'));
   assert.strictEqual(meta.items.length, 3, 'upsert replaces in place rather than appending duplicates');
   assert.strictEqual(new Set(meta.items.map((item) => item.id)).size, 3);
-  assert.strictEqual(fs.statSync(path.join(root, 'vectors', 'notes.json')).mode & 0o777, 0o600,
-    'the index is written with the same permissions as the rest of the knowledge root');
+  // Windows has no POSIX mode bits — NTFS ACLs are the real permission model and
+  // fs.stat reports a fixed 0o666/0o444 depending only on the read-only flag. The
+  // index there was 0o666, which is not the file being world-readable, it is the
+  // question not applying. Asserted where it means something; stated where it does not.
+  if (process.platform === 'win32') {
+    console.log('  (skipped: file mode bits are not a thing on Windows — NTFS ACLs govern this)');
+  } else {
+    assert.strictEqual(fs.statSync(path.join(root, 'vectors', 'notes.json')).mode & 0o777, 0o600,
+      'the index is written with the same permissions as the rest of the knowledge root');
+  }
 
   // ---- a torn write is detected, not half-answered ----------------------------
   // The sidecar is written second, so a crash can leave it describing more vectors than

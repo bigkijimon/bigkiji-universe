@@ -16,6 +16,18 @@
 // stays out, and the copy is read-only and dies with the task.
 
 const assert = require('assert');
+
+// Read-only lending is enforced with POSIX mode bits, which Windows does not have —
+// fs.stat there reports a fixed 0o666/0o444 from the read-only flag alone, and NTFS
+// ACLs are the real model. Asserting 0o400 on Windows tests nothing and fails.
+// This is a security property, so it is skipped loudly rather than quietly: on
+// Windows the lending is NOT verified read-only by this suite.
+const POSIX_MODES = process.platform !== 'win32';
+function assertLentReadOnly(file, message) {
+  if (!POSIX_MODES) return false;
+  assert.equal(fs.statSync(file).mode & 0o777, 0o400, message);
+  return true;
+}
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -62,7 +74,7 @@ ok('a whole-file lend is never used where a few fields will do', () => {
         `${relative} must carry exactly the approved fields`);
       assert.ok(!('projects' in written), 'the owner’s project history is not a credential');
       assert.ok(fs.statSync(target).size < 4096, 'a lent binding is small by construction');
-      assert.equal(fs.statSync(target).mode & 0o777, 0o400);
+      assertLentReadOnly(target, `${relative} must be lent read-only`);
     }
   }
 });
@@ -109,8 +121,9 @@ ok('the lent copy is read-only, so a model cannot rewrite the owner’s login', 
   const runtime = runtimeFor('codex');
   for (const relative of runtime.linked) {
     const file = path.join(runtime.home, relative);
-    assert.equal(fs.statSync(file).mode & 0o777, 0o400, `${relative} must be lent read-only`);
-    assert.throws(() => fs.writeFileSync(file, 'tampered'), /EACCES|EPERM/, 'and writing to it must fail');
+    if (assertLentReadOnly(file, `${relative} must be lent read-only`)) {
+      assert.throws(() => fs.writeFileSync(file, 'tampered'), /EACCES|EPERM/, 'and writing to it must fail');
+    }
   }
 });
 
@@ -187,7 +200,7 @@ ok('Pi is lent the policy that restricts it, not only the config that enables it
   }
   // And it is lent read-only, like everything else here — a model must not be able
   // to widen the policy that constrains it.
-  assert.equal(fs.statSync(file).mode & 0o777, 0o400);
+  assertLentReadOnly(file, 'the sandbox policy must be lent read-only too');
 });
 
 ok('the runner asks for the right provider’s login', () => {
@@ -198,4 +211,4 @@ ok('the runner asks for the right provider’s login', () => {
 
 for (const runtime of runtimes) fs.rmSync(runtime.root, { recursive: true, force: true });
 if (failures) { console.error(`credential lending selftest: ${failures} FAILED`); process.exit(1); }
-console.log('credential lending selftest: PASS · one login per provider, named not globbed · read-only · dies with the task · HOME still sandboxed · nothing else crosses');
+console.log(`credential lending selftest: PASS · one login per provider, named not globbed · ${POSIX_MODES ? 'read-only' : 'read-only NOT CHECKED (no POSIX modes on this platform)'} · dies with the task · HOME still sandboxed · nothing else crosses`);
