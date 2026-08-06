@@ -180,21 +180,26 @@ assert.strictEqual(expandPath('~/x', home), path.join(home, 'x'), 'tilde expansi
   // ---- settings normalisation ----------------------------------------------
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-tools-settings-'));
   const store = new SettingsStore({ userData, safeStorage: null });
+  // Absolute, spelled the way this platform spells absolute. A literal '/tmp/ComfyUI'
+  // is resolved to 'D:\tmp\ComfyUI' on Windows, so comparing against the literal
+  // tested the separator rather than whether the value survived normalisation.
+  const comfyRoot = path.resolve(path.sep, 'tmp', 'ComfyUI');
+  const unknownPath = path.resolve(path.sep, 'tmp', 'whatever');
   const saved = store.update({
     paths: {
       tools: {
         acestep: '~/Documents/ACE-Step', // tilde expands
         ltx2: 42,                        // a non-string is ignored
         n8n: '   ',                      // an emptied value falls back to detection
-        totallyUnknown: '/tmp/whatever',  // an unknown id is dropped
-        comfyui: '/tmp/ComfyUI',         // folds into the key path-config.js already reads
+        totallyUnknown: unknownPath,     // an unknown id is dropped
+        comfyui: comfyRoot,              // folds into the key path-config.js already reads
       },
     },
   });
   assert.deepStrictEqual(Object.keys(saved.paths.tools), ['acestep'],
     'unknown ids, non-strings and emptied values must not survive normalisation');
   assert.strictEqual(saved.paths.tools.acestep, path.join(os.homedir(), 'Documents', 'ACE-Step'));
-  assert.strictEqual(saved.paths.comfyRoot, '/tmp/ComfyUI', 'paths.comfyRoot stays the single source of truth');
+  assert.strictEqual(saved.paths.comfyRoot, comfyRoot, 'paths.comfyRoot stays the single source of truth');
   assert.strictEqual(saved.paths.tools.comfyui, undefined, 'the alias must not leave a second copy behind');
   assert.strictEqual(saved.paths.vaultRoot, '', 'existing paths.* keys keep working');
   const cleared = store.update({ paths: { tools: { acestep: '' } } });
