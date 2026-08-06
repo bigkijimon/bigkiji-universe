@@ -71,7 +71,26 @@ All real, all invisible while CI was red, all now covered by a test:
 
 | Runner | State |
 |---|---|
-| ubuntu-latest | Passes when the runner is not shut down mid-run |
 | electron-smoke | Passing |
-| macos-latest | Same shutdown as ubuntu |
-| windows-latest | Reaches teardown, then the libuv assertion |
+| ubuntu-latest | Passed once; otherwise shut down mid-run during `test:daemon` |
+| macos-latest | Same shutdown as ubuntu, at a similar elapsed time |
+| windows-latest | Runs the whole suite, then the libuv assertion at teardown |
+
+Timings from one run, which is the clearest evidence of the shape of problem 1:
+
+```
+electron-smoke        17:56:25 → 17:56:54   success
+test (ubuntu-latest)  17:56:24 → 17:57:00   killed at 36s, inside test:daemon
+test (macos-latest)   17:56:24 → 17:57:06   killed at 42s, inside test:daemon
+test (windows-latest) 17:56:24 → 18:00:00   ran 3m36s, reached teardown
+```
+
+The Electron job on the same infrastructure finishes normally, so this is not the
+runner being generally unhealthy. Windows gets past the same test. Whatever it is,
+it is specific to `test:daemon` on POSIX runners.
+
+Things checked and ruled out while narrowing it: the selftest does not spawn a
+detached process (it calls `startDaemon` in-process and closes the server), and
+the one place that signals a pid read from a file (`src/core/main.js`) only does
+so after confirming a daemon is answering on the expected port, and is not on this
+path.
