@@ -87,7 +87,9 @@ if (process.env.CI) {
   process.on('beforeExit', () => mark('beforeExit'));
   process.on('exit', (code) => mark(`exit ${code}`));
   // A heartbeat pins how far it got. unref'd so it never holds the process open.
-  const beat = setInterval(() => mark('alive'), 250);
+  // 250ms while the runner kill was being hunted; back to 5s now that it is fixed,
+  // because at 250ms this prints more than the suite it is watching.
+  const beat = setInterval(() => mark('alive'), 5000);
   beat.unref();
 }
 const { daemonSpawnEnv } = require('../src/domain/server/daemon-client');

@@ -4,11 +4,15 @@ Measured from run logs, not inferred. Kept here rather than hidden, because unti
 2026-08-05 CI had been red since 2026-08-02 for an unrelated reason (`npm ci`
 refused an out-of-sync lock file) and nothing off macOS was being checked at all.
 
-`npm test` is 62 selftests, 0 failures, exit 0 on the maintainer's macOS machine.
+`npm test` is 63 selftests, 0 failures, exit 0 on macOS, Linux and Windows.
 
-## 1. Linux and macOS runners are shut down mid-suite — intermittently
+## 1. Linux and macOS runners were shut down mid-suite — **fixed, 2026-08-06**
 
-Across 12 consecutive runs on `main`:
+**The suite was killing the runner.** Asking a child process that never started to
+stop asks the entire process group to stop instead, and on a hosted runner that group
+contains the agent running the job.
+
+Before the fix, across 12 consecutive runs on `main`:
 
 | Runner | `npm test` outcome |
 |---|---|
@@ -16,38 +20,84 @@ Across 12 consecutive runs on `main`:
 | macos-latest | cancelled **12 times out of 12** |
 | windows-latest | always ran to completion (and then hit problem 2) |
 
-So the suite *can* pass on Linux — this is not a test that is simply broken, and
-not a regression from any one commit. It is intermittent, and macOS has never once
-got through. When it does die, it dies inside `test:daemon`, at 33-42s:
+It always died inside `test:daemon`, and the selftest always printed PASS on its way
+out, with no failed assertion anywhere:
 
 ```
-> node tools/daemon-selftest.js
-[BIGKIJI DAEMON READY] http://127.0.0.1:0
 ##[error]The runner has received a shutdown signal. This can happen when the
 runner service is stopped, or a manually started runner is canceled.
 daemon selftest: PASS · ...
+[selftest] 4.3s SIGTERM received · rss=197MB
 ##[error]The operation was canceled.
-Cleaning up orphan processes
 ```
 
-The selftest itself passes — the signal arrives while it is running. Windows gets
-past this point in the same run, so it is not the assertions.
+### The cause
 
-Ruled out by measurement:
+`ChildProcess.kill()` looks like it checks whether there is a process to signal. It
+does not. A child whose spawn failed has `pid === undefined`, and `kill()` still hands
+libuv a handle whose pid is `0` — and POSIX defines `kill(0, sig)` as *every process in
+my process group*.
 
-- Not matrix `fail-fast`; it is `false`.
-- Not `concurrency: cancel-in-progress`; identical with it `false` and no other
-  run in flight.
-- Not the repository being private and out of Actions minutes; it persists after
-  the repository was made public.
+Every provider binary (`pi`, `gemini`, `ollama`, `graphify`) is absent on a CI runner,
+so every spawn there fails. The first cleanup that signalled one of those children
+signalled the runner agent with it.
 
-The daemon selftest starts a real detached daemon, and "Cleaning up orphan
-processes" appears in the same log. A detached child holding the runner's process
-group or stdio is the thread to pull first.
+That accounts for every part of the shape this had:
+
+- **Green on the maintainer's machine, red on CI.** The binaries exist locally, so the
+  spawns succeed, the pid is real, and only the child is signalled.
+- **Windows never affected.** It has no POSIX process group to signal — which is why
+  the platform carrying six real defects (problem 2) was also the only one finishing.
+- **Intermittent on Linux, certain on macOS.** It is a race between the ENOENT error
+  clearing the handle and the cleanup path reaching it, and the macOS runners are
+  slower (3 cores, 7GB, against 4 and 16).
+- **The runner's message arriving *before* the test's own.** One SIGTERM reached both
+  at the same instant; the test could not run its JS handler until the event loop it
+  was blocking came free, 94ms later.
+
+### The fix
+
+`src/core/child-signal.js` — `signalChild()` refuses a child with no pid, and
+`signalPid()` refuses a pid that is not a positive integer, which is the same hazard
+one layer up: `Number('')` is `0`, so an empty pid file asked the daemon to stop and
+stopped the process group instead (`src/core/main.js`). Five call sites that each had
+their own version now use it.
+
+`npm run test:child-signal` is the regression test. It cannot demonstrate the defect
+by firing it — doing so kills whatever is running the suite, which it did the first
+time it was written — so it proves the property from the victim's side: a sibling in
+the same process group must survive, this process must not receive the signal, and a
+real child must still stop.
+
+### Measured, before and after
+
+| | ubuntu | macOS | windows |
+|---|---|---|---|
+| Before (12 runs on `main`) | 5/12 green | **0/12** | 12/12 |
+| After (5 consecutive reruns of `2e733dc`) | **5/5** | **5/5** | **5/5** |
+
+### What was ruled out on the way, and what the wrong guess cost
+
+- Not matrix `fail-fast` (`false`), not `concurrency: cancel-in-progress` (`false`,
+  with no other run in flight), not Actions minutes (it outlived the repo going public).
+- Not resource exhaustion: at the moment of the kill, fds peaked at **22** against a
+  limit of **1048575**, and rss at **206MB** of **7GB**.
+- Not the network: no socket ever left the loopback interface.
+- Not an external event hitting the runner pool: in one run the two macOS jobs died
+  **33 seconds apart**, each while running the daemon selftest.
+
+This file previously said *"The daemon selftest starts a real detached daemon … A
+detached child holding the runner's process group or stdio is the thread to pull
+first."* That was wrong, and it was wrong in a way worth remembering: the selftest
+starts its daemon **in-process** (`startDaemon({ bind: '127.0.0.1', port: 0 })`) and
+contains no `spawn` at all. The word "detached" came from `daemon-client.js`, a path
+the test never takes. The hypothesis was about the right subsystem and the wrong
+mechanism, and following it would have found nothing — the actual children came from
+the engine, transitively, and were named only once the instrumentation printed them.
 
 ## 2. Windows — **fixed, 2026-08-06**
 
-Windows now runs all 62 selftests green. Getting there took six defects, every one
+Windows now runs all 63 selftests green. Getting there took six defects, every one
 of them invisible while the suite could not run anywhere but macOS:
 
 | What broke | Why only Windows |
@@ -94,59 +144,40 @@ All real, all invisible while CI was red, all now covered by a test:
 | Runner | State |
 |---|---|
 | electron-smoke | Passing |
-| ubuntu-latest | Passes when the job is allowed to finish; otherwise SIGTERM'd from outside |
-| macos-latest | Same, and has not yet been allowed to finish |
-| windows-latest | **Green.** All 62 selftests pass |
+| ubuntu-latest | **Green.** All 63 selftests pass |
+| macos-latest | **Green.** All 63 selftests pass |
+| windows-latest | **Green.** All 63 selftests pass |
 
-Timings from one run, which is the clearest evidence of the shape of problem 1:
+Measured 2026-08-06: five consecutive reruns of the same commit, all six jobs green
+every time. Before the fix in problem 1, macOS had never once finished the suite.
 
-```
-electron-smoke        17:56:25 → 17:56:54   success
-test (ubuntu-latest)  17:56:24 → 17:57:00   killed at 36s, inside test:daemon
-test (macos-latest)   17:56:24 → 17:57:06   killed at 42s, inside test:daemon
-test (windows-latest) 17:56:24 → 18:00:00   ran 3m36s, reached teardown
-```
+### How this was nearly filed as "not our bug"
 
-The Electron job on the same infrastructure finishes normally, so this is not the
-runner being generally unhealthy, and Windows gets past the same test.
+Before the fix, this section concluded that the kill was *"a GitHub infrastructure
+condition, not a defect here, and no further change to this code will fix it."* It is
+worth keeping why that was wrong, because the reasoning was careful and still landed
+in the wrong place.
 
-Checked and ruled out while narrowing it:
+The mechanism had already been guessed. This file used to say:
 
-- The selftest spawns nothing detached — it calls `startDaemon` in-process and
-  closes the server and engine at the end.
-- The only place in the codebase that signals a pid read from a file
-  (`src/core/main.js`) fires solely after a daemon answers on the expected port,
-  and is not on this path. In particular nothing calls `process.kill(0, …)`,
-  which would signal the whole process group including the runner and would have
-  explained the message exactly.
-- Not a regression: ubuntu succeeded both before and after every candidate commit.
+> nothing calls `process.kill(0, …)`, which would signal the whole process group
+> including the runner and would have explained the message exactly.
 
-### Measured, 2026-08-06
+That sentence names the cause and then dismisses it, because the search was for the
+literal call. Nothing calls `process.kill(0, …)`. What the code calls is
+`child.kill()` — which becomes `kill(0, …)` on its own, whenever the child never
+started, without the digit appearing anywhere in this repository.
 
-The selftest now instruments itself under CI, and the instrumentation answers it:
+Two other things kept the answer out of reach:
 
-```
-[selftest] alive 8.1s · rss=180MB heap=94MB handles=7     ← the runner that finished
-[selftest] exit 0 at 8.2s
+- **The evidence pointed at the victim.** The runner's message is logged before the
+  test's, so the test looked like collateral. It was — of one signal that hit both.
+- **"It passes locally" was read as reassurance.** It was the clue. The suite passed
+  on the one machine where the provider binaries exist, which is exactly the machine
+  where the defect cannot fire.
 
-[selftest] SIGTERM received at 3.6s · rss=206MB heap=64MB ← the two that did not
-[selftest] exit 1 at 3.6s
-[selftest] SIGTERM received at 4.4s · rss=210MB heap=75MB
-[selftest] exit 1 at 4.4s
-```
-
-**The process does not fail. It is sent SIGTERM from outside**, three to four
-seconds in, while memory is unremarkable (~200MB) — and the third runner executes
-exactly the same code to completion. Combined with the runner's own
-"The runner has received a shutdown signal", the job is being torn down around the
-test rather than by it.
-
-That makes it a GitHub infrastructure condition, not a defect here, and no further
-change to this code will fix it. Adding step markers would not help either: the leg
-that survives runs the identical path.
-
-If it needs to stop being noise, the options are to retry the affected leg (which
-means a third-party action, and this project does not add dependencies without
-discussing them first) or to accept it and read the matrix as "Linux passes when it
-is allowed to finish". The instrumentation stays so the next occurrence is evidence
-rather than a mystery.
+What broke it open was measurement rather than reasoning: printing the open handles
+by kind, and naming the child processes instead of counting them. The line
+`ChildProcess×1 · children: undefined:pi --print` — a child with no pid, still being
+held — is the whole bug, and no amount of reading the selftest would have produced it,
+because the selftest contains no `spawn`. The children came from the engine it starts.
