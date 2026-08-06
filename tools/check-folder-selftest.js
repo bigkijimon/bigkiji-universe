@@ -112,8 +112,11 @@ function rest() {
     // ---- the check root is resolved by the app, not hardcoded at the call site --
     const { createPathConfig } = require('../src/core/path-config');
     const paths = createPathConfig({ appRoot: path.join(__dirname, '..'), home: '/Users/test', env: {} });
+    // Joined, not written as a literal: the same source runs on Windows in CI, where
+    // this resolves with backslashes and a forward-slash literal fails for no reason
+    // anyone would learn anything from.
     assert.equal(paths.checkRoot,
-      '/Users/test/Library/Mobile Documents/com~apple~CloudDocs/BigkijiUniverse-Check',
+      path.join('/Users/test', 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'BigkijiUniverse-Check'),
       'iCloud Drive is the only place both the Mac and the phone can reach without a server');
     const overridden = createPathConfig({ appRoot: path.join(__dirname, '..'), home: '/Users/test',
       env: {}, saved: { checkRoot: '/Volumes/Share/check' } });

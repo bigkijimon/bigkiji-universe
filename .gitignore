@@ -20,7 +20,14 @@ src/components/UI/console-dist/
 # 運用プレイブック。アプリのコードではなく、オーナー環境の手順書。
 # 中には社内の実パスや姉妹事業の名前が入っている。skill-registry.js は
 # ~/.claude/skills も読むので、ここに無くてもアプリは動く。
-/skills/
+# `/skills/*` rather than `/skills/`: git does not descend into an excluded directory,
+# so a negation under it never gets a chance to match.
+/skills/*
+# …except the one the app itself depends on. bku-check is not a playbook about the
+# owner's environment; it is the rule the agent has to carry to behave correctly, and
+# check-folder-selftest fails without it. It names no sister business and no path that
+# src/core/path-config.js does not already state in the open.
+!/skills/bku-check/
 # 第三者の動画9本のフレーム単位解析。画面内のコードと字幕を逐語転記しており、
 # 他人の著作物の複製にあたる。設計判断の根拠としてローカルには残す。
 /docs/reference-analysis.md
