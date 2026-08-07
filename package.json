@@ -97,7 +97,8 @@
     "test:pricing": "node tools/pricing-selftest.js",
     "test:worktree": "node tools/worktree-selftest.js",
     "test:retention": "node tools/retention-selftest.js",
-    "doctor": "node tools/doctor.js"
+    "doctor": "node tools/doctor.js",
+    "test:sandbox-reach": "node tools/sandbox-reachability-audit.js"
   },
   "build": {
     "appId": "com.bigkiji.universe",

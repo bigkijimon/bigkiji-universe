@@ -181,3 +181,39 @@ by kind, and naming the child processes instead of counting them. The line
 `ChildProcess×1 · children: undefined:pi --print` — a child with no pid, still being
 held — is the whole bug, and no amount of reading the selftest would have produced it,
 because the selftest contains no `spawn`. The children came from the engine it starts.
+
+---
+
+## A daemon run can read the whole home directory, including the pairing token
+
+**Measured 2026-08-07 by `tools/sandbox-reachability-audit.js`.**
+
+The OS-enforced boundary (`~/.pi/agent/sandbox.json`) grants `.` — the run's cwd — in
+both `allowRead` and `allowWrite`. The daemon starts with `BIGKIJI_WORKSPACE=/Users/yuma`
+and `daemon.js` hard-wires every run's cwd to it (`:229`, `:864`; there is no `cwd` field
+on `/api/prompt`). So `.` resolves to the home directory and a pi agent in a daemon run
+can read everything under it, `~/BigKijiUniverse/state/remote.json` included.
+
+**Writes are closed.** `remote.json` is now in the global `denyWrite`, which is absolute
+and never prompted — the same treatment as `.env`, `*.pem` and `*.key`.
+
+**Reads are not, and cannot be from a config file.** `denyRead` is soft: `allowRead`
+overrides it, and `.` is in `allowRead`. A project `.pi/sandbox.json` cannot help either,
+because project files only ever ADD to the global.
+
+### The fix, when someone can restart the daemon
+
+Start it with a workspace that is not the home directory:
+
+```
+BIGKIJI_WORKSPACE=/Users/yuma/Documents/CEOBigKiji <start the daemon>
+```
+
+Then `.` resolves to the vault rather than to `$HOME`, and `~/BigKijiUniverse/` falls
+outside every `allowRead` hole — which is also why the run ledger lives in `docs/v3/`
+rather than in the data folder (see `run-ledger.js`).
+
+This was not done at the time it was found: the daemon was holding a run that had been
+stuck in DIAGNOSING for 13 hours, and that run may be the reproduction case for the
+branch then in progress (`fix/session-never-progresses`). Restarting would have destroyed
+it. Re-run the audit after any workspace change.

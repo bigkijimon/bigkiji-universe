@@ -20,7 +20,9 @@
       "./tools",
       "./docs",
       "./skills",
-      "./fixtures"
+      "./fixtures",
+      "~/BigKijiUniverse/knowledge/skills.json",
+      "~/BigKijiUniverse/knowledge/failure_memory.json"
     ],
     "allowWrite": [
       "./src",
