@@ -2,6 +2,15 @@
 
 Written 2026-08-02 against commit `a571150`.
 
+## If you were asked to improve the prompts
+
+Read `run-ledger.md` in this folder, not the source. It is the English record of every
+finished run: the prompt exactly as it was given, what actually shipped, the **gap**
+between the two, and one line on what that implies for the prompt. `bigkiji ledger --gaps`
+groups the repeats — a pattern seen once is an anecdote.
+
+Proposals go in `prompt-improvements.md`. Do not edit `ROLE_BLUEPRINT` directly.
+
 ## The one rule this specification follows
 
 **A number appears here only if it was measured.** Everything else is labelled `target`

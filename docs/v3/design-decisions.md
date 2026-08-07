@@ -202,3 +202,17 @@ which is the only mode that releases a writing run without stopping. **shift+tab
 |---|---|---|
 | Should a transient `model-unavailable` mark the model unusable in the capability registry? | **No, not on the first sighting.** It is recorded without a penalty and the same model is retried once; only a second failure of the same provider+model in one run is scored. `transient` is an explicit argument rather than adding the reason to `THROTTLED`, because a model that really is gone still has to be learned | claude |
 
+---
+
+## Two records exist, and they are not the same thing (2026-08-07, owner)
+
+`~/BigKijiUniverse/reports/report-*.md` is the Electron app's report: Japanese, written
+for the owner, one per GUI run, and it covers tokens, savings and a screenshot. It is
+called from `src/core/main.js` only — daemon runs never produced one, which is why that
+folder held two files five days old.
+
+`docs/v3/run-ledger.md` is the ledger: English, written for an external coding agent,
+one per **daemon** run, and it covers the prompt as given, what shipped, and the gap
+between them. Its job is to make the generated prompts improvable from evidence.
+
+Keep both. Different reader, different language, different question.

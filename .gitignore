@@ -39,3 +39,7 @@ src/components/UI/console-dist/
 /docs/reference-analysis.md
 # 社内の役割サンドボックス構成と内部監査の引用。
 /AI_ORGANIZATION_HANDBOOK.md
+
+# Run ledger detail. On disk on purpose (a pi agent reads it there),
+# but one line per run is not worth a diff. The .md beside it IS tracked.
+docs/v3/run-ledger.jsonl

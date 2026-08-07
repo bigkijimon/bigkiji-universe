@@ -10,7 +10,8 @@
     "  - paths matching the sensitive-path patterns (.env, .ssh, keys, credentials) are",
     "    dropped as well, and that filter is not configurable from this file",
     "  - filesystem.denyRead / denyWrite and the network block are read by the pi CLI's",
-    "    own sandbox package, NOT by this app; do not rely on them here"
+    "    own sandbox package, NOT by this app; do not rely on them here",
+    "docs/ must stay readable AND writable here: the run ledger (docs/v3/run-ledger.md and .jsonl) lives in the repo precisely because ~/BigKijiUniverse/ is unreadable from the pi sandbox — the global ~/.pi/agent/sandbox.json denies /Users and does not allow BigKijiUniverse (measured 2026-08-07). If someone later 'tidies' the ledger into the data folder where the rest of the memory lives, it will still be written and no agent will ever be able to read it again."
   ],
   "filesystem": {
     "allowRead": [

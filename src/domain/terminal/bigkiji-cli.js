@@ -736,11 +736,74 @@ async function printCheckFolder() {
   console.log(`${A.dim}${dirs.root}${A.reset}`);
 }
 
+/**
+ * `bigkiji ledger [n]` / `bigkiji ledger --gaps` — what the runs actually did.
+ *
+ * Reading a file, like `check`: it has to work when the engine is down, because the
+ * reason to open the ledger is usually that something went wrong.
+ *
+ * `--gaps` is the part that matters. One entry tells you about one run; the same gap
+ * appearing seven times is what justifies changing a prompt.
+ */
+async function printLedger(rest = []) {
+  const fs = require('fs');
+  const { JSONL_PATH, MD_PATH } = require('../pi-agent/run-ledger');
+
+  if (!fs.existsSync(JSONL_PATH)) {
+    console.log(`${A.dim}まだ1件も記録がありません（run を1本流すと ${MD_PATH} に出ます）${A.reset}`);
+    return;
+  }
+  const entries = fs.readFileSync(JSONL_PATH, 'utf8').split('\n')
+    .filter(Boolean).map((line) => { try { return JSON.parse(line); } catch (_) { return null; } })
+    .filter(Boolean);
+  if (!entries.length) { console.log(`${A.dim}記録が読めませんでした${A.reset}`); return; }
+
+  if (rest.includes('--gaps')) {
+    // Group by the lesson text — entries that produced the same lesson are the same
+    // problem. Exact-match grouping on purpose: it under-groups rather than inventing
+    // a category that isn't there.
+    const groups = new Map();
+    for (const e of entries) {
+      const key = String(e.prompt_lesson || '').trim();
+      if (!key || key.startsWith('(no lesson')) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    const ranked = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+    console.log(`${A.bold}繰り返し起きているズレ（記録 ${entries.length} 件中）${A.reset}\n`);
+    if (!ranked.length) { console.log(`${A.dim}まだ繰り返しは出ていません${A.reset}`); return; }
+    for (const [lesson, list] of ranked.slice(0, 12)) {
+      const mark = list.length >= 3 ? A.warning : A.muted;
+      console.log(`${mark}${String(list.length).padStart(3)}回${A.reset}  ${lesson}`);
+      console.log(`${A.dim}       直近: ${list.slice(-3).map((e) => e.run_id.slice(0, 16)).join(', ')}${A.reset}`);
+    }
+    const unclear = entries.filter((e) => e.gap_evidenced === false).length;
+    if (unclear) console.log(`\n${A.dim}※ ${unclear} 件は記録が薄くてズレを判定できていません（未分類）${A.reset}`);
+    console.log(`\n${A.dim}改善案は docs/v3/prompt-improvements.md へ。ROLE_BLUEPRINT はオーナー承認なしに変えないこと。${A.reset}`);
+    return;
+  }
+
+  const n = Math.max(1, Number(rest.find((x) => /^\d+$/.test(x)) || 10));
+  for (const e of entries.slice(-n).reverse()) {
+    const tone = e.status === 'COMPLETED' ? A.success : A.error;
+    console.log(`${tone}${e.run_id}${A.reset} ${A.dim}${e.finished_at} · ${e.status}` +
+      `${e.repair_cycles ? ` · repair×${e.repair_cycles}` : ''}${A.reset}`);
+    console.log(`  ${A.dim}asked   ${A.reset}${String(e.prompt_english || e.prompt_original).slice(0, 150)}`);
+    console.log(`  ${A.dim}shipped ${A.reset}${String(e.delivered || '(none)').slice(0, 150)}`);
+    console.log(`  ${A.warning}gap     ${A.reset}${String(e.gap).slice(0, 200)}`);
+    console.log(`  ${A.info}lesson  ${A.reset}${String(e.prompt_lesson).slice(0, 200)}\n`);
+  }
+  console.log(`${A.dim}${MD_PATH}${A.reset}`);
+}
+
 async function main(argv = process.argv.slice(2)) {
   installSignalHandlers();
   // Before the daemon handshake on purpose: looking at what the phone sent is reading
   // a folder, and it has to work when the engine is down or the owner is in a hurry.
   if (String(argv[0] || '').replace(/^\//, '').toLowerCase() === 'check') { await printCheckFolder(); return; }
+  // Same reason as `check`: reading the ledger must not need a live engine — the moment
+  // you want it is usually the moment something is wrong.
+  if (String(argv[0] || '').replace(/^\//, '').toLowerCase() === 'ledger') { await printLedger(argv.slice(1)); return; }
   const client = await ensureClient(); setMode(prefs.get().mode, false); const args = [...argv]; const autoAt = args.indexOf('--auto'); const auto = autoAt >= 0;
   if (auto) args.splice(autoAt, 1); const command = String(args[0] || '').replace(/^\//, '').toLowerCase();
   if (['monitor', 'tui'].includes(command) || args.includes('--tui')) { const monitor = new TUIMonitor({ client }); client.on('hud-request', () => launchHud()); await monitor.start(); return; }

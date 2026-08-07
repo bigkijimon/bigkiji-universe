@@ -10,6 +10,7 @@ const { CircuitBreaker } = require('./circuit-breaker');
 const { reviewResult } = require('./critique');
 const { costOf, contextUse } = require('./pricing');
 const { isolate, collectDiff, release } = require('./worktree');
+const { RunLedger } = require('./run-ledger');
 const deliberate = require('./deliberation');
 const { FailureMemory, signatureOf } = require('./failure-memory');
 
@@ -157,6 +158,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     this.preview = preview;
     this.registry = registry;
     this.memory = memory;
+    // The English record an external coding agent reads to improve the prompts we
+    // generate. Write-only from here, and it swallows its own failures — see
+    // run-ledger.js. Nothing in the run path may depend on it.
+    this.ledger = new RunLedger();
     // Scoring never knew whether a provider could actually start. A provider with no
     // credential still won its role and then died at spawn, which costs a full
     // plan-approve-fail-repair cycle to discover something knowable up front.
@@ -650,6 +655,11 @@ class CoreExecutionCoordinator extends EventEmitter {
     run.report = this.buildReport(run);
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
+    // Write the run down in English, with the prompt as given and the gap between what
+    // was asked and what shipped, for whoever improves these prompts next.
+    // Deliberately not awaited: this is a long-lived daemon and the ledger is not
+    // allowed to delay or fail a run.
+    this.ledger.record(run);
     // Tell the memory what its plan was worth.
     //
     // store() ran at planning time and nothing ever came back, so a plan that led
