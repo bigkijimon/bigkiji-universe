@@ -93,9 +93,15 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
   // What must stay true: it is shut unless BOTH the GPU is unavailable AND the owner
   // turned it on, it never runs while local can, and the answer says where it went.
 
-  assert.deepStrictEqual(await router.detect({ cloudFallback: 'off', gpuHeld: true }),
-    { ollama: false, glm: false, claude: false, codex: false, gemini: false, kimi: false, openrouter: false },
-    'the default is shut, whatever the GPU is doing');
+  // Asserted key by key, and never on `ollama`: that one is a live probe of whatever is
+  // listening on 11434 while the suite runs, so a deepStrictEqual here passes at midnight
+  // and fails at noon. This file is not allowed to have an opinion about the owner's GPU.
+  {
+    const shut = await router.detect({ cloudFallback: 'off', gpuHeld: true });
+    for (const paid of ['glm', 'claude', 'codex', 'gemini', 'kimi', 'openrouter']) {
+      assert.equal(shut[paid], false, `${paid}: the default is shut, whatever the GPU is doing`);
+    }
+  }
   assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false })).glm, false,
     'a free GPU means local — the escape is not a preference for the cloud');
   assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true })).glm, true,

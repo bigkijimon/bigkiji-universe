@@ -102,13 +102,12 @@ function findPlan(ownerText) {
  * Silent when there is no matching record. The swarm planner only writes one for the
  * requests it plans, so most runs have nothing here to update, and that is normal rather
  * than an error worth throwing into a live run.
+ *
+ * Found by the owner's own words, because that is what the coordinator has in hand. A
+ * by-id twin was written alongside this and exported with no caller anywhere in src/ or
+ * tools/; it was removed rather than left, because an unused export is a second way to
+ * write the same field that no test covers and no reader can tell apart from the live one.
  */
-function updateTaskStatus(taskId, status, evidence = '') {
-  const id = cleanText(taskId, 96);
-  return id ? writeTaskStatus((task) => task.id === id, status, evidence) : null;
-}
-
-/** The same, found by the owner's own words — how the coordinator knows a run's plan. */
 function recordTaskOutcome(ownerText, status, evidence = '') {
   const h = hash(cleanText(ownerText));
   return writeTaskStatus((task) => task.promptHash === h, status, evidence);
@@ -199,4 +198,4 @@ function canSpend(provider, planned = false) { return assertExecutor(provider) &
 
 module.exports = { ROOT, STATE_PATH, GRAPH_PATH, ALLOWED_EXECUTORS, PAID_EXECUTORS,
   cleanText, hash, loadState, loadGraph, saveState, saveGraph, createTask, rememberPlan,
-  findPlan, recordEvent, updateTaskStatus, recordTaskOutcome, savePhysicalLayout, saveFleetMetrics, rememberIdea, assertExecutor, canSpend };
+  findPlan, recordEvent, recordTaskOutcome, savePhysicalLayout, saveFleetMetrics, rememberIdea, assertExecutor, canSpend };

@@ -14,8 +14,20 @@
 //
 // The stricter of the two is what an agent actually experiences. This tool reports that.
 //
-// Run: node tools/sandbox-reachability-audit.js
+// Run: node tools/sandbox-reachability-audit.js   (npm run test:sandbox-reach)
 // Exit 1 if something the app treats as agent-facing is unreachable.
+//
+// Deliberately NOT in `npm test`, and it is the only `test:*` script that is not.
+//
+// This reads the machine it is standing on — the owner's live ~/.pi/agent/sandbox.json and
+// ~/BigKijiUniverse — so its verdict is about this installation, not about the code. In
+// the suite it would fail on any checkout that has no pi configured, and pass or fail
+// depending on what the owner edited that morning. That is an audit, not a test, and this
+// repository has already been bitten twice by suites whose answer depended on the state of
+// the machine: paste-turn-selftest passed for months on the owner's private plan cache,
+// and conversation-selftest went red whenever the GPU happened to be busy.
+//
+// Run it by hand after touching a sandbox policy, and before shipping a build.
 
 const fs = require('fs');
 const os = require('os');
