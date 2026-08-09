@@ -4,6 +4,20 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// Before requiring the daemon: this test used to write into the owner's real memory.
+//
+// `stateRoot` below sends sessions to a temp folder, and that was assumed to cover
+// everything. It does not. pi-knowledge-orchestrator resolves its ROOT once, at module
+// load, from BIGKIJI_KNOWLEDGE_ROOT — nothing about `stateRoot` reaches it. So every run
+// of this test appended to ~/BigKijiUniverse/knowledge/task_state.json.
+//
+// Measured 2026-08-09: one `npm test` replaced all 300 entries of the event ring with
+// this test's own submit/plan/abort traffic, and the record of what the machine had
+// really been doing since 2026-08-07 was gone. A test suite that destroys the evidence
+// you run it to protect is worse than no test suite.
+process.env.BIGKIJI_KNOWLEDGE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-daemon-knowledge-'));
+
 const { DaemonEngine, startDaemon, jsonSafe } = require('../src/domain/server/daemon');
 
 // Instrumentation for the intermittent CI kill (see docs/known-issues.md #1).

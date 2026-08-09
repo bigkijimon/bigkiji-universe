@@ -132,6 +132,76 @@ ok('empty work is cleaned up; work with something in it is kept and named', () =
   assert.deepStrictEqual(worktree.listAbandoned(dir, { parent }), []);
 });
 
+// The 35 GB one.
+//
+// Measured on the owner's machine 2026-08-09: 1,446 worktrees, 35 GB, not one of them
+// ever deleted. The repository had uncommitted work, isolate() carried that patch into
+// every copy, and collectDiff() measured from HEAD — so `files` was non-zero the instant
+// a worktree existed and `release({keep: files > 0})` kept all of them. The diffs of three
+// sampled worktrees hashed identical (cc8911c8a012): it was the same carried patch, not
+// anybody's work. The same miscount also showed the owner their own uncommitted edits in
+// the run report as though a paid provider had written them.
+//
+// Both assertions below fail against the old code, which is the point of having them.
+ok('the owner’s carried-in work is the baseline, not the provider’s output', () => {
+  const dir = repo('baseline');
+  // The owner is mid-edit, exactly as they normally are.
+  fs.writeFileSync(path.join(dir, 'app.js'), 'const value = 1;\nconst added = 2;\n');
+
+  const fresh = worktree.isolate({ cwd: dir, runId: 'run-6', role: 'leader', root: parent });
+  assert.strictEqual(fresh.carried, 1, 'the uncommitted file still travels with the provider');
+  assert.ok(fresh.baseline, 'and where the provider starts is recorded');
+  assert.strictEqual(worktree.collectDiff(fresh).files, 0,
+    'a provider that has not run yet has changed nothing — this returning 1 is what kept 1,446 copies');
+  worktree.release(fresh, { keep: worktree.collectDiff(fresh).files > 0 });
+  assert.ok(!fs.existsSync(fresh.path), 'so the release path that runs in production actually removes it');
+
+  const used = worktree.isolate({ cwd: dir, runId: 'run-7', role: 'leader', root: parent });
+  fs.appendFileSync(path.join(used.path, 'app.js'), 'const byProvider = 3;\n');
+  const diff = worktree.collectDiff(used);
+  assert.strictEqual(diff.files, 1);
+  assert.strictEqual(diff.insertions, 1, 'one line, not two — the owner’s line is not the provider’s');
+  assert.ok(/\+const byProvider/.test(diff.patch));
+  assert.ok(!/\+const added/.test(diff.patch),
+    'the owner must never be shown their own uncommitted work as a provider’s edit');
+  worktree.release(used);
+});
+
+ok('a test suite can move its worktrees out of the production directory', () => {
+  // 85 of the 1,446 were made by `npm test`: daemon-selftest runs a real DaemonEngine with
+  // workspace = process.cwd(), so every run it submits isolates into this repo.
+  //
+  // The override relocates but must not escape: SandboxPolicyResolver refuses a cwd
+  // outside the Vault, so pointing this at os.tmpdir() turns every task in the suite into
+  // SECURITY_BLOCKED. Measured — it did exactly that. Hence `.bigkiji/test-worktrees`
+  // inside the repo rather than a temp directory.
+  const dir = repo('envroot');
+  const elsewhere = path.join(root, 'env-worktrees');
+  process.env.BIGKIJI_WORKTREE_ROOT = elsewhere;
+  try {
+    const w = worktree.isolate({ cwd: dir, runId: 'run-8', role: 'ui' });
+    assert.ok(w.isolated);
+    assert.ok(canonical(w.path).startsWith(canonical(elsewhere)), `BIGKIJI_WORKTREE_ROOT must win: ${w.path}`);
+    assert.ok(!fs.existsSync(path.join(dir, '.bigkiji', 'worktrees')), 'and the repo under test stays clean');
+    worktree.release(w);
+  } finally { delete process.env.BIGKIJI_WORKTREE_ROOT; }
+});
+
+ok('the worktree directory is never shipped inside the application', () => {
+  // The built app was 12 GB. 11.94 GB of it was Contents/Resources/app/.bigkiji —
+  // electron-builder's `files` began with `**/*` and nothing excluded the working
+  // directory, so 1,180-odd copies of this repository were packaged into the product and
+  // would have been handed to anyone who installed it (measured on the 2026-08-05 build).
+  // The application itself is ~56 MB.
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const files = pkg.build?.files || [];
+  assert.ok(files.includes('!.bigkiji/**'), 'electron-builder must exclude the worktree directory');
+  // Same build, same reason: the run ledger records the owner's prompts verbatim, and this
+  // repository is published (git remote + LICENSE + CONTRIBUTING + FUNDING.yml).
+  assert.ok(files.some((rule) => /^!docs\/v3\/run-ledger/.test(rule)),
+    'and the run ledger, which is the owner’s own words, must not ship in a public build');
+});
+
 ok('it refuses to isolate into weaker permissions than the run was approved under', () => {
   // SandboxPolicyResolver finds .pi/sandbox.json by walking up from the working
   // directory. A worktree checks out HEAD, so a committed policy travels with it — an

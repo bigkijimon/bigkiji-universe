@@ -35,6 +35,16 @@ const POLICY_FILE = path.join('.pi', 'sandbox.json');
 // isolate(). Add it to .gitignore of any repo this runs in; it is working space.
 const WORKTREE_DIR = path.join('.bigkiji', 'worktrees');
 
+// The mark the provider's work is measured against.
+//
+// `write-tree` writes a tree object from the index and nothing else. It creates no ref,
+// no branch, and moves nothing. That distinction is the point: the selftest keeps this
+// module away from every porcelain command that could combine or relocate work, because a
+// module able to quietly fold several providers' edits together would be the most
+// expensive thing in this repository. Recording where the provider started is not
+// combining anything, and this is the one plumbing command that cannot.
+const BASELINE_TREE = ['write-tree'];
+
 function git(args, cwd, { input = null } = {}) {
   return execFileSync('git', args, {
     cwd,
@@ -68,7 +78,16 @@ function isolate({ cwd, runId = 'run', role = 'task', root = null, policyFile = 
   // Inside the repository, not in os.tmpdir(). SandboxPolicyResolver refuses any task
   // whose cwd is outside the configured Vault (sandbox-policy.js:49), so a worktree in
   // /tmp would block every task it was meant to help.
-  const parent = root || path.join(repo, WORKTREE_DIR);
+  // BIGKIJI_WORKTREE_ROOT keeps a test suite out of the production worktree directory.
+  // daemon-selftest runs a real DaemonEngine with `workspace: process.cwd()`, so every run
+  // it submits isolates into this repo — 85 of the 1,446 leaked copies were made by
+  // `npm test`, not by any real work.
+  //
+  // It must still point INSIDE the Vault. Pointing it at os.tmpdir() was tried and every
+  // task came back SECURITY_BLOCKED: SandboxPolicyResolver refuses a cwd outside the
+  // configured Vault, which is the same reason the default is inside the repo rather than
+  // in /tmp (see the comment below). The override relocates; it does not escape.
+  const parent = root || process.env.BIGKIJI_WORKTREE_ROOT || path.join(repo, WORKTREE_DIR);
   const target = path.join(parent, `${slug(runId)}-${slug(role)}`);
   try {
     fs.mkdirSync(parent, { recursive: true });
@@ -82,13 +101,32 @@ function isolate({ cwd, runId = 'run', role = 'task', root = null, policyFile = 
 
   // Carry the owner's uncommitted tracked work across, or the provider starts from a
   // state nobody is looking at.
+  //
+  // …and then RECORD IT AS THE BASELINE, which is the whole difference between this
+  // working and not.
+  //
+  // The carried patch used to be left in the working tree with nothing marking it as
+  // pre-existing, so `git diff` in this worktree reported it forever. Two things broke on
+  // that, both measured 2026-08-09:
+  //
+  //   1. collectDiff() returned files > 0 the instant the worktree was created, so
+  //      release({keep: diff.files > 0}) kept every single one. 1,446 worktrees, 35 GB,
+  //      not one deletion — and the diffs of three sampled worktrees hashed identical
+  //      (cc8911c8a012) because it was the same carried patch in all of them.
+  //   2. The run report showed the owner their own uncommitted work as though a paid
+  //      provider had written it.
+  //
+  // Both go away once git is told where the provider actually started.
   let carried = 0;
+  let baseline = '';
   try {
     const patch = git(['diff', 'HEAD', '--binary'], repo);
     if (patch.trim()) {
       git(['apply', '--whitespace=nowarn', '-'], target, { input: patch });
       carried = countChangedFiles(patch);
     }
+    git(['add', '--all'], target);
+    baseline = git(BASELINE_TREE, target).trim();
   } catch (error) {
     release({ path: target, isolated: true, repo });
     return { path: cwd, isolated: false, reason: `could not carry local changes: ${firstLine(error.message)}`, carried: 0, untracked: 0 };
@@ -107,7 +145,8 @@ function isolate({ cwd, runId = 'run', role = 'task', root = null, policyFile = 
       reason: `${policyFile} is not committed, so an isolated copy would run under the permissive default` };
   }
 
-  return { path: target, isolated: true, repo, reason: '', carried, untracked: untrackedFiles(repo).length };
+  return { path: target, isolated: true, repo, reason: '', carried, baseline,
+    untracked: untrackedFiles(repo).length };
 }
 
 /** What the provider actually changed, as numbers plus a bounded patch. */
@@ -115,10 +154,16 @@ function collectDiff(workspace) {
   if (!workspace || !workspace.isolated) return { files: 0, insertions: 0, deletions: 0, names: [], patch: '', truncated: false };
   let stat = '';
   let patch = '';
+  // Against the baseline tree isolate() recorded, not against HEAD. HEAD is the commit the
+  // worktree was checked out from, and the owner's carried-in work sits between the two —
+  // measuring from HEAD counts it as the provider's, which is both a 35 GB leak and a lie
+  // in the report. `against` stays empty for a workspace made before this existed, and the
+  // old HEAD comparison is what it gets.
+  const against = workspace.baseline ? [workspace.baseline] : [];
   try {
     git(['add', '--all'], workspace.path);
-    stat = git(['diff', '--cached', '--numstat'], workspace.path);
-    patch = git(['diff', '--cached'], workspace.path);
+    stat = git(['diff', '--cached', ...against, '--numstat'], workspace.path);
+    patch = git(['diff', '--cached', ...against], workspace.path);
   } catch (_) { return { files: 0, insertions: 0, deletions: 0, names: [], patch: '', truncated: false }; }
 
   let insertions = 0;
