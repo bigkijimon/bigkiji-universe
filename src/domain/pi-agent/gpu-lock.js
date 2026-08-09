@@ -63,20 +63,38 @@ function readGpuLock({ path: lockPath = LOCK_PATH, readFile = fs.readFileSync, s
   return { held: true, holder, since, ageMs };
 }
 
+// Reading `ps` costs a process spawn, and this answer is now wanted more than once per
+// turn: the conversation engine checks it before deciding whether to spend eight seconds
+// on a stopped socket, and `Daemon#providerFacts()` checks it to decide whether to call
+// local-qwen usable — and `facts()` calls providerFacts() too. Spawning `ps` three times
+// to learn one thing is waste, and the thing lasts as long as a render, so one second of
+// staleness cannot change an answer.
+//
+// Only the default reader is memoised. An injected `run` is a test, and a test that
+// silently receives a previous test's answer is worse than no cache at all.
+const FREEZE_TTL_MS = 2000;
+let freezeMemo = { at: 0, value: null, valid: false };
+
 /**
  * Are the local model processes stopped.
  *
  * Returns `null` for "could not tell" and never `false` on a failed lookup: reporting a
  * frozen model as running is the mistake this whole module exists to stop making.
  *
- * @param {{run?: () => string, names?: string[]}} deps
+ * @param {{run?: () => string, names?: string[], now?: () => number}} deps
  * @returns {{frozen: boolean, stopped: string[]}|null}
  */
-function ollamaFrozen({ run = () => execFileSync('ps', ['-Ao', 'stat,comm'], { encoding: 'utf8', timeout: 2000 }),
-  names = FROZEN_PROCS } = {}) {
+function ollamaFrozen({ run = null, names = FROZEN_PROCS, now = Date.now } = {}) {
+  const memoisable = run === null && names === FROZEN_PROCS;
+  if (memoisable && freezeMemo.valid && now() - freezeMemo.at < FREEZE_TTL_MS) return freezeMemo.value;
+  const read = run || (() => execFileSync('ps', ['-Ao', 'stat,comm'], { encoding: 'utf8', timeout: 2000 }));
+  const remember = (value) => {
+    if (memoisable) freezeMemo = { at: now(), value, valid: true };
+    return value;
+  };
   let table = '';
-  try { table = String(run() || ''); } catch (_) { return null; }
-  if (!table.trim()) return null;
+  try { table = String(read() || ''); } catch (_) { return remember(null); }
+  if (!table.trim()) return remember(null);
   const stopped = [];
   for (const row of table.split('\n').slice(1)) {
     const match = row.trim().match(/^(\S+)\s+(.+)$/);
@@ -88,8 +106,11 @@ function ollamaFrozen({ run = () => execFileSync('ps', ['-Ao', 'stat,comm'], { e
     const name = command.trim().split('/').pop();
     if (names.includes(name)) stopped.push(name);
   }
-  return { frozen: stopped.length > 0, stopped };
+  return remember({ frozen: stopped.length > 0, stopped });
 }
+
+/** Forget the memoised `ps` reading. For tests and for anything that just thawed. */
+function forgetFreeze() { freezeMemo = { at: 0, value: null, valid: false }; }
 
 /**
  * One sentence for the owner, or '' when the local model's silence has no explanation
@@ -121,11 +142,20 @@ function freezeExplanation({ lock = readGpuLock(), procs = ollamaFrozen(), japan
     + `; replies are templates until that job finishes)\n`;
 }
 
-/** True when the model is stopped and nothing holds the lock — a freeze nobody will lift. */
+/**
+ * True when the model is stopped and nothing holds the lock — a freeze nobody will lift.
+ *
+ * Read by `Daemon#frozenProviders()`, which is why it exists rather than the caller doing
+ * `!lock.held && procs.frozen`: the two freezes need different sentences. A locked freeze
+ * ends when the owner's render ends; this one ends when someone sends SIGCONT by hand.
+ * `mem-switch.sh` produced it by thawing `pgrep -f llama-server | head -1` — one pid, on a
+ * machine that has had two.
+ */
 function frozenWithoutLock(deps = {}) {
   const lock = deps.lock || readGpuLock();
   const procs = deps.procs === undefined ? ollamaFrozen() : deps.procs;
   return !lock.held && procs?.frozen === true;
 }
 
-module.exports = { readGpuLock, ollamaFrozen, freezeExplanation, frozenWithoutLock, LOCK_PATH, FROZEN_PROCS };
+module.exports = { readGpuLock, ollamaFrozen, freezeExplanation, frozenWithoutLock, forgetFreeze,
+  LOCK_PATH, FROZEN_PROCS, FREEZE_TTL_MS };

@@ -27,6 +27,7 @@ const { CoreExecutionCoordinator, ACTIVE_RUN, TERMINAL_RUN } = require('../pi-ag
 const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
+const gpuLockModule = require('../pi-agent/gpu-lock');
 const { detectAndProbeAll } = require('../pi-agent/tool-registry');
 const { FastFacilitatorRouter, questionText } = require('../pi-agent/fast-api-router');
 const { ModelStatusStore } = require('../hud/model-status-store');
@@ -37,7 +38,7 @@ const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
-const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion } = require('../pi-core/conversation-engine');
+const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion, actionTier } = require('../pi-core/conversation-engine');
 const { isStatusQuestion, statusReport, isProviderQuestion, providerReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
@@ -299,7 +300,8 @@ async function readJson(req, max = 1024 * 1024) {
 
 class DaemonEngine extends EventEmitter {
   constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = '',
-    conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null } = {}) {
+    conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null,
+    gpuLock = gpuLockModule } = {}) {
     super();
     // Defaulted here rather than in the parameter list so resolveWorkspace can tell an
     // explicit choice from a fallen-back one — process.cwd() in the signature makes the
@@ -330,6 +332,10 @@ class DaemonEngine extends EventEmitter {
     // suite writes the owner's real one. That mistake has been made here before, with
     // task_state.json, and it destroyed 300 events of history.
     this.corpusRoot = rootFor('corpusRoot', 'corpus');
+    // Whether the local model is stopped. Injectable because the real reader spawns `ps`,
+    // and a suite whose verdict depends on what the owner's GPU happens to be doing is
+    // the machine-state dependence conversation-selftest.js was already burned by once.
+    this.gpuLock = gpuLock;
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
@@ -344,7 +350,10 @@ class DaemonEngine extends EventEmitter {
     // machine is never. So every request arrived here as `goal: <the owner's one line>`
     // with empty constraints, steps and acceptance, and the specialists were asked to
     // build from it. This is that router, on the path both surfaces actually use.
-    this.facilitator = facilitator || new FastFacilitatorRouter();
+    // Read per call, not captured: `cloudFallback` is a privacy switch, and a switch that
+    // needs a restart to take effect is one the owner cannot trust in the moment.
+    this.facilitator = facilitator
+      || new FastFacilitatorRouter({ cloudFallback: () => this.ownerSettings()?.conversation?.cloudFallback || 'off' });
     this.facilitatorPending = null;
     // The last thing this session actually asked for, so a later "please start" has
     // something to refer to. Without it a go-ahead is a word with no object and the
@@ -719,7 +728,24 @@ class DaemonEngine extends EventEmitter {
       // paid here rather than in the classifier: `plan` means the run stops at
       // AWAITING_APPROVAL even under `auto-edit`, so a wrong promotion costs one prompt
       // and never an edit. An explicit request keeps whatever mode the owner set.
-      const runMode = result.promotedByModel ? 'plan' : mode;
+      //
+      // The soft lexical tier pays the same price, and did not at first.
+      //
+      // 2026-08-09 widened the classifier twice on the same day: the model may promote,
+      // and a work verb near a request ending (`actionTier` -> 'soft') counts as a
+      // request. Only the first paid for the widening. Measured on the owner's own 361
+      // turns, three of the fifteen the soft tier newly recognises are not work —
+      // 「こんにちは 今日は何ができますか 数踏みで教えてください」, `how can you run btw`,
+      // 「日本の首都について三行で教えてください」 — and under `auto-edit` each of those
+      // dispatched a paid provider with nothing asked of the owner. The regex written that
+      // afternoon was trusted further than the model whose mistakes it was hired to fix.
+      // The owner chose (2026-08-09) to make the two doors cost the same.
+      //
+      // `strong` — the original fourteen words plus 作って/直して — is untouched. That door
+      // was never the problem, and putting an approval in front of it is how the machine
+      // goes back to feeling like nothing ever starts.
+      const softlyAsked = !result.promotedByModel && actionTier(clean) === 'soft';
+      const runMode = (result.promotedByModel || softlyAsked) ? 'plan' : mode;
       run = this.coordinator.submit({ prompt: clean, promptSpec, planHash: facilitation?.planHash || null, cwd: this.workspace, mode: runMode });
       // submit() emits 'run' synchronously, so onRun has already appended this run
       // to the session and published it. Doing it again here printed the same run
@@ -730,7 +756,15 @@ class DaemonEngine extends EventEmitter {
     // The questions travel in the reply as well as in their own field. Every surface
     // renders `reply`; only the CLI knows what to do with `questions`, and a question
     // the owner cannot see is the same as one that was never asked.
-    const reply = questions.length ? `${result.reply}\n\n${questionText(questions)}` : result.reply;
+    // The cloud note goes in front of the reply, not into a log.
+    //
+    // The front desk is local by default and the owner is entitled to assume it stays
+    // that way. On the one path where it does not — the GPU was held by a render and the
+    // owner had switched the escape on — the sentence naming the provider is part of the
+    // answer, because "which of my words left this machine" is not an implementation
+    // detail. See fast-api-router.js `runGlm`.
+    const spoken = questions.length ? `${result.reply}\n\n${questionText(questions)}` : result.reply;
+    const reply = facilitation?.viaCloud && facilitation.cloudNote ? `${facilitation.cloudNote}\n${spoken}` : spoken;
     // A question the conversation model asked in prose is still a question.
     //
     // Only the facilitator's questions were ever registered, so when the model asked one
@@ -1385,7 +1419,45 @@ class DaemonEngine extends EventEmitter {
     const throttled = Object.entries(performance)
       .filter(([id, row]) => row?.throttledReason && !id.includes('::') && !chilled.has(id))
       .map(([id, row]) => ({ provider: id, reason: String(row.throttledReason), at: row.throttledAt || '' }));
-    return { usable: reachable.filter((id) => !chilled.has(id)), cooling, busy, throttled, unreachable };
+    const frozen = this.frozenProviders();
+    const stopped = new Set(frozen.map((item) => item.provider));
+    return { usable: reachable.filter((id) => !chilled.has(id) && !stopped.has(id)),
+      cooling, busy, throttled, unreachable, frozen };
+  }
+
+  /**
+   * Local providers that are stopped rather than merely idle.
+   *
+   * `provider-readiness.js` answers "is this provider installed and authenticated", and
+   * for anything local that is unconditionally yes (`LOCAL` → `runs on this machine`).
+   * That is the right answer to that question. But `providerReport()` answers a different
+   * one — 「どのAIが使えますか」 — and while gpu-signal.sh holds the card Ollama is
+   * SIGSTOPped. Measured 2026-08-09: the reply named local-qwen among six usable
+   * providers with `ps` showing it in state T two lines away.
+   *
+   * Announcing a stopped model as usable is exactly the plausible-and-wrong answer this
+   * whole path was built to stop producing, so the freeze is applied here rather than in
+   * readiness, where it would change what a different question means.
+   *
+   * Only `local-qwen`. `pi-agent-core` runs whatever `model-router.buildChain()` puts at
+   * the head of the chain, which is not always Ollama, so it cannot be declared frozen
+   * from the state of a process it may not be using.
+   * @returns {Array<{provider: string, holder: string, since: string, orphaned: boolean}>}
+   */
+  frozenProviders() {
+    let state = null; let lock = { held: false, holder: '', since: '' };
+    try { state = this.gpuLock?.ollamaFrozen?.() ?? null; } catch (_) { return []; }
+    if (state?.frozen !== true) return [];
+    try { lock = this.gpuLock?.readGpuLock?.() || lock; } catch (_) {}
+    // `orphaned` is the freeze nobody will lift: stopped with no lock, so the watchdog has
+    // nothing to wait for and no job will finish and release it. Measured once as a
+    // llama-server that sat in T for a day. It reads differently to the owner — "wait for
+    // your render" versus "this needs a hand" — so the two are not collapsed.
+    //
+    // Asked of gpu-lock rather than derived from `lock.held` here, so the definition of
+    // that state lives in one place. It had been written, exported and never called.
+    const orphaned = this.gpuLock?.frozenWithoutLock?.({ lock, procs: state }) === true;
+    return [{ provider: 'local-qwen', holder: lock.holder || '', since: lock.since || '', orphaned }];
   }
 
   facts() {
@@ -1394,7 +1466,7 @@ class DaemonEngine extends EventEmitter {
     const active = runs.filter((run) => ACTIVE_RUN.includes(run.status));
     const tasks = this.runner.snapshot();
     const byStatus = tasks.reduce((acc, task) => ({ ...acc, [task.status]: (acc[task.status] || 0) + 1 }), {});
-    const { usable, cooling, busy, throttled } = this.providerFacts();
+    const { usable, cooling, busy, throttled, frozen } = this.providerFacts();
     const ideas = this.ideas.list(6);
     const lines = [
       `- workspace: ${this.workspace}`,
@@ -1408,6 +1480,12 @@ class DaemonEngine extends EventEmitter {
         ? cooling.map((item) => `${item.provider} (${Math.max(1, Math.round(item.retryInMs / 1000))}s${item.reason ? `, ${item.reason}` : ''})`).join(', ')
         : 'none'}`,
       `- providers busy right now: ${busy.length ? busy.join(', ') : 'none'}`,
+      // Told to the model too, not only to the deterministic reply. Without it the model
+      // is briefed that local-qwen is missing from the usable list and given no reason,
+      // and a model with a gap and no reason fills it.
+      ...(frozen.length ? [`- providers stopped by the GPU lock: ${frozen.map((item) => `${item.provider}`
+        + `${item.orphaned ? ' (stopped with no job holding the lock — needs a manual thaw)'
+          : ` (the GPU is held by "${item.holder || 'a generation job'}"${item.since ? ` since ${item.since}` : ''})`}`).join(', ')}`] : []),
       ...(throttled.length ? [`- providers throttled earlier: ${throttled.map((item) => `${item.provider} (${item.reason})`).join(', ')}`] : []),
       `- to start a waiting run the owner types /approve in the bigkiji CLI`,
     ];

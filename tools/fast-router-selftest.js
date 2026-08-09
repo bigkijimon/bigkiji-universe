@@ -3,7 +3,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const router = require('../src/domain/pi-agent/fast-api-router');
-assert.deepStrictEqual(router.PRIORITY, ['ollama']);
+// Local first, and the only other entry is the GPU-busy escape. The order matters: a
+// candidate list that put glm ahead of ollama would send the owner's text to a cloud
+// provider on a machine that was perfectly able to answer.
+assert.deepStrictEqual(router.PRIORITY, ['ollama', 'glm']);
 assert.deepStrictEqual(router.PAID_EXECUTORS, ['claude', 'codex', 'gemini', 'glm']);
 assert.deepStrictEqual(router.availableOrder({ gemini: true, ollama: true, glm: false, codex: true, kimi: true }), ['ollama']);
 for (const blocked of ['kimi', 'openrouter', 'openai-tts', 'elevenlabs']) assert(router.BLOCKED_PAID.includes(blocked));
@@ -78,5 +81,96 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
   broken.facilitate = async () => { throw new Error('ollama unreachable'); };
   await assert.rejects(() => broken.answer('goal', ['which genre?'], 'shooter'), /ollama unreachable/);
   assert.equal(broken.pending, null, 'a failed answer must not leave the router waiting for one');
-  console.log('fast router selftest: PASS · 16 added checks · think:false or the model spends the answer on thinking · the deterministic fallback is never cached · a fieldless cache entry reads as a miss · spec in English, questions in the owner\'s language · proper nouns verbatim · answer() refuses an empty pair and cleans up after itself');
+
+  // ---- the GPU-busy escape, and the two bugs that were waiting for it ----------
+  //
+  // The front desk is local-only by design: no owner text may reach a paid provider
+  // before a disclosure manifest is approved. That is also why, while gpu-signal.sh held
+  // the card for a render, every request fell through to the three-step deterministic
+  // spec — the machine had nothing to think with. The owner asked for a way through
+  // (2026-08-09) and chose GLM's free flash tier.
+  //
+  // What must stay true: it is shut unless BOTH the GPU is unavailable AND the owner
+  // turned it on, it never runs while local can, and the answer says where it went.
+
+  assert.deepStrictEqual(await router.detect({ cloudFallback: 'off', gpuHeld: true }),
+    { ollama: false, glm: false, claude: false, codex: false, gemini: false, kimi: false, openrouter: false },
+    'the default is shut, whatever the GPU is doing');
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false })).glm, false,
+    'a free GPU means local — the escape is not a preference for the cloud');
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true })).glm, true,
+    'held card plus an owner who asked for it: this one turn may leave the machine');
+
+  // The dispatch table. The loop used to call runOllama whatever the candidate was — a
+  // provider name recorded against another model's output. Invisible while nothing but
+  // ollama could ever be a candidate, and wrong the moment one could.
+  {
+    const called = [];
+    const spec = JSON.stringify({ status: 'ready', promptSpec: { goal: 'g', constraints: [], steps: ['s'], acceptance: ['a'] } });
+    const runners = {
+      ollama: async () => { called.push('ollama'); throw new Error('SIGSTOPped'); },
+      glm: async () => { called.push('glm'); return spec; },
+    };
+    const escaped = new router.FastFacilitatorRouter({ cloudFallback: () => 'gpu-busy', runners,
+      detectImpl: async () => ({ ollama: true, glm: true }) });
+    const out = await escaped.facilitate(`gpu busy escape ${process.pid}`);
+    assert.deepStrictEqual(called, ['ollama', 'glm'], 'local is tried first and the fallback is second');
+    assert.equal(out.provider, 'glm', 'the name has to be the thing that actually wrote it');
+    assert.equal(out.viaCloud, true);
+    assert.match(out.cloudNote, /クラウド/, 'the owner is told, in the reply, that their words left the machine');
+    assert.match(out.promptSpecText, /Goal: g/, 'and the spec is the one the cloud model wrote');
+  }
+
+  // A candidate with no runner is a drifted table, not a silent substitution.
+  {
+    const orphan = new router.FastFacilitatorRouter({ runners: {}, detectImpl: async () => ({ ollama: true }) });
+    const out = await orphan.facilitate(`no runner ${process.pid}`);
+    assert.equal(out.provider, 'deterministic-local', 'nothing ran, so nothing is credited');
+    assert.match(out.fallbackReason || '', /no runner for ollama/);
+  }
+
+  // Redaction before the machine boundary. There is no disclosure manifest on this path,
+  // so the half that can still be kept is kept — the same `redactPayload` the manifest
+  // runs, with the same two outcomes it has everywhere else: a key is replaced, a private
+  // key stops the call.
+  {
+    let sent = null;
+    await router.runGlm(`use my key sk-ant-api03-${'A'.repeat(80)} to do it`,
+      { spawn: (bin, args, opts, done) => { sent = args.at(-1); done(null, '{}', ''); } });
+    assert.ok(!sent.includes('sk-ant-'), `the key must not reach the argv of a cloud process: ${sent}`);
+    assert.match(sent, /<REDACTED:anthropic-key>/, 'and its absence is marked rather than silently blanked');
+    assert.match(sent, /use my .* to do it/, 'the rest of the request survives — redaction is not truncation');
+  }
+  await assert.rejects(
+    async () => router.runGlm('-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+      { spawn: () => { throw new Error('must not spawn'); } }),
+    /SECURITY_CRITICAL_SECRET/, 'a private key is the one that stops the call instead of being masked');
+
+  // The command itself: single-shot, no tools, no context, no session. What leaves is one
+  // prompt — not this repository.
+  {
+    let seen = null;
+    await router.runGlm('shape this request', { spawn: (bin, args, opts, done) => { seen = { bin, args, opts }; done(null, 'ok', ''); } });
+    for (const flag of ['--print', '--no-tools', '--no-context-files', '--no-session', '--no-skills']) {
+      assert.ok(seen.args.includes(flag), `${flag} is what keeps this to one prompt and nothing else`);
+    }
+    assert.ok(seen.args.includes(`zai/${router.MODELS.glm}`), 'the flash tier, which is the free one');
+    assert.equal(seen.args.at(-1), 'shape this request', 'the prompt is the last argument, not shell-interpolated');
+    assert.equal(seen.opts.timeout, router.GLM_TIMEOUT_MS, 'and it cannot hang the front desk');
+  }
+
+  // runOllama had no deadline at all. `ollamaReady()` probes with 850ms in front of it,
+  // which hid the hang — but a render that starts between the probe and the call leaves
+  // this awaiting a socket that a SIGSTOPped process accepted and will never answer.
+  {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
+    assert.match(source, /new AbortController\(\)[\s\S]{0,200}OLLAMA_TIMEOUT_MS/,
+      'the local call needs its own deadline, not the readiness probe’s');
+    assert.match(source, /redactPayload/, 'and nothing reaches a cloud provider unredacted');
+  }
+
+  console.log('fast router selftest: PASS · 16 added checks · think:false or the model spends the answer on thinking · '
+    + 'the deterministic fallback is never cached · a fieldless cache entry reads as a miss · spec in English, questions in the '
+    + 'owner\'s language · proper nouns verbatim · answer() refuses an empty pair and cleans up after itself · the GPU-busy escape '
+    + 'is shut by default, never used while local works, and names itself in the reply · each candidate runs its own runner');
 })();

@@ -86,6 +86,13 @@ const REQUEST_TAIL = /(?:て|てね|てよ|てください|てほしい|てほ�
 const TAIL_WINDOW = 24;
 const EN_WORK = /\b(?:check|show|list|find|look|verify|investigate|inspect|set\s?up|install|update|deploy|run|test|review|search|explain)\b/i;
 const EN_REQUEST = /\b(?:please|could you|can you|would you|i(?:'| a)?m asking you to|go ahead and)\b/i;
+// 「あなたは何ができるの」は依頼ではない。
+//
+// 日本語側は REQUEST_TAIL ＋ TAIL_WINDOW で「締めの近くに作業語」を要求しているのに、英語側だけ
+// 二つの正規表現を文中どこでも当てていた。だから `how can you run btw` が `can you` ＋ `run` で
+// 依頼に化けた（オーナー実コーパス361件・2026-08-09 実測）。`can you check the logs?` は依頼、
+// `how can you run` は能力への質問——違いは疑問詞が助動詞の直前に来ているかどうか。
+const EN_CAPABILITY = /\b(?:how|what|why|when|where|who)\s+(?:can|could|would|do|does|should|are|is)\s+you(?:r)?\b/i;
 
 /**
  * '' | 'soft' | 'strong'。依頼としての強さ。
@@ -99,7 +106,7 @@ function actionTier(text) {
   if (STRONG_ACTION.test(value)) return 'strong';
   const tail = value.trim().slice(-TAIL_WINDOW);
   if (REQUEST_TAIL.test(value) && WORK_VERB.test(tail)) return 'soft';
-  if (EN_REQUEST.test(value) && EN_WORK.test(value)) return 'soft';
+  if (EN_REQUEST.test(value) && EN_WORK.test(value) && !EN_CAPABILITY.test(value)) return 'soft';
   return '';
 }
 function heuristicKind(text) {
@@ -314,12 +321,35 @@ class ConversationEngine extends EventEmitter {
   // timeoutMs is the stall deadline — the longest silence tolerated between tokens, not
   // the budget for the whole answer. maxTurnMs is the hard ceiling that bounds a model
   // which keeps emitting forever.
+  //
+  // firstTokenTimeoutMs is the deadline for the first token only, and it exists because
+  // loading the weights is not a stall.
+  //
+  // Measured 2026-08-09 11:20, immediately after a render finished and the watchdog thawed
+  // Ollama (qwen3.5:latest, same machine):
+  //
+  //     cold load (load_duration)          9.2 s
+  //     first turn after the thaw          deterministic-local, 8036 ms — degraded
+  //     second turn (model warm)           local-qwen, ttft 7233 ms, a real answer
+  //
+  // So with one 8 s deadline, the first question after any render — and after every
+  // 60 s keep_alive window closes — degraded even with the GPU completely free, because
+  // loading the weights costs more than the whole budget. A model that has not been
+  // loaded yet is silent for the load too, and that silence was charged to the stall.
+  // Separating them is the honest reading of what "stall" means. Raising keep_alive
+  // instead would hold VRAM against every other job on this machine, which the
+  // company-wide GPU rule forbids.
   constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen3.5:latest',
     endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000, maxTurnMs = 90000,
+    firstTokenTimeoutMs = 20000,
     maxContextTokens = 4096, maxTurns = 8, keepAlive = DEFAULT_KEEP_ALIVE, explainFreeze = freezeExplanation,
     isFrozen = null } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;
-    this.maxTurnMs = Math.max(timeoutMs, maxTurnMs);
+    // Never shorter than the stall deadline: a caller that passes only `timeoutMs` (the
+    // reflection engine passes 12000) must not end up with a first-token budget smaller
+    // than the silence it already tolerates mid-answer.
+    this.firstTokenTimeoutMs = Math.max(timeoutMs, firstTokenTimeoutMs);
+    this.maxTurnMs = Math.max(this.firstTokenTimeoutMs, timeoutMs, maxTurnMs);
     this.maxContextTokens = Math.min(8192, Math.max(1024, maxContextTokens)); this.maxTurns = Math.max(2, Math.min(16, maxTurns));
     this.keepAlive = normalizeKeepAlive(keepAlive); this.explainFreeze = explainFreeze;
     // Consult the machine only when this engine is actually talking to the machine.
@@ -415,10 +445,14 @@ class ConversationEngine extends EventEmitter {
     // for a turn that was working. The deadline is now a stall: while chunks keep
     // arriving the model is alive, and only silence ends the turn. A hard ceiling still
     // bounds the total so nothing can hang forever.
-    let stall = null;
+    // …and until the first chunk arrives, the silence may be the model loading rather
+    // than the model stalling. Those are different waits and they get different budgets;
+    // see firstTokenTimeoutMs on the constructor for the measurement.
+    let stall = null; let streaming = false;
     const armStall = () => {
       clearTimeout(stall);
-      stall = setTimeout(() => controller.abort(), this.timeoutMs); stall.unref?.();
+      stall = setTimeout(() => controller.abort(), streaming ? this.timeoutMs : this.firstTokenTimeoutMs);
+      stall.unref?.();
     };
     const ceiling = setTimeout(() => controller.abort(), this.maxTurnMs); ceiling.unref?.();
     armStall();
@@ -453,6 +487,11 @@ class ConversationEngine extends EventEmitter {
         // Any chunk means the model is alive, including a reasoning model's thinking
         // tokens, which carry no answer text at all. TTFT stays honest: it marks the
         // first token of the actual answer, which is the thing the owner waits for.
+        //
+        // `streaming` is set before arming, so the very first chunk switches the deadline
+        // down to the stall budget: once bytes are moving the weights are loaded, and the
+        // long first-token allowance has done its job.
+        streaming = true;
         armStall();
         if (streamed && ttftMs === null && text) ttftMs = Date.now() - started;
         raw += text;
@@ -462,7 +501,11 @@ class ConversationEngine extends EventEmitter {
     } catch (error) {
       degraded = true; provider = 'deterministic-local'; result = fallback(ownerText);
       result.error = clean(error.name === 'AbortError'
-        ? `Local conversation ${ttftMs === null ? 'timeout before first token' : 'stalled mid-answer'}`
+        // Which deadline ran out, named, because they mean different things: nothing at
+        // all in `firstTokenTimeoutMs` is a model that could not load or a server that is
+        // not answering; silence after tokens were flowing is a model that stopped.
+        ? (streaming ? 'Local conversation stalled mid-answer'
+          : `Local conversation timeout before first token (${this.firstTokenTimeoutMs}ms)`)
         : error.message, 180);
       // Say that the model did not answer.
       //

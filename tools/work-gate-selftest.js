@@ -33,6 +33,7 @@ process.env.BIGKIJI_KNOWLEDGE_ROOT = path.join(root, 'knowledge');
 
 const { DaemonEngine } = require('../src/domain/server/daemon');
 const { CircuitBreaker } = require('../src/domain/pi-agent/circuit-breaker');
+const gpu = require('../src/domain/pi-agent/gpu-lock');
 const { isProviderQuestion, providerReport, isStatusQuestion } = require('../src/domain/pi-core/status-answer');
 const { actionTier } = require('../src/domain/pi-core/conversation-engine');
 const { buildFooter } = require('../src/cli/tui/footer');
@@ -80,6 +81,20 @@ const alwaysTask = () => ({ model: 'stub-qwen',
     // the bargain is what is being tested rather than the classifier's.
     promotedByModel: true }) });
 
+/**
+ * A machine in a stated GPU state.
+ *
+ * `providerFacts()` reads `ps` to decide whether local-qwen can be asked, so without this
+ * every assertion about the provider list would depend on whether the owner happened to be
+ * rendering a video when they ran the suite. Only the two readers are replaced — the real
+ * `frozenWithoutLock` stays, so the wiring under test is the real one.
+ */
+const machine = ({ frozen = false, holder = '', since = '' } = {}) => ({
+  ...gpu,
+  ollamaFrozen: () => ({ frozen, stopped: frozen ? ['ollama', 'llama-server'] : [] }),
+  readGpuLock: () => ({ held: !!holder, holder, since, ageMs: holder ? 1000 : null }),
+});
+
 const readyFacilitator = () => ({
   async facilitate(text) { return { status: 'ready', provider: 'stub', planHash: 'stub-plan',
     promptSpec: { goal: text, constraints: [], steps: ['do it'], acceptance: [] } }; },
@@ -104,9 +119,16 @@ const readyFacilitator = () => ({
       assert.ok(actionTier(asked), `${asked} is a request`);
     }
     for (const not of ['確認が取れました', '今日は確認が取れなくて、ちょっと疲れた', '調査によると難しいらしい',
-      'こんにちは', 'ありがとう']) {
+      'こんにちは', 'ありがとう',
+      // Asking what a thing can do is not asking it to do something. The Japanese branch
+      // has always required the work verb to sit near the request ending; the English one
+      // tested both patterns anywhere in the line, so `can you` + `run` made this a
+      // request. From the owner's own corpus, 2026-08-09.
+      'how can you run btw', 'what can you check for me', 'how would you deploy this']) {
       assert.equal(actionTier(not), '', `${not} is not a request`);
     }
+    assert.equal(actionTier('can you check the rate limit?'), 'soft',
+      'a question mark does not make a request into a question — the interrogative before the modal does');
   });
 
   ok('widening the lexicon did not cost the status interception', () => {
@@ -133,6 +155,26 @@ const readyFacilitator = () => ({
     assert.equal(out.promotedByModel, true, 'and the turn says whose call it was');
     assert.equal(out.run.mode, 'plan', 'submitted as plan, whatever the owner’s mode was');
     assert.equal(out.run.status, 'AWAITING_APPROVAL', 'so it stops at the gate');
+    dispose(engine);
+  });
+
+  await okAsync('a softly-phrased request pays the same approval as a model promotion', async () => {
+    // Both doors were widened on 2026-08-09 and only one of them paid. `actionTier`
+    // 'soft' is a work verb next to a request ending — a fuzzier test than the fourteen
+    // words it joined, and three of the fifteen turns it newly recognised in the owner's
+    // corpus are not work at all. Under auto-edit each of those dispatched a paid
+    // provider without asking. The regex was trusted further than the model.
+    const conversationEngine = alwaysTask();
+    const inner = conversationEngine.turn;
+    conversationEngine.turn = async (args) => ({ ...(await inner(args)), promotedByModel: false });
+    const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'soft'), workspace: process.cwd(),
+      conversationEngine, facilitator: readyFacilitator(), gpuLock: machine() }));
+    const out = await engine.turn('日本の首都について三行で教えてください', { mode: 'auto' });
+    assert.equal(actionTier('日本の首都について三行で教えてください'), 'soft', 'the lexicon does read it as a request');
+    assert.ok(out.run, 'and it still becomes a run — dropping it is the bug this replaced');
+    assert.equal(out.promotedByModel, false, 'no model promoted it; the widened lexicon did');
+    assert.equal(out.run.mode, 'plan', 'so it waits, exactly as a promotion would');
+    assert.equal(out.run.status, 'AWAITING_APPROVAL');
     dispose(engine);
   });
 
@@ -167,7 +209,7 @@ const readyFacilitator = () => ({
   await okAsync('the answer comes from the breaker, with no model in the path', async () => {
     const stateRoot = path.join(root, 'providers');
     const engine = new DaemonEngine({ stateRoot, workspace: process.cwd(),
-      conversationEngine: alwaysTask(), facilitator: readyFacilitator() });
+      conversationEngine: alwaysTask(), facilitator: readyFacilitator(), gpuLock: machine() });
     // Two providers reachable; one of them inside a live quota cooldown.
     engine.models.touch('claude-code', { available: true, connected: false });
     engine.models.touch('gemini', { available: true, connected: false });
@@ -193,9 +235,89 @@ const readyFacilitator = () => ({
     dispose(engine);
   });
 
+  await okAsync('a stopped local model is not offered as one that can be asked', async () => {
+    // 2026-08-09, the fault this pins. `provider-readiness.js` says local providers are
+    // ready unconditionally — correct for "is it installed", wrong for "can it answer" —
+    // so during a render the reply read 「いま使えるのは … local-qwen … の6社です」 with `ps`
+    // showing that process in state T. The answer that was built to come from measurement
+    // rather than from a model was the one that was guessing.
+    const engine = new DaemonEngine({ stateRoot: path.join(root, 'frozen'), workspace: process.cwd(),
+      conversationEngine: alwaysTask(), facilitator: readyFacilitator(),
+      gpuLock: machine({ frozen: true, holder: 'u09-v5', since: '21:32:48' }) });
+    engine.models.touch('local-qwen', { available: true, connected: false });
+    engine.models.touch('claude-code', { available: true, connected: false });
+
+    const facts = engine.providerFacts();
+    assert.ok(!facts.usable.includes('local-qwen'), 'a SIGSTOPped model is not usable');
+    assert.ok(facts.usable.includes('claude-code'), 'and the freeze does not take the cloud down with it');
+    assert.equal(facts.frozen[0]?.provider, 'local-qwen');
+    assert.equal(facts.frozen[0]?.holder, 'u09-v5', 'the owner is told which of their own jobs it is');
+    assert.equal(facts.frozen[0]?.orphaned, false, 'a job holds the lock, so this one ends by itself');
+
+    const out = await engine.turn('どのAIが使える？');
+    assert.equal(out.provider, 'bigkiji-state');
+    assert.match(out.reply, /local-qwen\s+停止中/, `the reply names it as stopped:\n${out.reply}`);
+    assert.match(out.reply, /u09-v5/, 'with the job that is holding the card');
+    assert.ok(!/使えるのは[^\n]*local-qwen/.test(out.reply), 'and never in the same breath as "usable"');
+    assert.match(engine.facts(), /providers stopped by the GPU lock: local-qwen/,
+      'the model is briefed with the same fact, or it invents a reason for the gap');
+    dispose(engine);
+  });
+
+  await okAsync('a freeze nobody will lift reads differently from one that ends by itself', async () => {
+    // Stopped with no lock: the watchdog has nothing to wait for, no job will finish and
+    // release it, and it needs SIGCONT by hand. Measured once as a llama-server that sat
+    // in T for a day, produced by mem-switch.sh thawing `pgrep -f llama-server | head -1`
+    // on a machine that had two of them.
+    const engine = new DaemonEngine({ stateRoot: path.join(root, 'orphan'), workspace: process.cwd(),
+      conversationEngine: alwaysTask(), facilitator: readyFacilitator(),
+      gpuLock: machine({ frozen: true }) });
+    engine.models.touch('local-qwen', { available: true, connected: false });
+    const facts = engine.providerFacts();
+    assert.equal(facts.frozen[0]?.orphaned, true, 'frozenWithoutLock is what decides this, and it is now called');
+    const said = providerReport(facts, { text: 'どのAIが使える？' });
+    assert.match(said, /誰も解凍しません/, `it must not read as "wait for your render":\n${said}`);
+    dispose(engine);
+  });
+
+  await okAsync('a running local model stays on the list', async () => {
+    const engine = new DaemonEngine({ stateRoot: path.join(root, 'thawed'), workspace: process.cwd(),
+      conversationEngine: alwaysTask(), facilitator: readyFacilitator(), gpuLock: machine() });
+    engine.models.touch('local-qwen', { available: true, connected: false });
+    const facts = engine.providerFacts();
+    assert.ok(facts.usable.includes('local-qwen'), 'the fix must not cost the normal case');
+    assert.deepEqual(facts.frozen, []);
+    dispose(engine);
+  });
+
+  ok('the ps reading is taken once, not once per caller', () => {
+    // facts() calls providerFacts(), and the conversation path checks the same thing
+    // before deciding whether to spend eight seconds on a stopped socket. Three spawns of
+    // `ps` per turn to learn one fact that lasts as long as a render.
+    let reads = 0;
+    const run = () => { reads += 1; return 'STAT COMM\nS    /usr/bin/ollama\n'; };
+    gpu.forgetFreeze();
+    // The memo covers the default reader only: an injected `run` is a test, and a test
+    // that receives a previous test's answer is worse than no cache.
+    gpu.ollamaFrozen({ run }); gpu.ollamaFrozen({ run });
+    assert.equal(reads, 2, 'an injected reader is never cached');
+    let stamp = 1000; const now = () => stamp;
+    gpu.forgetFreeze();
+    const cached = () => gpu.ollamaFrozen({ now });
+    const first = cached();
+    // Identity is the only observable difference between a cached read and a fresh one,
+    // so the reading has to have produced an object for this to mean anything. `ps` not
+    // answering is a real possibility the module handles by returning null.
+    assert.ok(first && typeof first === 'object', `ps must have answered for this test to say anything: ${first}`);
+    assert.ok(cached() === first && cached() === first, 'the same object comes back inside the window');
+    stamp += gpu.FREEZE_TTL_MS + 1;
+    assert.ok(cached() !== first, 'and the window does expire — a thaw must be noticed');
+    gpu.forgetFreeze();
+  });
+
   await okAsync('a resident agent is not reported as busy', async () => {
     const engine = new DaemonEngine({ stateRoot: path.join(root, 'busy'), workspace: process.cwd(),
-      conversationEngine: alwaysTask(), facilitator: readyFacilitator() });
+      conversationEngine: alwaysTask(), facilitator: readyFacilitator(), gpuLock: machine() });
     // model-status-store pins pi-agent-core connected:true because it is resident, and
     // `facts()` read `connected` as "has a task running right now". So the screen said
     // 「pi-agent-core が忙しく…」 on an idle machine, in the app's own voice.
@@ -245,6 +367,7 @@ const readyFacilitator = () => ({
   if (failures) { console.error(`work gate selftest: ${failures} FAILED`); process.exit(1); }
   console.log('work gate selftest: PASS · kanji and kana are one request · a work verb with a request ending starts work · '
     + 'the status answer still wins · a model-promoted TASK always waits for one approval · an explicit request keeps its mode · '
-    + 'which AI can be asked is measured from the breaker · a resident agent is not busy · an open question reads as asking');
+    + 'which AI can be asked is measured from the breaker · a stopped local model is not offered · '
+    + 'a freeze nobody will lift says so · a resident agent is not busy · an open question reads as asking');
   fs.rmSync(root, { recursive: true, force: true });
 })().catch((error) => { console.error(error); process.exit(1); });

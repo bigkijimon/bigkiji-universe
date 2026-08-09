@@ -85,6 +85,18 @@ const DEFAULTS = Object.freeze({
     contextTokens: 4096,
     autoIdeas: true,
     cloudEnhancementApproval: 'always',
+    // Where requirements get shaped when the GPU is not available for it.
+    //
+    // 'off'      — local only, always. A request made during a render gets the
+    //              deterministic three-step spec, which is what happened before this
+    //              setting existed.
+    // 'gpu-busy' — while gpu-signal.sh holds the card and Ollama is SIGSTOPped, that one
+    //              turn may go to GLM's free flash tier. Never when the GPU is free.
+    //
+    // Off by default because it is the only path on which the owner's words leave this
+    // machine without a disclosure manifest in front of them. The owner turned it on on
+    // 2026-08-09 after 「ComfyUIなどが動いているときに全然ローカルAIが使えなかったら困ります」.
+    cloudFallback: 'off',
   },
   quality: {
     gate: 'strict',
@@ -281,6 +293,10 @@ class SettingsStore {
     next.conversation.contextTokens = clamp(next.conversation.contextTokens, 1024, 8192, DEFAULTS.conversation.contextTokens);
     next.conversation.autoIdeas = next.conversation.autoIdeas !== false;
     next.conversation.cloudEnhancementApproval = 'always';
+    // Validated against the two it may be, not pinned: unlike cloudEnhancementApproval
+    // this one is the owner's to change, and an unrecognised value must fail closed.
+    next.conversation.cloudFallback = ['off', 'gpu-busy'].includes(next.conversation.cloudFallback)
+      ? next.conversation.cloudFallback : DEFAULTS.conversation.cloudFallback;
     next.quality.gate = ['standard', 'strict'].includes(next.quality.gate) ? next.quality.gate : 'strict';
     next.quality.repairScope = ['off', 'low', 'broad'].includes(next.quality.repairScope) ? next.quality.repairScope : 'broad';
     next.quality.maxRepairCycles = clamp(next.quality.maxRepairCycles, 0, 5, 3);

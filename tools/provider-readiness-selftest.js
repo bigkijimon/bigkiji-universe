@@ -26,7 +26,15 @@ const HOME = path.resolve(path.sep, 'home', 'o');
 const at = (...parts) => path.join(HOME, ...parts);
 
 let checks = 0;
-const ok = (label, fn) => { fn(); checks += 1; if (process.env.VERBOSE) console.log(`  ok  ${label}`); };
+// Awaited when the body returns a promise. A synchronous `ok()` handed an async body
+// counts the check, prints it, and never learns whether it failed — the assertion becomes
+// an unhandled rejection and the suite reports PASS.
+const pending = [];
+const ok = (label, fn) => {
+  const result = fn(); checks += 1;
+  if (result && typeof result.then === 'function') pending.push(result.then(() => {}, (error) => { throw error; }));
+  if (process.env.VERBOSE) console.log(`  ok  ${label}`);
+};
 
 const nothing = { env: {}, home: '/nowhere', secret: () => '', exists: () => false };
 
@@ -146,12 +154,22 @@ ok('every provider declares how to fix it', () => {
 // disclosure manifest is approved. Wired to the status display, those deliberate
 // falses put four working providers behind the word "Not available" — measured on
 // screen 2026-08-03 while GLM and Codex were completing real work.
-ok('the front desk router is not a status display', () => {
+//
+// 2026-08-09: `glm` left that list. It is now reachable in one stated situation — the GPU
+// is held by a render, so Ollama is SIGSTOPped, and the owner has switched
+// `conversation.cloudFallback` to 'gpu-busy'. Asserted by calling `detect()` rather than
+// by reading the source for `glm: false`, because the claim being made is about behaviour
+// and a source match would pass on a comment.
+ok('the front desk router is not a status display', async () => {
   const fastRouter = require('../src/domain/pi-agent/fast-api-router');
   const routerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
-  for (const provider of ['glm', 'claude', 'codex', 'gemini']) {
+  for (const provider of ['claude', 'codex', 'gemini']) {
     assert.match(routerSource, new RegExp(`${provider}: false`), `${provider} is false here by design, and that is not a status`);
   }
+  const shut = await fastRouter.detect({ gpuHeld: true });
+  assert.equal(shut.glm, false, 'with no setting turned on, glm is as unavailable here as the other three');
+  assert.equal((await fastRouter.detect({ cloudFallback: 'gpu-busy', gpuHeld: false })).glm, false,
+    'and a working local model closes it again — this is an escape, not a status');
   assert.equal(typeof fastRouter.ollamaReady, 'function', 'the display needs the local probe without the paid falses');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'main.js'), 'utf8');
   assert.ok(!/fastRouter\.detect\(\)\.then\(\(availability\) => fleetMetrics\.setAvailability/.test(main),
@@ -168,4 +186,6 @@ ok('a ready provider is shown as usable, an unready one is not', () => {
   assert.strictEqual(byId.gemini.status, 'OFFLINE', 'a provider that really cannot start still says so');
 });
 
-console.log(`provider readiness selftest: PASS · ${checks} checks · a CLI login counts · GOOGLE_API_KEY works for gemini · an empty variable does not · settings outrank env · reasons carry no secrets · the daemon uses it for both routing and display`);
+Promise.all(pending).then(() => {
+  console.log(`provider readiness selftest: PASS · ${checks} checks · a CLI login counts · GOOGLE_API_KEY works for gemini · an empty variable does not · settings outrank env · reasons carry no secrets · the daemon uses it for both routing and display · the front desk opens to glm only while the GPU is held and the owner asked`);
+}).catch((error) => { console.error(error); process.exit(1); });

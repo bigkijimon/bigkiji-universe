@@ -137,6 +137,7 @@ function providerReport(facts = {}, { text = '' } = {}) {
   const list = (value) => (Array.isArray(value) ? value : []);
   const usable = list(facts.usable); const cooling = list(facts.cooling);
   const busy = list(facts.busy); const throttled = list(facts.throttled); const unreachable = list(facts.unreachable);
+  const frozen = list(facts.frozen);
   const lines = [];
 
   lines.push(usable.length
@@ -150,6 +151,23 @@ function providerReport(facts = {}, { text = '' } = {}) {
     lines.push(japanese
       ? `  ${item.provider}  クールダウン中 あと${wait}${item.reason ? `（${item.reason}）` : ''}`
       : `  ${item.provider}  cooling down, ${wait} left${item.reason ? ` (${item.reason})` : ''}`);
+  }
+  // Named with its reason rather than left out of the usable list in silence.
+  //
+  // Before this, a question asked during a render was answered 「いま使えるのは …
+  // local-qwen … の6社です」 while `ps` showed that process in state T — the app
+  // announcing a model it could not reach. Dropping it quietly would have been the
+  // other half of the same mistake: the owner would see five providers, none of them
+  // local, and no explanation of where it went.
+  for (const item of frozen) {
+    lines.push(item.orphaned
+      ? (japanese
+        ? `  ${item.provider}  停止中（GPUロックは無いので、誰も解凍しません。手動で再開が要ります）`
+        : `  ${item.provider}  stopped, and no lock is held — nothing will thaw it; it needs a hand`)
+      : (japanese
+        ? `  ${item.provider}  停止中（GPUを「${item.holder || '生成ジョブ'}」が${item.since ? `${item.since}から` : ''}使用中。終われば戻ります）`
+        : `  ${item.provider}  stopped — the GPU is held by “${item.holder || 'a generation job'}”`
+          + `${item.since ? ` since ${item.since}` : ''}; it returns when that finishes`));
   }
   for (const item of throttled) {
     lines.push(japanese

@@ -99,13 +99,62 @@ function ollama(value) {
   // The abort timers are unref'd — as they were before this change — so in the daemon
   // the HTTP server keeps the loop alive while a turn waits. This script has no server,
   // so it has to hold the loop open itself or Node exits before the deadline fires.
+  //
+  // Both deadlines are set here. Nothing arriving at all is governed by
+  // firstTokenTimeoutMs, which in production is 20s rather than 8s — see below — so a
+  // test that set only `timeoutMs` would sit here for twenty seconds and still pass.
   const keepalive = setInterval(() => {}, 10);
-  const stalled = new ConversationEngine({ fetchImpl: streamOf([], { silent: true }), model: 'qwen2.5:0.5b', timeoutMs: 40 });
+  const stalled = new ConversationEngine({ fetchImpl: streamOf([], { silent: true }), model: 'qwen2.5:0.5b',
+    timeoutMs: 40, firstTokenTimeoutMs: 40 });
   const stalledTurn = await stalled.turn({ text: 'Hello?', sessionId: 'stalled' });
   clearInterval(keepalive);
   assert.strictEqual(stalledTurn.degraded, true);
   assert.match(stalledTurn.error, /timeout before first token/);
   assert.strictEqual(stalledTurn.ttftMs, null, 'nothing arrived, so nothing is claimed to have been measured');
+
+  // Loading the weights is not a stall.
+  //
+  // Measured 2026-08-09 11:20, right after a render finished and the watchdog thawed
+  // Ollama: cold `load_duration` 9.2s against an 8s deadline, so the first question after
+  // any render — and after every 60s keep_alive window closes — came back as the
+  // deterministic template with the GPU completely free. The second question, model warm,
+  // answered in 7233ms. One number was wrong, not the model.
+  //
+  // 120ms of nothing, then tokens: a stall deadline of 40ms must not kill it, and the
+  // 200ms first-token allowance must.
+  const holdInterval = setInterval(() => {}, 10);
+  const afterLoad = (delayMs) => async (url, init) => {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, delayMs);
+      init?.signal?.addEventListener?.('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+    });
+    return streamOf(pieces)(url, init);
+  };
+  const cold = new ConversationEngine({ fetchImpl: afterLoad(120), model: 'qwen3.5:latest',
+    timeoutMs: 40, firstTokenTimeoutMs: 200 });
+  const coldTurn = await cold.turn({ text: 'First question after a render.', sessionId: 'cold' });
+  assert.strictEqual(coldTurn.degraded, false,
+    `a model that took longer to load than the stall budget still answers: ${coldTurn.error || ''}`);
+  assert.strictEqual(coldTurn.reply, 'Streaming works.');
+
+  // …and the long allowance is spent once. After the first chunk the short stall deadline
+  // is back in force, or a model that dies mid-answer would hold the owner for 20s.
+  const stallsLate = new ConversationEngine({
+    fetchImpl: async (url, init) => {
+      const source = await streamOf(pieces.slice(0, 2))(url, init);
+      const reader = source.body.getReader(); let served = 0;
+      return { ok: true, body: { getReader: () => ({ read: () => (served++ < 2 ? reader.read()
+        : new Promise((_, reject) => init?.signal?.addEventListener?.('abort',
+          () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))) }) } };
+    },
+    model: 'qwen3.5:latest', timeoutMs: 40, firstTokenTimeoutMs: 5000 });
+  const lateStall = Date.now();
+  const lateTurn = await stallsLate.turn({ text: 'Die halfway.', sessionId: 'late' });
+  clearInterval(holdInterval);
+  assert.strictEqual(lateTurn.degraded, true);
+  assert.match(lateTurn.error, /stalled mid-answer/, 'the two deadlines are named apart in the record');
+  assert.ok(Date.now() - lateStall < 2000,
+    `once tokens are flowing the short deadline is back: waited ${Date.now() - lateStall}ms`);
 
   // A reasoning model streams `thinking` with an empty `response` for as long as it
   // deliberates. qwen3.5:latest does exactly this. Counting only answer tokens as signs
