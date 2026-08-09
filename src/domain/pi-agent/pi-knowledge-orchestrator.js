@@ -88,10 +88,64 @@ function findPlan(ownerText) {
   const h = hash(cleanText(ownerText));
   return loadState().plans.find((p) => p.promptHash === h) || null;
 }
+/**
+ * Tell a plan record how the work it planned actually went.
+ *
+ * `createTask` writes `status: 'planned'` and, until now, nothing could write it again —
+ * there was no function that did. Measured 2026-08-09: 81 tasks in task_state.json, all
+ * 81 reading `planned`, some of them plans for work that had finished days earlier and
+ * one for a run that failed at dispatch. `planned` was never wrong, it was just the only
+ * thing the file could ever say, so an agent reading it to find out what this company is
+ * doing gets a list where finished, failed and never-started look identical. That is
+ * worse than an empty file, because it looks like an answer.
+ *
+ * Silent when there is no matching record. The swarm planner only writes one for the
+ * requests it plans, so most runs have nothing here to update, and that is normal rather
+ * than an error worth throwing into a live run.
+ */
+function updateTaskStatus(taskId, status, evidence = '') {
+  const id = cleanText(taskId, 96);
+  return id ? writeTaskStatus((task) => task.id === id, status, evidence) : null;
+}
+
+/** The same, found by the owner's own words — how the coordinator knows a run's plan. */
+function recordTaskOutcome(ownerText, status, evidence = '') {
+  const h = hash(cleanText(ownerText));
+  return writeTaskStatus((task) => task.promptHash === h, status, evidence);
+}
+
+function writeTaskStatus(match, status, evidence) {
+  const state = loadState();
+  const index = state.tasks.findIndex(match);
+  if (index < 0) return null;
+  state.tasks[index] = { ...state.tasks[index], status: cleanText(status, 40) || 'planned',
+    evidence: cleanText(evidence, 300), updatedAt: new Date().toISOString() };
+  saveState(state);
+  return state.tasks[index];
+}
+
+// One stuck run must not erase the company's history.
+//
+// `events` is a 300-entry ring. A run that stalls emits a `run-checkpoint` every ten
+// minutes forever, so on 2026-08-09 it held 244 checkpoints from a single run id — 81%
+// of the whole record — and nothing from before 2026-08-07 08:58 survived. The
+// checkpoints carry no information after the first one: same run, same status, same
+// counts, a larger number of minutes.
+//
+// So consecutive checkpoints for the same run collapse into the newest one, carrying a
+// `repeat` count. The information is preserved (how long, how many times) and the ring
+// stops being a denial-of-service on the rest of the log.
+const COLLAPSIBLE = new Set(['run-checkpoint']);
 function recordEvent(taskId, event) {
   const state = loadState();
-  state.events.push({ taskId, type: cleanText(event.type, 80), status: cleanText(event.status, 80),
-    provider: cleanText(event.provider, 80), evidence: cleanText(event.evidence, 300), at: new Date().toISOString() });
+  const entry = { taskId, type: cleanText(event.type, 80), status: cleanText(event.status, 80),
+    provider: cleanText(event.provider, 80), evidence: cleanText(event.evidence, 300), at: new Date().toISOString() };
+  const last = state.events[state.events.length - 1];
+  if (last && COLLAPSIBLE.has(entry.type) && last.type === entry.type && last.taskId === entry.taskId) {
+    state.events[state.events.length - 1] = { ...entry, repeat: (last.repeat || 1) + 1, firstAt: last.firstAt || last.at };
+  } else {
+    state.events.push(entry);
+  }
   state.events = state.events.slice(-300);
   saveState(state);
 }
@@ -145,4 +199,4 @@ function canSpend(provider, planned = false) { return assertExecutor(provider) &
 
 module.exports = { ROOT, STATE_PATH, GRAPH_PATH, ALLOWED_EXECUTORS, PAID_EXECUTORS,
   cleanText, hash, loadState, loadGraph, saveState, saveGraph, createTask, rememberPlan,
-  findPlan, recordEvent, savePhysicalLayout, saveFleetMetrics, rememberIdea, assertExecutor, canSpend };
+  findPlan, recordEvent, updateTaskStatus, recordTaskOutcome, savePhysicalLayout, saveFleetMetrics, rememberIdea, assertExecutor, canSpend };

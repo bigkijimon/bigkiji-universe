@@ -1,6 +1,8 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { ModelCapabilityRegistry } = require('./model-capability-registry');
 const { aggregateDisclosureHash } = require('../pi-core/security/disclosure-manifest');
@@ -74,6 +76,34 @@ const CHECKPOINT_MS = 10 * 60 * 1000;
 
 // How long a plan is worth approving. The code it was planned against moves.
 const APPROVAL_TTL_MS = 60 * 60 * 1000;
+
+// When "report, not kill" has to stop reporting.
+//
+// _reportProgress is deliberately not a guillotine, and that is still right. What it
+// lacked was any way to notice that there was nothing left to report on. Measured on the
+// owner's machine 2026-08-09:
+//
+//   run-mshw0qbn-50f26de5111adc5a   started 2026-08-06T19:07Z, budget 30 min
+//   status DIAGNOSING, 1 of 3 assignments done, nothing running
+//   244 checkpoints, one every ten minutes, 3260 minutes past the deadline
+//
+// Its two remaining lenses had failed at dispatch — `Model "ollama/qwen3.5:35b-a3b" not
+// found`, gemini quota exhausted — so no assignment would ever change state again. The
+// run was not slow. It was over, and nothing said so. Meanwhile those 244 events filled
+// the 300-entry ring in task_state.json and evicted every other piece of history before
+// 2026-08-07 08:58.
+//
+// A run with work in flight is never touched by this: `stillRunning` being non-empty
+// resets the count, so a genuinely long job keeps its old behaviour of reporting forever.
+const STALL_CHECKPOINTS = 6;
+const STALL_TTL_MS = 2 * RUN_BUDGET_MS;
+// Statuses a run can hold while it is still the owner's current work. Exported because
+// daemon.js asks the same question in three places (`facts`, `statusFacts`,
+// `currentPhase`) and had three different answers: `facts` omitted DISPATCHING and both
+// omitted DIAGNOSING, so a DIAGNOSING run showed in the CLI's phase row while `/status`
+// and the conversation model were told "runs in progress: 0" about the same run.
+const ACTIVE_RUN = Object.freeze(['PLANNING', 'DISPATCHING', 'EXECUTING', 'DIAGNOSING', 'REPAIRING', 'VERIFYING']);
+const TERMINAL_RUN = Object.freeze(['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED']);
 
 /**
  * Two ways of typing the same request compare equal.
@@ -489,6 +519,54 @@ class CoreExecutionCoordinator extends EventEmitter {
       (skillBrief ? `\n\n${skillBrief}\n` : '');
   }
 
+  // Where the specialists leave notes for each other.
+  //
+  // The gap the owner named: 「それぞれの課金AIがコミュニケーション取れるように」. Each
+  // assignment runs in its own git worktree and cannot see the others, so collision
+  // avoidance was a static file split — "ui owns index.html, leader owns game.js" — and
+  // nothing carried what anyone had actually done.
+  //
+  // The obvious fix is to rebuild a later assignment's prompt with the earlier results,
+  // and it is not available: `createDisclosureManifest` hashes the prepared prompt into
+  // `payloadHash`, and `verifyDisclosureManifest` re-checks it at start. Editing a prompt
+  // after the owner approved it either fails that check or means re-sealing — which is
+  // the approval gate being worked around rather than honoured.
+  //
+  // So the CHANNEL is what the owner approves, and only its contents are live: the prompt
+  // names this directory and says what is in it, which is static text and hashes the same
+  // every time. The coordinator writes the notes itself when an assignment finishes,
+  // rather than asking a model to remember to — a handoff that depends on the agent
+  // choosing to write it is a handoff that is missing exactly when the run went badly.
+  //
+  // Honest about its reach: assignments dispatched together still start blind. This helps
+  // the ones that queue behind `maxParallel`, every repair cycle, and every fallback
+  // retry — the cases where somebody has already finished.
+  _handoffDir(run) { return path.join(run.cwd || this.taskRunner.cwd, '.bigkiji', 'handoff', String(run.id)); }
+
+  _writeHandoff(run, assignment, task) {
+    const dir = this._handoffDir(run);
+    const order = String(run.assignments.findIndex((item) => item.taskId === assignment.taskId) + 1).padStart(2, '0');
+    const edits = [...(task.edits?.keys?.() || [])].slice(0, 20);
+    const body = [
+      `# ${assignment.role} — ${task.status}`,
+      `provider: ${task.provider}${task.model ? ` · ${task.model}` : ''}`,
+      `title: ${assignment.title || ''}`,
+      edits.length ? `files: ${edits.join(', ')}` : 'files: (none)',
+      task.error ? `error: ${knowledge.cleanText(task.error, 300)}` : '',
+      '',
+      knowledge.cleanText(String(task.output || ''), 1500) || '(no output)',
+      '',
+    ].filter((line) => line !== '').join('\n');
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${order}-${assignment.role}.md`), body);
+      return true;
+    } catch (_) {
+      // A note nobody could write is not worth failing a run over.
+      return false;
+    }
+  }
+
   _assignmentPrompt(run, item) {
     // Text only. This injects guidance, never filesystem access, so the sandbox
     // boundary is exactly what it was before the skill registry existed.
@@ -502,7 +580,14 @@ class CoreExecutionCoordinator extends EventEmitter {
       skillBrief = this.skills.brief(`${run.prompt} ${item.title}`);
     } catch (_) {}
     const plan = deliberate.brief(run.deliberation);
-    const suffix = `${plan ? `\n\n${plan}\n` : ''}${skillBrief ? `\n\n${skillBrief}\n` : ''}`;
+    // Static by construction — the path and the protocol, never the contents. See
+    // _handoffDir: the approval covers the channel, the run fills it.
+    const handoff = `\n\nHANDOFF ${this._handoffDir(run)}\n`
+      + 'The other specialists on this run write one markdown file here as each of them finishes: role, provider, '
+      + 'the files they changed, and what they concluded. Read every file in that directory before you edit anything, '
+      + 'and read it again before you report. It is normal for it to be empty — that means nobody has finished yet, '
+      + 'not that nobody is working. Do not write to it; it is written for you.\n';
+    const suffix = `${plan ? `\n\n${plan}\n` : ''}${skillBrief ? `\n\n${skillBrief}\n` : ''}${handoff}`;
     const shared = `BIGKIJI RUN ${run.id}\nOwner goal: ${run.prompt}\n` +
       `You are ${item.agent}, specialist role=${item.role}. ${item.title}.\n` +
       `PiAgent selected this assignment for this run. Work only inside the configured sandbox. Never expose secrets, publish, delete unrelated data, or change billing. Exit immediately after the assignment; do not remain resident.\n`;
@@ -547,6 +632,9 @@ class CoreExecutionCoordinator extends EventEmitter {
     // retried still contributes its real result.
     if (['completed', 'failed'].includes(task.status) && !assignment.learned) {
       assignment.learned = true;
+      // Leave the note first, before anything that can throw. A specialist still queued
+      // behind maxParallel, and every repair cycle after this, reads it.
+      assignment.handoff = this._writeHandoff(run, assignment, task);
       // BigKiji's half of the critique loop the owner asked for. Deterministic: a
       // 9B model asked "is this good?" answers yes, so this asks it nothing and
       // checks facts instead. A result with nothing to say about it stays quiet.
@@ -655,6 +743,10 @@ class CoreExecutionCoordinator extends EventEmitter {
     run.report = this.buildReport(run);
     knowledge.recordEvent(run.id, { type: 'run-finish', status: run.status, provider: run.leader,
       evidence: run.quality.checks.map((c) => `${c.id}:${c.pass}`).join(', ') });
+    // …and on the plan record itself, so the task index stops reading `planned` for
+    // work that is over. Best-effort: only requests the swarm planner indexed have one.
+    knowledge.recordTaskOutcome?.(run.prompt, verified ? 'completed' : 'failed',
+      run.quality.checks.filter((c) => !c.pass).map((c) => c.id).join(', ') || run.id);
     // Write the run down in English, with the prompt as given and the gap between what
     // was asked and what shipped, for whoever improves these prompts next.
     // Deliberately not awaited: this is a long-lived daemon and the ledger is not
@@ -792,9 +884,14 @@ class CoreExecutionCoordinator extends EventEmitter {
 
   /** What is done and what is not, at the deadline and every checkpoint after it. */
   _reportProgress(run) {
-    if (['COMPLETED', 'FAILED', 'EXPIRED'].includes(run.status) || run.aborting) return;
+    if (TERMINAL_RUN.includes(run.status) || run.aborting) return;
     const done = run.assignments.filter((item) => item.status === 'completed');
     const running = run.assignments.filter((item) => ['running', 'dispatching', 'executing'].includes(String(item.status).toLowerCase()));
+    // Nothing running and nothing new finished since the last checkpoint: this run is
+    // not slow, it is stuck. Count those in a row; anything moving resets the count.
+    if (!running.length && done.length === run.stalledAtDone) run.stalledCheckpoints = (run.stalledCheckpoints || 0) + 1;
+    else { run.stalledCheckpoints = 0; run.stalledAtDone = done.length; }
+    if (run.stalledCheckpoints >= STALL_CHECKPOINTS) return this._failStalled(run, done);
     const overdueMs = Date.now() - new Date(run.deadlineAt).getTime();
     const report = {
       runId: run.id, status: run.status,
@@ -811,6 +908,57 @@ class CoreExecutionCoordinator extends EventEmitter {
     // Keep reporting rather than going quiet again.
     run.deadlineTimer = setTimeout(() => this._reportProgress(run), CHECKPOINT_MS);
     run.deadlineTimer.unref?.();
+  }
+
+  /**
+   * End a run that has stopped moving, and stop the clock with it.
+   *
+   * FAILED rather than EXPIRED: EXPIRED means the owner never answered, and reusing it
+   * here would tell them they had ignored something they were never asked. The error
+   * says what was and was not finished, because that is the only part still worth
+   * knowing — the assignments that never started left no output to keep.
+   *
+   * The timer is not re-armed. That is the whole point.
+   */
+  _failStalled(run, done = run.assignments.filter((item) => item.status === 'completed')) {
+    clearTimeout(run.deadlineTimer);
+    run.deadlineTimer = null;
+    run.status = 'FAILED';
+    run.finishedAt = new Date().toISOString();
+    run.updatedAt = run.finishedAt;
+    const stuck = run.assignments.filter((item) => item.status !== 'completed')
+      .map((item) => `${item.role} · ${item.provider}`).join(', ');
+    run.error = `stalled — ${done.length}/${run.assignments.length} finished and nothing moved for `
+      + `${Math.round((STALL_CHECKPOINTS * CHECKPOINT_MS) / 60000)} minutes`
+      + `${stuck ? ` (never finished: ${stuck})` : ''}`;
+    knowledge.recordEvent(run.id, { type: 'run-stalled', status: run.status, provider: run.leader, evidence: run.error });
+    knowledge.recordTaskOutcome?.(run.prompt, 'stalled', run.error);
+    this.emit('stalled', { runId: run.id, error: run.error, completed: done.length, total: run.assignments.length });
+    this._emit(run, 'stalled');
+    return run;
+  }
+
+  /**
+   * The sweep for runs nobody is waiting on an answer for.
+   *
+   * `expireStaleApprovals` covers AWAITING_APPROVAL and is called from `submit()`, which
+   * means it only runs when the owner starts something new. A run that stalls in a
+   * session the owner then walks away from is reached by neither — which is exactly what
+   * happened for 54 hours. The daemon calls this on a timer; the coordinator does not own
+   * one, so that the class stays testable with an injected clock.
+   */
+  expireStalledRuns(now = Date.now()) {
+    const failed = [];
+    for (const run of this.runs.values()) {
+      if (TERMINAL_RUN.includes(run.status) || run.status === 'AWAITING_APPROVAL' || run.aborting) continue;
+      const moving = run.assignments?.some((item) => ['running', 'dispatching', 'executing'].includes(String(item.status).toLowerCase()));
+      if (moving) continue;
+      const since = new Date(run.updatedAt || run.startedAt || run.createdAt).getTime();
+      if (!Number.isFinite(since) || now - since < STALL_TTL_MS) continue;
+      failed.push(this._failStalled(run));
+    }
+    for (const run of failed) this.forgetRun(run);
+    return failed.length;
   }
 
   /**
@@ -843,6 +991,10 @@ class CoreExecutionCoordinator extends EventEmitter {
         try { release(workspace, { keep: (collectDiff(workspace).files || 0) > 0 }); } catch (_) {}
       }
     }
+    // The notes were for the specialists, and the specialists are gone. The report has
+    // already taken what it needs. Left behind, these accumulate one directory per run
+    // forever — which is exactly how 1,446 worktrees and 35 GB happened.
+    try { fs.rmSync(this._handoffDir(run), { recursive: true, force: true }); } catch (_) {}
     this.runs.delete(run.id);
   }
 
@@ -857,6 +1009,20 @@ class CoreExecutionCoordinator extends EventEmitter {
       .filter((run) => ['COMPLETED', 'FAILED'].includes(run.status))
       .sort((a, b) => String(a.finishedAt || a.updatedAt || '').localeCompare(String(b.finishedAt || b.updatedAt || '')));
     for (const run of done.slice(0, Math.max(0, done.length - keep))) this.forgetRun(run);
+  }
+
+  /** One role's patch, bounded. Empty when it wrote nothing or the diff cannot be read. */
+  _roleDiff(assignment, { maxLines = 60, maxChars = 6000 } = {}) {
+    let patch = '';
+    try { patch = String(collectDiff(assignment.workspace)?.patch || ''); } catch (_) { return ''; }
+    if (!patch.trim()) return '';
+    const lines = patch.split('\n');
+    const kept = lines.slice(0, maxLines).join('\n').slice(0, maxChars);
+    const dropped = patch.length - kept.length;
+    // A report is published to every surface and written into the session file. Say what
+    // was cut — a silently truncated patch reads as a complete one, and the owner is
+    // deciding whether to merge it.
+    return dropped > 0 ? `${kept}\n… ${dropped} more characters — full diff in ${assignment.workspace.path}` : kept;
   }
 
   buildReport(run) {
@@ -888,6 +1054,17 @@ class CoreExecutionCoordinator extends EventEmitter {
         // Silence here would read as "isolated" — which is the one thing it must not do.
         isolated: !!assignment.workspace?.isolated,
         workspacePath: assignment.workspace?.isolated ? assignment.workspace.path : '',
+        // The lines this role wrote, so the roles can be read against each other.
+        //
+        // Gap 2 of the orchestration the owner described. Merging two providers'
+        // edits automatically has no track record here and that judgement stands —
+        // so this integrates them for a HUMAN instead: one screen, one block per
+        // role, the actual diff under each. The merge stays an owner action.
+        //
+        // Only for an isolated writer, because only a worktree can produce a diff
+        // that is this role's alone; a shared directory would attribute everyone's
+        // work to whoever is asked last.
+        diff: assignment.workspace?.isolated ? this._roleDiff(assignment) : '',
         notIsolated: assignment.write && !assignment.workspace?.isolated ? (assignment.workspace?.reason || 'unknown') : '',
         cost: costOf(assignment.provider, assignment.model, tokens),
         context: contextUse(assignment.model, tokens),
@@ -1097,4 +1274,5 @@ class CoreExecutionCoordinator extends EventEmitter {
   _emit(run, kind) { this.emit('run', { kind, ...publicRun(run) }); }
 }
 
-module.exports = { CoreExecutionCoordinator, ROLE_BLUEPRINT, FALLBACKS, selectRoles };
+module.exports = { CoreExecutionCoordinator, ROLE_BLUEPRINT, FALLBACKS, selectRoles,
+  ACTIVE_RUN, TERMINAL_RUN, STALL_CHECKPOINTS, STALL_TTL_MS, RUN_BUDGET_MS, CHECKPOINT_MS };
