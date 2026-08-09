@@ -82,7 +82,10 @@ const SURFACES = [
 
 const CWDS = [
   { label: 'daemon run (BIGKIJI_WORKSPACE)', cwd: HOME },
-  { label: 'department Pi (English_School)', cwd: path.join(HOME, 'Documents/CEOBigKiji/English_School') },
+  // The departments left the one-folder vault on 2026-08-09 and now sit directly under
+  // ~/Documents. Named rather than discovered because this audit asks "what can a Pi
+  // started HERE open", and the answer has to be about a specific real cwd.
+  { label: 'department Pi (School)', cwd: path.join(HOME, 'Documents/School') },
   { label: 'app Pi (repo)', cwd: path.join(REPO, 'app') },
 ];
 

@@ -22,26 +22,49 @@ const path = require('path');
 // falls back to the Japanese originals for anything not yet translated.
 const APP_SKILLS = path.resolve(__dirname, '..', '..', '..', 'skills');
 const HOME = os.homedir();
+// Declared before DEFAULT_ROOTS, which calls documentRoots() while this module is still
+// initialising — a `const` below that call is in the temporal dead zone and throws.
+const WORK_MARKERS = ['knowledge', '.pi'];
 const DEFAULT_ROOTS = [
   APP_SKILLS,
   path.join(HOME, '.claude', 'skills'),           // the owner's own, hand-written
   path.join(HOME, '.claude', 'plugins', 'cache'), // installed plugins (figma, vercel, sonarqube, ...)
-  path.join(HOME, 'Documents', 'CEOBigKiji'),     // per-project skills inside the vault
-  ...toolRepoSkillRoots(),                        // tool repos that ship their own (ACE-Step, LTX-2, ...)
+  ...documentRoots(),                             // work folders and tool repos under ~/Documents
 ];
 
-// Local tool checkouts carry the operational knowledge for the tool itself, and it is
-// often more current than the owner's notes about it: the ACE-Step skill in ~/.claude
-// still records a path that no longer exists, while the repo's own copy sits next to
-// the code. Bounded to one level under ~/Documents so this stays a cheap lookup.
-function toolRepoSkillRoots(home = HOME) {
+// What to search under ~/Documents, and how deeply.
+//
+// This used to name `CEOBigKiji` as a single root and walk all of it, plus a cheap
+// one-level look for `<folder>/skills` in everything else. When that vault was taken
+// apart on 2026-08-09 the hardcoded name stopped existing and every per-project skill in
+// it would have gone missing — silently, because a root that cannot be read is skipped.
+//
+// So the vault is identified by what it contains rather than by its name: a work folder
+// carries `knowledge/` or `.pi/`, and a tool checkout (ComfyUI 237 GB, LTX-2, Personal)
+// does not. Renaming a work folder now costs nothing, and a 237 GB tree is still never
+// walked — it only gets the one-level look it always had.
+function documentRoots(home = HOME) {
+  const base = path.join(home, 'Documents');
   const roots = [];
   let entries = [];
-  try { entries = fs.readdirSync(path.join(home, 'Documents'), { withFileTypes: true }); } catch (_) { return roots; }
+  try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch (_) { return roots; }
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name === 'CEOBigKiji') continue;
+    // Symlinks are deliberately not followed: during a migration the old names are left
+    // behind pointing at the new ones, and walking both would find every skill twice.
+    if (!entry.isDirectory()) continue;
+    // A folder retired by renaming it out of sight is still a folder. On 2026-08-09 the
+    // old vault was parked as `.CEOBigKiji_removed_20260809` before deletion and this
+    // scanner walked straight into it — every skill in it would have been found twice,
+    // under a name the owner had just retired. Hidden means retired, cache or config;
+    // none of the three is a work folder.
+    if (entry.name.startsWith('.')) continue;
+    const dir = path.join(base, entry.name);
+    // Both markers, not either: ComfyUI has a knowledge/ folder and 237 GB of models, and
+    // matching on that alone put it in line for a full walk. Only a folder BigKiji governs
+    // has a .pi/ as well.
+    if (WORK_MARKERS.every((marker) => fs.existsSync(path.join(dir, marker)))) { roots.push(dir); continue; }
     for (const relative of [path.join('.claude', 'skills'), 'skills']) {
-      const candidate = path.join(home, 'Documents', entry.name, relative);
+      const candidate = path.join(dir, relative);
       if (fs.existsSync(candidate)) roots.push(candidate);
     }
   }

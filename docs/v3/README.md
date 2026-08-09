@@ -74,6 +74,26 @@ a guarded dual export that works under `require()` and as a side-effect `import`
 | [11-plugins.md](11-plugins.md) | Plugin architecture |
 | [12-stack-2026.md](12-stack-2026.md) | The 2026 landscape — MCP, A2A, Context Engineering, GraphRAG, semantic cache, embeddings — and what applies here |
 
+## If the owner says BigKiji is answering nonsense
+
+Read [gpu-freeze-and-zombie-runs-2026-08-09.md](gpu-freeze-and-zombie-runs-2026-08-09.md)
+before reading any source. Three faults produced that complaint once, and only one of them
+was in the conversation path: the local model was SIGSTOPped by `gpu-signal.sh` for a
+render, a run from three days earlier was still checkpointing every ten minutes, and the
+phase row and `/status` disagreed about that same run. It carries the commands to tell
+which of the three is happening now.
+
+## If the owner says nothing ever starts, or that they cannot see the work
+
+Read [work-gate-2026-08-09.md](work-gate-2026-08-09.md). The complaint was
+「まだ一度もまともに使えていない」 and the cause was two shut doors, not a bug: a request
+phrased outside a fourteen-word lexicon was classified CHAT and started nothing — the same
+sentence with 「ほしい」 in kana instead of 「欲しい」 did start work — and even when a run did
+exist, a step showed `Edit foo.js +12 −3` and never the lines. It records the bargain that
+opened the first door: the conversation model may now call a turn TASK, and a TASK it called
+waits for one approval even under `auto-edit`. `tools/work-gate-selftest.js` fails if either
+half of that is removed.
+
 ## Read these first if you are short on time
 
 - `10-performance.md` — what is measured, what is estimated, and the gap between them.

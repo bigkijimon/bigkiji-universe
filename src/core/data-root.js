@@ -102,6 +102,9 @@ function dataLayout(dataRoot, overrides = {}) {
     logsRoot: at('logsRoot', 'logs'),
     reportsRoot: at('reportsRoot', 'reports'),
     knowledgeRoot: at('knowledgeRoot', 'knowledge'),
+    // What the owner has actually asked for, gathered from every CLI they use. Derived
+    // data: deleting it costs one re-scan and nothing else.
+    corpusRoot: at('corpusRoot', 'corpus'),
     recordingsRoot: at('recordingsRoot', 'recordings'),
     generatedMediaRoot: at('generatedMediaRoot', 'generated-media'),
     ttsCacheRoot: at('ttsCacheRoot', 'cache', 'tts'),
@@ -118,7 +121,7 @@ function dataLayout(dataRoot, overrides = {}) {
 
 function ensureLayout(layout) {
   for (const key of ['stateRoot', 'sessionsRoot', 'ideasRoot', 'logsRoot', 'reportsRoot',
-    'knowledgeRoot', 'recordingsRoot', 'generatedMediaRoot', 'ttsCacheRoot', 'migrationsRoot']) {
+    'knowledgeRoot', 'corpusRoot', 'recordingsRoot', 'generatedMediaRoot', 'ttsCacheRoot', 'migrationsRoot']) {
     try { fs.mkdirSync(layout[key], { recursive: true }); } catch (_) {}
   }
   if (!fs.existsSync(layout.rootMarkerFile)) {
