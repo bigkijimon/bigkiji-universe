@@ -185,6 +185,8 @@ async function repl(client) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}>${A.reset} ` });
   const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
+  let degradedTurn = false; let degradedWhy = ''; // sticky until a turn the model actually serves
+  let awaitingAnswer = false; // the front desk is holding a run until the owner answers
   let abortedTurn = false; // one abort per turn; the second Ctrl-C leaves
   let turnAbort = null; // lets Ctrl-C stop waiting on the answer, not just ask the daemon to stop
   const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
@@ -204,7 +206,8 @@ async function repl(client) {
     // setFooterHeight() is a no-op when the number has not changed.
     sticky.setFooterHeight(footerHeightFor(frameSet, runningAgents(live).length));
     const { lines, inputIndex } = buildFooter({ cols: sticky.cols, mode, state: live, phase: phaseInfo, comment,
-      busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet });
+      busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet,
+      degraded: degradedTurn, degradedNote: degradedWhy, awaitingAnswer });
     inputOffset = inputIndex;
     const signature = lines.join(' ');
     if (!force && signature === painted) return;
@@ -397,7 +400,12 @@ async function repl(client) {
     // generic extraction below reach it would put the word "start" in the comment slot
     // where the owner is looking for what is happening.
     if (event === 'step') {
-      const lines = renderEvent('step', data, { ...view(), label: stepLabel(data) });
+      // How many lines of the patch this terminal can spare. A step is published while the
+      // owner is still typing, so a 40-line diff on a 24-row pane pushes their own prompt
+      // off the screen — the cap is a third of the window, and stream-steps has already
+      // capped the body itself before it reached the wire.
+      const rows = Math.max(12, Number(process.stdout.rows) || 24);
+      const lines = renderEvent('step', data, { ...view(), label: stepLabel(data), diffLines: Math.max(4, Math.min(16, Math.floor(rows / 3))) });
       if (lines.length) emit(lines);
       if (data?.phase === 'start' && data?.tool) {
         comment = `${data.tool}${data.target ? ` ${shortenPath(String(data.target))}` : ''}`.replace(/\s+/g, ' ').trim();
@@ -579,6 +587,20 @@ async function repl(client) {
         // transcript should hold nothing but the question and the answer.
         turnAbort = new AbortController();
         const result = await client.turn(text, { mode: transportMode(mode), sessionId, signal: turnAbort.signal }); sessionId = result.sessionId;
+        // Carry the "this was not the model" flag into the footer.
+        //
+        // The daemon has published `degraded` on every turn since the engine could fall
+        // back, and nothing here read it. On 2026-08-09 gpu-signal.sh had Ollama
+        // SIGSTOPped for a render, every reply was a template, and the only difference
+        // on screen was one parenthesis at the top of a paragraph — which reads as the
+        // model talking, not as the model being absent.
+        degradedTurn = !!result.degraded;
+        degradedWhy = result.gpuFrozen ? 'local model frozen — gpu busy' : (result.degraded ? 'local model unavailable' : '');
+        // The daemon has published `awaitingAnswer` on every turn since the front desk
+        // could ask a question, and no surface drew it. The question is in the reply, but
+        // once it scrolls, an idle-looking footer is the only thing left — and the daemon
+        // is meanwhile treating the next thing typed as the answer.
+        awaitingAnswer = !!result.awaitingAnswer;
         emit(renderAssistantText(result.reply, view()));
         if (result.draft) emit(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, view()));
         if (result.run) emitRun(result.run);

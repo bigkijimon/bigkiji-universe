@@ -73,6 +73,21 @@ const TURN_SHAPE = Object.freeze({
   engine.on('event', (event) => { if (event.event === 'run') runEvents.push(event.data); });
   engine.conversation.turn = async () => ({ ...TURN_SHAPE, kind: 'TASK', reply: 'planning', title: 'fix readme',
     summary: 'fix the readme typo', todos: ['edit README'], turnId: 'task-1' });
+  // The front desk is stubbed, and it has to be.
+  //
+  // This assertion passed for months on a hidden dependency: FastFacilitatorRouter starts
+  // with `knowledge.findPlan(text)` (fast-api-router.js:121), and the owner's real
+  // task_state.json happened to hold a cached plan for this sentence. Point the knowledge
+  // root anywhere else — which is what test isolation does — and the facilitator instead
+  // asks a model, gets `needs_clarification`, and daemon.js holds the run back to ask a
+  // question. Measured 2026-08-09: with `plans` present the test passes, with `plans`
+  // emptied and everything else identical it fails.
+  //
+  // What this block is about is that ONE run is published ONCE. Whether a first-time
+  // request should stop and ask is a separate question about the product, not about
+  // event plumbing, so it is pinned here rather than left to whatever is on disk.
+  engine.facilitator.facilitate = async () => ({ status: 'ready', provider: 'stub', planHash: 'stub-plan',
+    promptSpec: { goal: 'fix the readme typo', constraints: [], steps: ['edit README'], acceptance: [] } });
   const task = await engine.turn('READMEのタイポを直して', { sessionId });
   assert.ok(task.run?.id, 'a TASK turn submits a run');
   assert.equal(runEvents.filter((run) => run.id === task.run.id).length, 1,

@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const crypto = require('crypto');
 const { redactPayload } = require('./security/payload-redactor');
 const { estimateTokens } = require('../pi-agent/context-pruner');
+const { freezeExplanation, ollamaFrozen } = require('../pi-agent/gpu-lock');
 
 function clean(value, max = 6000) {
   return redactPayload(String(value || '')).text.replace(/<(?:thought|thinking|analysis)\b[^>]*>[\s\S]*?<\/(?:thought|thinking|analysis)>/gi, '')
@@ -56,8 +57,53 @@ function usableTitle(value, text) {
   if (!title || /^(?:提出|提案|検討|案|アイデア|無題|idea|untitled)$/i.test(title)) return deriveTitle(text);
   return title;
 }
+// 表記ゆれ。同じ依頼が、漢字で書いたかどうかだけで通ったり落ちたりしていた。
+//
+// 実測 2026-08-09、オーナーのCLIで同じ意味の2文を打った結果:
+//   「課金トークンのリミット解除されてるか確認して欲しいす」 -> CHAT（runなし）
+//   「課金トークンのリミットを確認してほしい」               -> TASK（runあり）
+// 違いは 欲しい / ほしい の一箇所だけ。語彙を足す前に、まずこれを潰す。
+const KANA = [
+  [/欲し(い|かった)/g, 'ほし$1'], [/下さい/g, 'ください'], [/出来(る|ます|れ|た|ない)/g, 'でき$1'],
+  [/頂(け|き|きたい|けますか)/g, 'いただ$1'], [/貰(え|い|えますか)/g, 'もら$1'],
+  [/宜しく/g, 'よろしく'], [/御願い/g, 'お願い'], [/致します/g, 'いたします'],
+];
+/** 依頼判定のためだけの正規化。原文は書き換えない（保存も表示も原文のまま）。 */
+function normalizeRequest(text) {
+  let value = String(text || '');
+  for (const [pattern, into] of KANA) value = value.replace(pattern, into);
+  return value;
+}
+// 一段目。単体で「やってくれ」を意味する語。ここに当たれば無条件で TASK。
+const STRONG_ACTION = /(?:実装|修正|変更|追加|削除|build|implement|fix|refactor|commit|create|作って|直して|してください|してほしい)/i;
+// 二段目。作業を指す語だが、単体では雑談にもなる（「確認が取れた」「調査によると」）。
+// 依頼の締めと組んだときだけ TASK にする。
+const WORK_VERB = /(?:確認|調べ|調査|点検|チェック|検証|見せ|表示|一覧|出力|出し|作成|生成|セットアップ|設定|導入|インストール|整理|更新|同期|移動|コピー|バックアップ|テスト|レビュー|解析|分析|まとめ|教え|検索|探し|再起動|起動|デプロイ|公開|置き換え|書き換え)/;
+// 「〜て」「〜てください」「〜てほしい」「〜お願い」——文末に来る依頼の形。
+const REQUEST_TAIL = /(?:て|てね|てよ|てください|てほしい|てほしいです|てもらえますか|てもらえる|ていただけますか|ていただけますでしょうか|てくれる|てくれますか|ておいて|といて|をお願いします|をお願い|お願いします)[。．.!！?？\s]*$/;
+// 依頼の締めから見て、この文字数までの範囲に作業語があることを要求する。
+// 「今日は確認が取れなくて、あとで話して」のような、頭に作業語があるだけの雑談を弾く。
+const TAIL_WINDOW = 24;
+const EN_WORK = /\b(?:check|show|list|find|look|verify|investigate|inspect|set\s?up|install|update|deploy|run|test|review|search|explain)\b/i;
+const EN_REQUEST = /\b(?:please|could you|can you|would you|i(?:'| a)?m asking you to|go ahead and)\b/i;
+
+/**
+ * '' | 'soft' | 'strong'。依頼としての強さ。
+ *
+ * 'strong' は「明示的な作業指示」。status-answer はこちらだけを見る——語彙を広げた結果
+ * 「進捗を確認して」が TASK に化け、状況質問の横取りが効かなくなるのを防ぐため。
+ * @returns {''|'soft'|'strong'}
+ */
+function actionTier(text) {
+  const value = normalizeRequest(text);
+  if (STRONG_ACTION.test(value)) return 'strong';
+  const tail = value.trim().slice(-TAIL_WINDOW);
+  if (REQUEST_TAIL.test(value) && WORK_VERB.test(tail)) return 'soft';
+  if (EN_REQUEST.test(value) && EN_WORK.test(value)) return 'soft';
+  return '';
+}
 function heuristicKind(text) {
-  if (/(?:実装|修正|変更|追加|削除|build|implement|fix|refactor|commit|create|作って|直して|してください|してほしい)/i.test(text)) return 'TASK';
+  if (actionTier(text)) return 'TASK';
   if (/(?:アイデア|思いつ|どうかな|できたら|将来|考えたい|検討したい|考えている|ならどう|はどうだろう|idea|maybe|what if|could we|構想|案)/i.test(text)) return 'IDEA';
   return 'CHAT';
 }
@@ -96,24 +142,67 @@ function isAffirmative(text) { return AFFIRMATIVE.test(String(text || '').trim()
 // that is the part that failed.
 function endsWithQuestion(text) { return /[?？]\s*$/.test(String(text || '').trim()); }
 
-function guardedKind(modelKind, text) {
+/**
+ * The kind, and where it came from.
+ *
+ * This used to end with "a model saying TASK is downgraded to CHAT, full stop", and the
+ * reason given was that a small model over-promotes reflective sentences. That reason is
+ * real — and it cost more than it saved. Measured on the owner's machine 2026-08-09:
+ * every turn logged `model says TASK -> final: CHAT`, so the lexicon was the only door
+ * into work, and a request phrased outside its fourteen words started nothing at all.
+ * The owner's report was 「まだ一度もまともに使えていない」.
+ *
+ * The trade the owner chose (2026-08-09) is to let the model open the door and pay for a
+ * wrong guess with an approval prompt instead of a lost request: a model-promoted TASK is
+ * marked here and the daemon submits it as `plan`, so it waits for /approve even under
+ * `auto-edit`. The front desk it passes through on the way runs on local Ollama
+ * (fast-api-router.js `runOllama`), so a false promotion costs no paid tokens either.
+ *
+ * A lexical TASK keeps its own mode: that path is unchanged and was never the problem.
+ * @returns {{kind: string, promotedByModel: boolean}}
+ */
+function classifyKind(modelKind, text) {
   const lexical = heuristicKind(text); const proposed = String(modelKind || '').toUpperCase();
-  // A small conversational model may over-promote a reflective sentence into
-  // an execution request. PiAgent requires explicit action language before a
-  // paid/mutating plan can even be prepared.
-  if (lexical === 'TASK') return 'TASK';
-  if (lexical === 'IDEA') return 'IDEA';
-  if (proposed === 'TASK' || proposed === 'IDEA') return 'CHAT';
-  return ['CHAT', 'CLARIFICATION'].includes(proposed) ? proposed : 'CHAT';
+  if (lexical === 'TASK') return { kind: 'TASK', promotedByModel: false };
+  if (lexical === 'IDEA') return { kind: 'IDEA', promotedByModel: false };
+  // One thing the model still may not promote: a line that is only a go-ahead.
+  //
+  // 「お願いします」 means "start" when something is waiting to be started and nothing at
+  // all when nothing is — which is why the daemon consults `isAffirmative` only while it
+  // is holding a request. A model that reads it as TASK on its own would file a plan
+  // whose goal is the word "お願いします": junk in the approval queue, and a paid run one
+  // careless /approve away. The go-ahead path is where this sentence is answered.
+  if (proposed === 'TASK') {
+    return isAffirmative(text) ? { kind: 'CHAT', promotedByModel: false } : { kind: 'TASK', promotedByModel: true };
+  }
+  // IDEA is deliberately not promoted. It writes a draft file for every turn it fires on,
+  // and a chat that leaves a saved idea behind on every third sentence is noise the owner
+  // has to clean up — the opposite of the failure being fixed here.
+  if (proposed === 'IDEA') return { kind: 'CHAT', promotedByModel: false };
+  return { kind: ['CHAT', 'CLARIFICATION'].includes(proposed) ? proposed : 'CHAT', promotedByModel: false };
 }
+function guardedKind(modelKind, text) { return classifyKind(modelKind, text).kind; }
+/** Kana or Han in the owner's line \u2014 which language the degraded answers are written in. */
+function isJapanese(text) { return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(text || '')); }
 function fallbackReply(text, kind = heuristicKind(text)) {
-  const japanese = /[\u3040-\u30ff\u3400-\u9fff]/.test(text);
+  const japanese = isJapanese(text);
   if (kind === 'TASK') return { kind, reply: japanese ? `「${deriveTitle(text)}」を実行計画として整理しています。始める前に対象と手順を一緒に確認しましょう。決めておきたい条件はありますか？` : `I am organizing “${deriveTitle(text)}” into an execution plan. Let's review the scope and steps before starting—any constraints you want fixed up front?` };
   if (kind === 'IDEA') return { kind, reply: japanese
     ? `いい視点です。「${deriveTitle(text)}」としてローカル下書きに残しました。核になる要素と、まだ決めなくてよい部分を分けておくと、会話を止めずに後で育てられます。`
     : `That is worth keeping, so I saved “${deriveTitle(text)}” as a private local draft. Separating its core idea from decisions that can wait will make it easier to develop without interrupting the conversation.` };
   return { kind, reply: japanese ? `その話、もう少し聞かせてください。特に「${clean(text, 80)}」のどの部分がいちばん気になっていますか？` : `Tell me a little more about that—what part of “${clean(text, 80)}” matters most to you?` };
 }
+// "It did not answer" is true and useless. "Your own video job froze it at 10:05" is
+// the same fact with the one thing the owner can act on attached: wait, or stop the
+// job. When gpu-signal.sh holds the card this says so; otherwise it falls back to the
+// admission below, because a cause this module cannot see is not one it should invent.
+function degradedHeader(text, explain = freezeExplanation) {
+  const japanese = isJapanese(text);
+  let hint = '';
+  try { hint = explain({ japanese }) || ''; } catch (_) { hint = ''; }
+  return hint || degradedPrefix(text);
+}
+
 /** A one-line admission, in the language the owner is writing in. */
 function degradedPrefix(text) {
   return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(text || ''))
@@ -134,7 +223,7 @@ function fallback(text, kind = heuristicKind(text)) {
   return normalize({ kind, reply: fallbackReply(text, kind).reply }, text);
 }
 function normalize(value, text) {
-  const kind = guardedKind(value?.kind, text);
+  const { kind, promotedByModel } = classifyKind(value?.kind, text);
   const base = fallbackReply(text, kind);
   // 小型モデルは配列要素をオブジェクト({question:...}等)で返すことがある。
   // String(obj)="[object Object]" がpromptSpecまで流れていた実バグの修正。
@@ -145,7 +234,7 @@ function normalize(value, text) {
   let reply = stripStructure(clean(asText(value?.reply), 1800));
   const echo = clean(asText(value?.summary), 200);
   if (!reply || reply.length < 6 || (echo && reply === echo)) reply = base.reply;
-  return { kind, reply,
+  return { kind, reply, promotedByModel,
     // IDEA titles become durable filenames and UI labels. Derive them from the
     // owner's own words instead of trusting a tiny model's occasionally
     // unrelated heading.
@@ -227,11 +316,26 @@ class ConversationEngine extends EventEmitter {
   // which keeps emitting forever.
   constructor({ fetchImpl = global.fetch, model = process.env.BIGKIJI_CONVERSATION_MODEL || 'qwen3.5:latest',
     endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000, maxTurnMs = 90000,
-    maxContextTokens = 4096, maxTurns = 8, keepAlive = DEFAULT_KEEP_ALIVE } = {}) {
+    maxContextTokens = 4096, maxTurns = 8, keepAlive = DEFAULT_KEEP_ALIVE, explainFreeze = freezeExplanation,
+    isFrozen = null } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;
     this.maxTurnMs = Math.max(timeoutMs, maxTurnMs);
     this.maxContextTokens = Math.min(8192, Math.max(1024, maxContextTokens)); this.maxTurns = Math.max(2, Math.min(16, maxTurns));
-    this.keepAlive = normalizeKeepAlive(keepAlive);
+    this.keepAlive = normalizeKeepAlive(keepAlive); this.explainFreeze = explainFreeze;
+    // Consult the machine only when this engine is actually talking to the machine.
+    //
+    // `ollamaFrozen()` reads `ps` — a global fact — but the check exists for one narrow
+    // reason: not to spend 8s asking a SIGSTOPped local Ollama. An engine handed its own
+    // `fetchImpl` is not talking to that process, and short-circuiting it there made
+    // every streaming test degrade whenever the owner's GPU happened to be busy. The
+    // suite went from 68 PASS to red mid-render, which is exactly the machine-state
+    // dependence conversation-selftest.js was already burned by once.
+    //
+    // Note the shape: `ollamaFrozen()` returns {frozen, stopped[]}, not a boolean. A
+    // `=== true` comparison here was silently always false and saved nothing.
+    this.isFrozen = isFrozen || (fetchImpl === global.fetch
+      ? () => ollamaFrozen()?.frozen === true
+      : () => false);
     this.histories = new Map(); this.active = 0;
   }
 
@@ -303,7 +407,7 @@ class ConversationEngine extends EventEmitter {
     const turnId = `turn-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`; const started = Date.now();
     const history = this.history(sessionId, seed); const compacted = this.compact(history); onStart?.({ turnId, model: this.model });
     this.emit('start', { turnId, sessionId, model: this.model, at: started }); this.active++;
-    let result; let provider = 'local-qwen'; let degraded = false; let ttftMs = null;
+    let result; let provider = 'local-qwen'; let degraded = false; let ttftMs = null; let gpuFrozen = false;
     const controller = new AbortController();
     // Streaming changes what a deadline can honestly mean. With stream:false the whole
     // turn shared one 8s budget, so a model that was generating correctly but slowly
@@ -320,6 +424,19 @@ class ConversationEngine extends EventEmitter {
     armStall();
     try {
       if (!this.fetchImpl) throw new Error('Local conversation fetch unavailable');
+      // Do not spend eight seconds asking a stopped process.
+      //
+      // While gpu-signal.sh holds the card it SIGSTOPs both `ollama serve` and
+      // `llama-server` (mem-switch.sh freeze_ollama). A SIGSTOPped process accepts the
+      // TCP connection and never answers, so every turn paid the full stall deadline
+      // before falling back — measured 2026-08-09: latencyMs 8000/8001/8002/8004 on four
+      // consecutive turns, and `ollama list` itself hung for over two minutes.
+      //
+      // The state is knowable before the call: `ollamaFrozen()` reads `ps -Ao stat` and
+      // reports the T state. Knowing it and asking anyway is eight seconds of the owner's
+      // time per turn, spent to learn something already on the machine. The fallback that
+      // follows is the same one, and it already says which job holds the card.
+      if (this.isFrozen()) throw new Error('Ollama is stopped — the GPU is held by another job');
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
           prompt: this.prompt(ownerText, compacted.turns, facts), stream: true, format: 'json', keep_alive: this.keepAlive,
@@ -354,14 +471,22 @@ class ConversationEngine extends EventEmitter {
       // of them in a row the owner concluded the thing was stupid rather than
       // absent. It was absent. A degraded answer that admits it is a different
       // product from one that pretends.
-      result.reply = `${degradedPrefix(ownerText)}${result.reply}`;
+      // …and say why, when the reason is knowable. gpu-signal.sh stops Ollama for the
+      // duration of a render; without this the owner reads nine identical "it did not
+      // answer" templates and never learns that their own video job is holding the card.
+      const header = degradedHeader(ownerText, this.explainFreeze);
+      // Whether the degradation had a knowable cause, for the surfaces that show a
+      // status word rather than a paragraph. `degradedPrefix` is the no-cause default,
+      // so anything else is the GPU explanation.
+      gpuFrozen = header !== degradedPrefix(ownerText);
+      result.reply = `${header}${result.reply}`;
     } finally { clearTimeout(stall); clearTimeout(ceiling); this.active = Math.max(0, this.active - 1); }
     history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.reply });
     while (history.length > this.maxTurns * 2) history.shift();
     onDelta?.(result.reply); const finished = Date.now();
     // ttftMs is null when nothing was streamed — a fallback answer, or a response
     // delivered in one piece. Null means "not measured", never zero.
-    const output = { ...result, turnId, sessionId, provider, model: this.model, degraded, latencyMs: finished - started, ttftMs,
+    const output = { ...result, turnId, sessionId, provider, model: this.model, degraded, gpuFrozen, latencyMs: finished - started, ttftMs,
       context: { turns: compacted.turns.length, estimatedTokens: compacted.tokens, limit: this.maxContextTokens }, redactions: inspected.findings };
     this.emit('finish', output); return output;
   }
@@ -370,5 +495,6 @@ class ConversationEngine extends EventEmitter {
     maxContextTokens: this.maxContextTokens, keepAlive: this.keepAlive }; }
 }
 
-module.exports = { ConversationEngine, heuristicKind, guardedKind, isAffirmative, endsWithQuestion, fallback, normalize, clean,
-  deriveTitle, usableTitle, degradedPrefix, normalizeKeepAlive, DEFAULT_KEEP_ALIVE };
+module.exports = { ConversationEngine, heuristicKind, guardedKind, classifyKind, actionTier, normalizeRequest,
+  isAffirmative, endsWithQuestion, fallback, normalize, clean,
+  deriveTitle, usableTitle, degradedPrefix, degradedHeader, isJapanese, normalizeKeepAlive, DEFAULT_KEEP_ALIVE };

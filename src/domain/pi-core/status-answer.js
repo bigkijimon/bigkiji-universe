@@ -33,7 +33,7 @@
 // as zero because an empty list really is empty. Nothing here is rounded up, softened, or
 // turned into an assurance.
 
-const { heuristicKind } = require('./conversation-engine');
+const { actionTier } = require('./conversation-engine');
 
 const JAPANESE = /[぀-ヿ㐀-鿿]/;
 
@@ -78,10 +78,94 @@ const MAX_LENGTH = 60;
 function isStatusQuestion(text) {
   const value = String(text || '').trim();
   if (!value || value.length > MAX_LENGTH) return false;
-  // Action language wins. `heuristicKind` is the same lexicon the conversation engine
-  // uses to decide a turn is work, shared rather than copied so the two cannot drift.
-  if (heuristicKind(value) === 'TASK') return false;
+  // Action language wins — but only the explicit kind.
+  //
+  // This read `heuristicKind(value) === 'TASK'`, and on 2026-08-09 that lexicon grew a
+  // second tier so that 「確認して」「調べて」 could start work at all. 確認 and 調査 are
+  // also the verbs a status question is built from, so sharing the widened test would
+  // have handed 「進捗を確認して」 to a model — undoing the whole point of this file.
+  // `actionTier` is still the conversation engine's own function, so the two cannot
+  // drift; what is shared now is the strong tier rather than the union of both.
+  if (actionTier(value) === 'strong') return false;
   return ASKS.some((pattern) => pattern.test(value));
+}
+
+// 「課金トークンのリミット解除されてるか確認して欲しいす」 — the owner's own line, 2026-08-09.
+//
+// This is a question with an exact answer sitting in two files (circuit-breaker.json and
+// model_performance.json) and it reached neither. Before that day it was classified CHAT
+// and answered by a 3B model guessing; after the lexicon was widened it classified as a
+// TASK, which is worse — it would spend a paid run to look up a rate limit. So it is
+// intercepted here, ahead of the action lexicon, for the same reason a status question is:
+// the true answer is already known and a model can only make it up.
+//
+// Narrower than ASKS on purpose. It must name a limit or an AI; 「制限を外す実装をして」 is
+// real work and does not match, because 実装 is not one of the words that follows.
+const PROVIDER_ASKS = [
+  /(?:リミット|レートリミット|レート制限|クォータ|トークン|上限|制限)[^。\n]{0,14}(?:解除|戻っ|回復|残っ|空い|大丈夫|使え|効いて|かかって|きれて|切れて|状況|どう|確認|チェック)/,
+  /(?:どの|どれ|何|なん|いくつ)[^。\n]{0,8}(?:ai|ＡＩ|モデル|プロバイダ|エージェント|課金)[^。\n]{0,10}(?:使え|動く|生きて|空いて|available)/i,
+  /(?:claude|codex|gemini|glm|qwen|クロード|コーデックス|ジェミニ)[^。\n]{0,12}(?:使え|動く|生きて|available|working|ok\b)/i,
+  /\b(?:rate|token|quota)\s*limits?\b[^.\n]{0,20}(?:lifted|reset|clear|left|ok|status)?/i,
+  /\bwhich\s+(?:ai|model|provider)s?\b[^.\n]{0,20}\b(?:can|are|is|available|usable)\b/i,
+];
+// Longer than a status question: 「課金トークンのリミット解除されてるか確認して欲しいす」 is 28
+// characters and a bilingual phrasing runs longer still. Bounded all the same, so a
+// paragraph that happens to mention a quota is not swallowed.
+const PROVIDER_MAX_LENGTH = 90;
+
+/**
+ * True when the owner is asking which AI can be used, or whether a limit is still on.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isProviderQuestion(text) {
+  const value = String(text || '').trim();
+  if (!value || value.length > PROVIDER_MAX_LENGTH) return false;
+  return PROVIDER_ASKS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * Which providers can run work, assembled from the breaker rather than described.
+ *
+ * @param {object} facts   from Daemon#providerFacts()
+ * @param {object} [options]
+ * @param {string} [options.text]  the owner's question, used only to pick a language
+ * @returns {string}
+ */
+function providerReport(facts = {}, { text = '' } = {}) {
+  const japanese = JAPANESE.test(String(text || ''));
+  const list = (value) => (Array.isArray(value) ? value : []);
+  const usable = list(facts.usable); const cooling = list(facts.cooling);
+  const busy = list(facts.busy); const throttled = list(facts.throttled); const unreachable = list(facts.unreachable);
+  const lines = [];
+
+  lines.push(usable.length
+    ? (japanese ? `いま使えるのは ${usable.join(' / ')} の ${usable.length} 社です。` : `${usable.length} usable right now: ${usable.join(', ')}.`)
+    : (japanese ? 'いま外部に出せるプロバイダはありません。ローカルの作業だけ動きます。' : 'No external provider can run work right now — local only.'));
+
+  for (const item of cooling) {
+    const seconds = Math.max(1, Math.round(Number(item.retryInMs || 0) / 1000));
+    const wait = seconds >= 3600 ? `${Math.round(seconds / 3600)}${japanese ? '時間' : 'h'}`
+      : seconds >= 60 ? `${Math.round(seconds / 60)}${japanese ? '分' : 'm'}` : `${seconds}${japanese ? '秒' : 's'}`;
+    lines.push(japanese
+      ? `  ${item.provider}  クールダウン中 あと${wait}${item.reason ? `（${item.reason}）` : ''}`
+      : `  ${item.provider}  cooling down, ${wait} left${item.reason ? ` (${item.reason})` : ''}`);
+  }
+  for (const item of throttled) {
+    lines.push(japanese
+      ? `  ${item.provider}  直近で ${item.reason} を踏みました${item.at ? `（${item.at}）` : ''}。いまは通ります`
+      : `  ${item.provider}  hit ${item.reason} earlier${item.at ? ` (${item.at})` : ''}; it goes through now`);
+  }
+  for (const id of unreachable) {
+    lines.push(japanese ? `  ${id}  未接続（認証か起動が済んでいません）` : `  ${id}  not reachable (not authenticated or not started)`);
+  }
+  if (busy.length) {
+    lines.push(japanese ? `いま作業中: ${busy.join(' / ')}` : `Working right now: ${busy.join(', ')}`);
+  }
+  if (!cooling.length) {
+    lines.push(japanese ? 'クールダウン中のプロバイダはありません。' : 'Nothing is on a cooldown.');
+  }
+  return lines.join('\n');
 }
 
 /** How long ago, in the owner's language. '' when we were never told when. */
@@ -151,4 +235,5 @@ function statusReport(facts = {}, { text = '', now = Date.now() } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { isStatusQuestion, statusReport, since, ASKS, MAX_LENGTH };
+module.exports = { isStatusQuestion, statusReport, since, ASKS, MAX_LENGTH,
+  isProviderQuestion, providerReport, PROVIDER_ASKS, PROVIDER_MAX_LENGTH };

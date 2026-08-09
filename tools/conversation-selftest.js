@@ -201,13 +201,61 @@ function ollama(value) {
   // — a pasted spec, nine parallel turns, eight timed out — the owner concluded the
   // thing was stupid. It was absent. Saying so is the difference.
   {
-    const dead = new ConversationEngine({ fetchImpl: async () => { throw new Error('Ollama is down'); } });
+    // explainFreeze is pinned off here on purpose. Without it this block asserts
+    // against whatever /tmp/bigkiji_gpu.lock happens to say on the machine running the
+    // test — it failed for real on 2026-08-09, mid-render, which is exactly the state
+    // the feature is for. With no knowable cause, the plain admission is still required.
+    // `isFrozen` is pinned off for the same reason `explainFreeze` is: this block is
+    // about what a dead endpoint produces, and the fast-fail below would otherwise
+    // short-circuit it on a machine that happens to be rendering.
+    const dead = new ConversationEngine({ fetchImpl: async () => { throw new Error('Ollama is down'); },
+      explainFreeze: () => '', isFrozen: () => false });
     const jp = await dead.turn({ text: 'READMEのタイポを修正してください', sessionId: 'degraded-jp' });
     assert.strictEqual(jp.degraded, true);
     assert.ok(jp.reply.startsWith('（ローカルモデルが応答しませんでした'), `it has to admit it: ${jp.reply.slice(0, 40)}`);
     const en = await dead.turn({ text: 'fix the readme typo', sessionId: 'degraded-en' });
     assert.ok(en.reply.startsWith('(the local model did not answer'), 'in the language the owner is writing in');
     for (const key of ['kind', 'reply', 'ideas', 'todos', 'confidence']) assert.ok(key in jp, `${key} must survive`);
+
+    // A stopped process is not asked, and is not waited for.
+    //
+    // While gpu-signal.sh holds the card, mem-switch.sh SIGSTOPs `ollama serve` and
+    // `llama-server`. A SIGSTOPped process accepts the connection and never answers, so
+    // every turn paid the full 8s stall deadline to learn something `ps` already knew —
+    // measured 2026-08-09 mid-render: 8037 ms per turn, and `ollama list` itself hung for
+    // over two minutes. After the check: 49 ms, with the same explanation attached.
+    let asked = 0;
+    const stopped = new ConversationEngine({
+      fetchImpl: async () => { asked += 1; await new Promise((r) => setTimeout(r, 5000)); throw new Error('never'); },
+      timeoutMs: 4000, isFrozen: () => true,
+      explainFreeze: ({ japanese }) => (japanese ? '（GPUを「u09-v5」が使用中です）\n' : '(the GPU is held by “u09-v5”)\n') });
+    const t0 = Date.now();
+    const quick = await stopped.turn({ text: 'いま何ができますか', sessionId: 'frozen-fast' });
+    const took = Date.now() - t0;
+    assert.equal(asked, 0, 'a SIGSTOPped Ollama must not be asked at all');
+    assert.ok(took < 1000, `and the owner must not wait for it: took ${took}ms`);
+    assert.equal(quick.degraded, true);
+    assert.equal(quick.gpuFrozen, true, 'the turn still reports why it degraded');
+    assert.ok(quick.reply.startsWith('（GPUを「u09-v5」が使用中です）'),
+      `and still names the job holding the card: ${quick.reply.slice(0, 40)}`);
+    // The default reader must cope with the real shape. `ollamaFrozen()` returns
+    // {frozen, stopped[]} — a `=== true` comparison was silently always false, and the
+    // 8s it was meant to save went on being paid.
+    const { ollamaFrozen } = require('../src/domain/pi-agent/gpu-lock');
+    const state = ollamaFrozen();
+    assert.ok(state === null || typeof state.frozen === 'boolean',
+      `ollamaFrozen() reports an object, not a boolean: ${JSON.stringify(state)}`);
+    assert.strictEqual(jp.gpuFrozen, false, 'and it does not blame the GPU for a fault it cannot see');
+
+    // …and when the cause IS knowable, saying only "it did not answer" wastes the one
+    // fact the owner can act on. gpu-signal.sh had Ollama SIGSTOPped for a render and
+    // the app served nine templates without ever mentioning it.
+    const frozen = new ConversationEngine({ fetchImpl: async () => { throw new Error('Ollama is down'); },
+      explainFreeze: ({ japanese }) => (japanese ? '（GPUを「u09-final」が使用中です）\n' : '(the GPU is held by “u09-final”)\n') });
+    const blocked = await frozen.turn({ text: 'モデル動いてる？', sessionId: 'degraded-frozen' });
+    assert.strictEqual(blocked.degraded, true);
+    assert.strictEqual(blocked.gpuFrozen, true, 'the surfaces that show a status word need the flag, not the paragraph');
+    assert.ok(blocked.reply.startsWith('（GPUを「u09-final」が使用中です'), `it has to name the job: ${blocked.reply.slice(0, 40)}`);
 
     const alive = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'A real answer.' }) });
     const good = await alive.turn({ text: 'hello', sessionId: 'not-degraded' });
@@ -340,7 +388,7 @@ function ollama(value) {
   // every one of them to CHAT. What makes this the expensive kind of bug is turn 53:
   // the owner was told about work that did not exist, and only found out at turn 55.
   {
-    const { isAffirmative, heuristicKind, guardedKind, endsWithQuestion } = require('../src/domain/pi-core/conversation-engine');
+    const { isAffirmative, heuristicKind, guardedKind, classifyKind, actionTier, endsWithQuestion } = require('../src/domain/pi-core/conversation-engine');
 
     // The two lines that failed, verbatim.
     assert.ok(isAffirmative('please start'));
@@ -355,7 +403,42 @@ function ollama(value) {
     // polite acknowledgement in an ordinary conversation from starting a paid run: the
     // vocabulary lives outside heuristicKind for exactly this reason.
     assert.equal(heuristicKind('お願いします'), 'CHAT', 'a bare go-ahead is not, by itself, a task');
-    assert.equal(guardedKind('TASK', 'please start'), 'CHAT', 'nor may the model promote one on its own');
+
+    // The model may now promote — and the promotion is marked, which is the whole deal.
+    //
+    // This line read `assert.equal(guardedKind('TASK', 'please start'), 'CHAT')` and was
+    // right about the risk and wrong about the price. Measured on the owner's machine
+    // 2026-08-09: EVERY turn logged `model says TASK -> final: CHAT`, so a request
+    // phrased outside the lexicon's fourteen words started nothing at all, and the report
+    // was 「まだ一度もまともに使えていない」. The owner chose the other trade the same day
+    // (「語彙拡張＋モデル昇格は承認付き」): let the model open the door, and pay for a wrong
+    // guess with one approval prompt instead of a lost request.
+    //
+    // So what is pinned here is not "the model cannot promote" but "a promotion is never
+    // silent". `promotedByModel` is what daemon.js reads to force mode 'plan', and the
+    // end-to-end half of that bargain is asserted in daemon-selftest.js.
+    assert.equal(guardedKind('TASK', 'このプロジェクトのスキルを棚卸ししたい'), 'TASK', 'the model may call a turn work');
+    assert.equal(classifyKind('TASK', 'このプロジェクトのスキルを棚卸ししたい').promotedByModel, true,
+      'and it must be marked as the model’s call, or the approval gate has nothing to key on');
+    // The one promotion still refused. A go-ahead means "start" only next to a request,
+    // and a plan whose goal is the word 「お願いします」 is junk in the approval queue.
+    assert.equal(guardedKind('TASK', 'please start'), 'CHAT', 'a bare go-ahead is answered by the go-ahead path, not promoted');
+    assert.equal(guardedKind('TASK', 'お願いします'), 'CHAT');
+    assert.equal(classifyKind('TASK', 'READMEを修正して').promotedByModel, false,
+      'an explicit request is the lexicon’s call and keeps the owner’s own mode');
+    assert.equal(classifyKind('IDEA', 'そういえば天気がいいですね').kind, 'CHAT',
+      'IDEA is still not promoted: it writes a draft file per turn, and chat does not need one');
+
+    // 表記ゆれ。同じ依頼が、漢字で書いたかどうかだけで通ったり落ちたりしていた。
+    // 下の2文はオーナーが実際に打ったもので、違いは 欲しい / ほしい の一箇所だけ。
+    assert.equal(heuristicKind('課金トークンのリミット解除されてるか確認して欲しいす'), 'TASK',
+      '「欲しい」と書いただけで依頼が消えていた（実測 2026-08-09）');
+    assert.equal(heuristicKind('課金トークンのリミットを確認してほしい'), 'TASK');
+    assert.equal(actionTier('READMEを直して'), 'strong', '明示的な作業語は一段目');
+    assert.equal(actionTier('ログを調べておいて'), 'soft', '作業語＋依頼の締めは二段目');
+    assert.equal(actionTier('今日は確認が取れなくて、ちょっと疲れた'), '',
+      '文頭に作業語があるだけの雑談は依頼ではない — 締めから24文字の窓で弾く');
+    assert.equal(actionTier('確認が取れました'), '', '報告は依頼ではない');
 
     // Structural, not model-labelled: turn 2 of the same session ended in a question the
     // conversation model asked in prose, and only facilitator questions were registered.

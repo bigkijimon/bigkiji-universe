@@ -178,8 +178,10 @@ function drain(chunks) {
   const relay = /const RELAY_EVENTS = \[([^\]]+)\]/.exec(cli);
   assert.ok(relay, 'the relay list has to be findable');
   assert.ok(/'step'/.test(relay[1]), 'a step the CLI does not relay is a step the owner never sees');
-  assert.match(cli, /renderEvent\('step', data, \{ [^}]*label: stepLabel\(data\) \}\)/,
+  assert.match(cli, /renderEvent\('step', data, \{[^}]*label: stepLabel\(data\)[^}]*\}\)/,
     'and it is rendered with the agent resolved, because the owner asked to see who is doing what');
+  assert.match(cli, /renderEvent\('step', data, \{[^}]*diffLines: [^}]*\}\)/,
+    'and with a line budget for the patch body, or a 40-line diff scrolls the owner’s own prompt away');
 
   const { renderEvent } = require('../src/cli/tui/transcript');
   const plain = (lines) => lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
@@ -202,6 +204,45 @@ function drain(chunks) {
   assert.ok(plain(renderEvent('step', { phase: 'end', ok: true }, { width: 90 }))[0].includes('ok'));
   assert.deepEqual(renderEvent('step', { phase: 'start' }, { width: 90 }), [],
     'a start with no tool is machinery and is not printed');
+}
+
+// ---------------------------------------------------------------------------
+// The lines themselves, not just how many (2026-08-09)
+//
+// The owner asked by name: 「実際のコードを書いている様子のレビューを全部見せてください」, and
+// gave the reason — 「途中で間違った作業を指摘することも不可能」. A step said `Edit foo.js +12 −3`,
+// which is enough to know something happened and not enough to stop it. What is asserted
+// here is the whole path: the parser lifts the change out of the tool call, the caps hold
+// so a session file cannot be filled by one rewrite, and the renderer prints it.
+// ---------------------------------------------------------------------------
+{
+  const { stepsFromValue, patchOf, MAX_PATCH_LINES } = require('../src/domain/pi-agent/stream-steps');
+  const { renderEvent } = require('../src/cli/tui/transcript');
+  const plain = (lines) => lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ''));
+
+  const [edit] = stepsFromValue({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'e1', name: 'Edit',
+    input: { file_path: '/repo/a.js', old_string: 'const a = 1;', new_string: 'const a = 2;' } }] } });
+  assert.equal(edit.patch, '-const a = 1;\n+const a = 2;', 'an Edit carries the before and after, not only the counts');
+
+  const [read] = stepsFromValue({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read',
+    input: { file_path: '/repo/a.js' } }] } });
+  assert.equal(read.patch, undefined, 'a Read has no change to show, and an empty patch line would be a lie about one');
+
+  // The cap is the reason this can be published to every surface and appended to the
+  // session jsonl. A provider rewriting a large file must not put the file in the
+  // owner's conversation history, and the tail that is dropped has to say so — a
+  // silently truncated patch reads as a complete one, which is the worse failure.
+  const long = patchOf({ content: Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n') });
+  assert.ok(long.split('\n').length <= MAX_PATCH_LINES + 1, `the body is capped: ${long.split('\n').length} lines`);
+  assert.match(long, /\+460 more lines \(not shown\)/, 'and it says how much was left out');
+
+  const shown = plain(renderEvent('step', { phase: 'start', tool: 'Edit', target: '/repo/a.js', added: 1, removed: 1,
+    patch: '-const a = 1;\n+const a = 2;', provider: 'claude-code' }, { width: 90, label: 'leader', diffLines: 8 }));
+  assert.ok(shown.some((line) => /- const a = 1;/.test(line)) && shown.some((line) => /\+ const a = 2;/.test(line)),
+    `the removed and added lines are on screen: ${JSON.stringify(shown)}`);
+  const off = plain(renderEvent('step', { phase: 'start', tool: 'Edit', target: '/repo/a.js',
+    patch: '-const a = 1;\n+const a = 2;' }, { width: 90, diffLines: 0 }));
+  assert.equal(off.length, 1, 'and a caller with no room for it still gets the one-line summary');
 }
 
 console.log('task step selftest: PASS · 6 steps from a real stream · identical output at every chunk boundary and '

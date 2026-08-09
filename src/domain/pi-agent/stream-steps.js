@@ -36,6 +36,8 @@ const MAX_TEXT = 600;
 // Read,Edit,Write,Bash,Grep,Glob). Anything else a provider reports is passed through
 // under its own name rather than dropped — a tool we did not expect is information.
 const TARGET_KEYS = ['file_path', 'path', 'filePath', 'notebook_path', 'command', 'pattern', 'query', 'url'];
+/** The tools whose input IS the change, and so can be shown as a diff. */
+const WRITES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 function clip(value) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -83,6 +85,56 @@ function countPatch(patch) {
     patching = false; inHunk = false;
   }
   return { added, removed };
+}
+
+// The change itself, not just how big it was.
+//
+// The owner's words, 2026-08-09: 「実際のコードを書いている様子のレビューを全部見せてください」
+// — without it 「途中で間違った作業を指摘することも不可能」. Until now a step carried the tool,
+// the file and `+12 −3`, which says a change happened and nothing about what it was; the
+// only way to see the lines was to approve the run and read the result.
+//
+// Bounded hard, because a step is published to every surface AND appended to the session
+// jsonl. A provider rewriting a 4000-line file must not put 4000 lines into the owner's
+// conversation history — the tail is dropped with a line saying how much was dropped, so
+// a truncated patch can never be mistaken for a complete one.
+const MAX_PATCH_LINES = 40;
+const MAX_PATCH_CHARS = 4000;
+
+function clipPatch(text) {
+  const value = String(text || '');
+  if (!value.trim()) return '';
+  const lines = value.split('\n');
+  let kept = lines.length > MAX_PATCH_LINES ? lines.slice(0, MAX_PATCH_LINES) : lines;
+  let dropped = lines.length - kept.length;
+  let body = kept.join('\n');
+  if (body.length > MAX_PATCH_CHARS) {
+    // Cut on a line boundary so the last line shown is a whole line of code.
+    const cut = body.slice(0, MAX_PATCH_CHARS).lastIndexOf('\n');
+    const stop = cut > 0 ? cut : MAX_PATCH_CHARS;
+    dropped += body.slice(stop).split('\n').length - 1;
+    body = body.slice(0, stop);
+  }
+  return dropped > 0 ? `${body}\n… +${dropped} more line${dropped === 1 ? '' : 's'} (not shown)` : body;
+}
+
+/** `-` and `+` blocks for one Edit, in the shape formatDiff already knows how to colour. */
+function patchOf(input) {
+  if (typeof input?.patch === 'string') return clipPatch(input.patch);
+  if (typeof input?.new_string === 'string' || typeof input?.old_string === 'string') {
+    const before = String(input.old_string || '').split('\n').filter((_, index, all) => all.length > 1 || all[0] !== '');
+    const after = String(input.new_string || '').split('\n').filter((_, index, all) => all.length > 1 || all[0] !== '');
+    return clipPatch([...before.map((line) => `-${line}`), ...after.map((line) => `+${line}`)].join('\n'));
+  }
+  // A Write is every line added. There is no `old_string` to show against it, and
+  // printing the whole new file would bury the transcript, so the cap does the work.
+  if (typeof input?.content === 'string') {
+    return clipPatch(String(input.content).split('\n').map((line) => `+${line}`).join('\n'));
+  }
+  if (Array.isArray(input?.edits)) {
+    return clipPatch(input.edits.map((edit) => patchOf(edit)).filter(Boolean).join('\n'));
+  }
+  return '';
 }
 
 // Edit and Write state their change directly rather than as a patch, so the line counts
@@ -188,6 +240,9 @@ function stepsFromValue(value) {
       let counts = { added: 0, removed: 0 };
       if (tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit') counts = countEdit(input);
       else if (typeof input.patch === 'string') counts = countPatch(input.patch);
+      // Only for the tools that write. A Read or a Grep has no patch, and `input.patch`
+      // on anything else is not a diff we should be printing as one.
+      const patch = WRITES.has(tool) || typeof input.patch === 'string' ? patchOf(input) : '';
       out.push({
         phase: 'start',
         toolUseId: String(block.id || ''),
@@ -195,6 +250,7 @@ function stepsFromValue(value) {
         target: targetOf(input),
         added: counts.added,
         removed: counts.removed,
+        ...(patch ? { patch } : {}),
       });
       continue;
     }
@@ -258,4 +314,5 @@ function providerEmitsSteps(provider) {
   return provider === 'claude' || provider === 'claude-code' || provider === 'gemini' || provider === 'codex';
 }
 
-module.exports = { createStepReader, stepsFromValue, countPatch, countEdit, providerEmitsSteps };
+module.exports = { createStepReader, stepsFromValue, countPatch, countEdit, patchOf, providerEmitsSteps,
+  MAX_PATCH_LINES, MAX_PATCH_CHARS };

@@ -88,6 +88,26 @@ class CircuitBreaker {
     }
   }
 
+  /**
+   * Every provider that is on a cooldown right now, and how long is left.
+   *
+   * The breaker knew which providers were unusable and the only way to ask it was one
+   * name at a time, so nothing that had to *describe* the fleet ever did. The daemon's
+   * `facts()` told the conversation model "providers that can run work: claude, codex,
+   * gemini, glm" while three of those four were sitting out a quota cooldown recorded in
+   * this very file — so the answer the owner read was assembled from a list that had
+   * already been overruled. A pure query: it consumes no half-open trial.
+   * @returns {Array<{provider: string, retryInMs: number, reason: string, opens: number}>}
+   */
+  openCircuits() {
+    const now = this.now(); const open = [];
+    for (const [provider, circuit] of this.circuits) {
+      if (!circuit.openUntil || circuit.openUntil <= now) continue;
+      open.push({ provider, retryInMs: circuit.openUntil - now, reason: String(circuit.reason || ''), opens: circuit.opens || 0 });
+    }
+    return open.sort((a, b) => b.retryInMs - a.retryInMs);
+  }
+
   /** Persist the open circuits. Never throws: losing the memory beats losing the run. */
   save() {
     if (!this.file) return;

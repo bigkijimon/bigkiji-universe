@@ -108,7 +108,8 @@ function spread(left, right, width, leftPlain = plain(left), rightPlain = plain(
  */
 function buildFooter(options = {}) {
   const { cols = 80, mode = 'plan', state = {}, phase = state?.phase, comment = '', elapsedMs = null,
-    status = '', busy = false, frameIndex = 0, frameSet = loadingFrames() } = options;
+    status = '', busy = false, frameIndex = 0, frameSet = loadingFrames(),
+    degraded = false, degradedNote = '', awaitingAnswer = false } = options;
   const C = themeFor(mode);
   const width = Math.max(46, Math.min(Math.trunc(Number(cols) || 80), 220));
   const inner = Math.max(30, width - MARGIN.length * 2);
@@ -124,7 +125,13 @@ function buildFooter(options = {}) {
   const icon = art[art.length - 1];
   // `phrase` here, not `lower`: AWAITING_APPROVAL is a protocol value the daemon
   // publishes, and on screen it should read as two words rather than one token.
-  const statusText = clip(busy ? LOADING_TEXT : phrase(status || phaseName(phase)), 18);
+  // "asking" — the state with no work in it, which used to look exactly like idle.
+  //
+  // When the front desk needs a decision it holds the run back and asks, and the phase
+  // word stayed on whatever the last run had been. So the owner read the question,
+  // answered it in a new sentence an hour later — outside the window — and the answer
+  // was taken as a fresh remark. Nothing on screen said the machine was holding.
+  const statusText = clip(busy ? LOADING_TEXT : (awaitingAnswer ? 'asking' : phrase(status || phaseName(phase))), 18);
   const tokens = tokenTotals(state);
   const rightPlain = `${formatElapsed(elapsedMs)}  ${formatTokens(tokens.used)} tok`;
   const right = `${C.muted}${rightPlain}${C.reset}`;
@@ -137,11 +144,23 @@ function buildFooter(options = {}) {
   // `awaiting approval  awaiting approval` and spent the widest slot on the row saying
   // the same thing twice (measured 2026-08-04). If it echoes the status, it is dropped
   // and the room goes back to the elapsed clock.
+  //
+  // One exception outranks the comment: an answer the model never served.
+  //
+  // `degraded` has been on every conversation turn the daemon publishes since the
+  // engine could fall back, and no surface in this CLI drew it — so nine template
+  // replies in a row looked exactly like nine real ones, and the owner concluded the
+  // thing was stupid rather than absent (2026-08-09, Ollama SIGSTOPped by gpu-signal.sh
+  // for a render). It takes the comment slot because the comment describes work that,
+  // in this state, is not happening.
   const said = String(comment || '').trim();
   const echoes = said && phrase(said).toLowerCase() === phrase(statusText).toLowerCase();
-  const note = room > 6 ? clip(echoes ? DASH : (said || DASH), room) : '';
+  const warn = degraded ? clip(String(degradedNote || 'local model unavailable').trim(), Math.max(6, room))
+    : (awaitingAnswer && !busy ? clip('answer to start', Math.max(6, room)) : '');
+  const note = room > 6 ? (warn || clip(echoes ? DASH : (said || DASH), room)) : '';
   const leftPlain = note ? `${headPlain}  ${note}` : headPlain;
-  const left = `${C.brownLight}${icon}${C.reset}  ${busy ? C.accent : C.strong}${statusText}${C.reset}${note ? `  ${C.muted}${note}${C.reset}` : ''}`;
+  const noteColour = warn ? C.warning : C.muted;
+  const left = `${C.brownLight}${icon}${C.reset}  ${busy ? C.accent : C.strong}${statusText}${C.reset}${note ? `  ${noteColour}${note}${C.reset}` : ''}`;
   lines.push(MARGIN + spread(left, right, inner, leftPlain, rightPlain).text);
 
   // Row n+1 — PHASE VECTOR + real progress meter

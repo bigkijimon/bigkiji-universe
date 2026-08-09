@@ -738,8 +738,19 @@ function renderEvent(event, data = {}, options = {}) {
       const target = FILE_TOOLS.has(tool) ? shortenPath(data.target || '') : String(data.target || '');
       const counts = [Number(data.added) > 0 ? `+${data.added}` : '', Number(data.removed) > 0 ? `−${data.removed}` : '']
         .filter(Boolean).join(' ');
-      return renderToolCall(`${who} ${mark.note} ${tool}`, [target, counts].filter(Boolean).join('  '),
+      const head = renderToolCall(`${who} ${mark.note} ${tool}`, [target, counts].filter(Boolean).join('  '),
         { ...base, at: data.at || '' });
+      // The lines themselves, under the file they were written to.
+      //
+      // `+12 −3` says a change happened; it does not say what changed, and the owner
+      // asked by name to see the code as it is written so a wrong edit can be stopped
+      // mid-run rather than reviewed afterwards. stream-steps caps the body before it
+      // ever leaves the provider's stdout, and `options.diffLines` caps it again here for
+      // a short terminal — a step that scrolls the question off the screen is its own
+      // kind of blindness.
+      const patch = String(data.patch || '');
+      if (!patch.trim() || options.diffLines === 0) return head;
+      return [...head, ...formatDiff(patch, { ...base, indent: 5, maxLines: Math.max(1, options.diffLines || 16) })];
     }
     // The critique thread the owner asked for: result, then BigKiji's comment, then
     // the agent's answer, each one step further in. Two levels only — a third
@@ -833,7 +844,22 @@ function renderEvent(event, data = {}, options = {}) {
         ? `\nsame file, two writers: ${(data.collisions || []).map((hit) => `${hit.path} (${hit.writers.map((w) => lower(w.role)).join(' + ')})`).join(', ')}`
         : '';
       const repairs = data.repairs ? `\nrepair cycles: ${data.repairs}` : '';
-      return [...head, ...renderToolResult(`${rows}${clash}${tail}${repairs}`, { ...base, maxLines: 16, isError: !ok })];
+      const summary = [...head, ...renderToolResult(`${rows}${clash}${tail}${repairs}`, { ...base, maxLines: 16, isError: !ok })];
+      // Then the work itself, one role at a time.
+      //
+      // The report said who ran, how long, and how many lines moved — every fact about
+      // the work except the work. Merging two providers' edits automatically has no
+      // track record here, so the integration this offers is for a person: the roles
+      // side by side on one screen, and the merge left as the owner's own action.
+      // `options.diffLines: 0` turns it off for callers with no room.
+      const budget = options.diffLines === undefined ? 12 : options.diffLines;
+      if (!budget) return summary;
+      const patches = (data.rows || []).filter((row) => String(row.diff || '').trim());
+      if (!patches.length) return summary;
+      return [...summary, ...patches.flatMap((row) => [
+        ...renderNote(`${lower(row.role)} ${mark.note} ${lower(row.provider)} wrote:`, { ...base, indent: 2 }),
+        ...formatDiff(row.diff, { ...base, indent: 5, maxLines: budget }),
+      ])];
     }
     case 'checkpoint': {
       // Thirty minutes in, the owner is told where the run is rather than left to

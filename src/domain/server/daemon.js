@@ -23,7 +23,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
 const { TaskRunner } = require('../pi-agent/task-runner');
-const { CoreExecutionCoordinator } = require('../pi-agent/core-execution-coordinator');
+const { CoreExecutionCoordinator, ACTIVE_RUN, TERMINAL_RUN } = require('../pi-agent/core-execution-coordinator');
 const { CircuitBreaker } = require('../pi-agent/circuit-breaker');
 const { warmModel } = require('../pi-agent/model-router');
 const { readiness, survey } = require('../pi-agent/provider-readiness');
@@ -38,7 +38,7 @@ const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion } = require('../pi-core/conversation-engine');
-const { isStatusQuestion, statusReport } = require('../pi-core/status-answer');
+const { isStatusQuestion, statusReport, isProviderQuestion, providerReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 const stt = require('./speech-to-text');
@@ -212,7 +212,9 @@ function jsonSafe(value, seen = new WeakSet()) {
 
 /** How long an unanswered front-desk question stays the meaning of the next thing typed. */
 const FACILITATION_WINDOW_MS = 15 * 60 * 1000;
-const TERMINAL_RUN = Object.freeze(['COMPLETED', 'FAILED', 'EXPIRED', 'SECURITY_BLOCKED']);
+// ACTIVE_RUN and TERMINAL_RUN come from the coordinator that sets those statuses.
+// They used to be written out by hand here and in two methods below, with three
+// different answers — see the comment on ACTIVE_RUN for what that cost.
 function currentPhase(runs) {
   const live = (Array.isArray(runs) ? runs : []).filter((run) => !TERMINAL_RUN.includes(run?.status));
   return live.at(-1)?.status || 'IDLE';
@@ -223,7 +225,7 @@ const EVENT_CHANNEL = Object.freeze({
   commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event',
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
   conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint', report: 'run:report', tools: 'tools:status',
-  review: 'run:review', reflection: 'run:reflection',
+  review: 'run:review', reflection: 'run:reflection', corpus: 'corpus:ingested',
 });
 
 // npm narrating its own work while Pi boots. Everything here is progress or an
@@ -324,6 +326,10 @@ class DaemonEngine extends EventEmitter {
     // its own seal: recordEvent() writes task_state.json between sealing and verifying,
     // and every run dies on STALE_DISCLOSURE_MANIFEST. Built through rootFor() so an
     // injected stateRoot in tests is covered by the same exclusion as production.
+    // Same rootFor: a test's throwaway stateRoot must carry the corpus with it, or the
+    // suite writes the owner's real one. That mistake has been made here before, with
+    // task_state.json, and it destroyed 300 events of history.
+    this.corpusRoot = rootFor('corpusRoot', 'corpus');
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
@@ -457,6 +463,56 @@ class DaemonEngine extends EventEmitter {
     // answer changes when the owner starts ComfyUI, not fifteen times a second.
     this.toolTimer = setInterval(() => this.refreshTools().catch(() => {}), 300000);
     this.toolTimer.unref();
+    // Retire runs that stopped moving, and plans nobody answered.
+    //
+    // Both sweeps existed and neither had a caller that fires while the owner is away:
+    // expireStaleApprovals runs from submit(), so it only sweeps when something new
+    // starts. This daemon stayed up for 2 days 6 hours holding a run that had been over
+    // for 54 of them. A minute is far below both TTLs and costs a map walk.
+    this.sweepTimer = setInterval(() => {
+      try {
+        const stalled = this.coordinator.expireStalledRuns();
+        const expired = this.coordinator.expireStaleApprovals();
+        if (stalled || expired) this.publish('phase', { phase: currentPhase(this.coordinator.snapshot()) });
+      } catch (_) { /* a sweep that throws must not take the daemon with it */ }
+    }, 60000);
+    this.sweepTimer.unref();
+    this.ingestCorpus();
+  }
+
+  /**
+   * Collect what the owner has actually asked for, across every CLI they use.
+   *
+   * `corpus-ingest.js` was written, complete, and never called: measured 2026-08-09, no
+   * file in src/ or tools/ referenced it and `owner-turns.jsonl` did not exist. So the one
+   * body of evidence about how this owner phrases a request — 359 turns across
+   * ~/.claude/projects, ~/.codex, ~/.pi/agent/sessions and this daemon's own sessions —
+   * was sitting on disk unread while the classifier guessed.
+   *
+   * Deferred and best-effort by construction. The first pass reads ~/.claude/projects
+   * (808 MB here), so it must not sit in front of the daemon accepting its first turn;
+   * afterwards `ingest-state.json` makes it one stat per unchanged file (measured: 232
+   * files, 0.4 s). It writes only inside the corpus directory, never to the transcripts
+   * it reads, and redacts before writing. A failure is published and dropped — a corpus
+   * is an asset, not a dependency.
+   */
+  ingestCorpus({ delayMs = 5000 } = {}) {
+    if (this.corpusTimer || String(process.env.BIGKIJI_SKIP_CORPUS || '') === '1') return null;
+    this.corpusTimer = setTimeout(async () => {
+      try {
+        const { CorpusIngest } = require('../pi-core/corpus-ingest');
+        // `dataRoot` is where this daemon's own sessions live — the fourth source. In a
+        // test that is the injected stateRoot; in production it is the data layout's root.
+        const dataRoot = this.customState ? this.stateRoot : LAYOUT.dataRoot;
+        const summary = await new CorpusIngest({ corpusRoot: this.corpusRoot, dataRoot }).run();
+        this.corpusSummary = { ...summary, at: new Date().toISOString() };
+        this.publish('corpus', this.corpusSummary);
+      } catch (error) {
+        this.publish('corpus', { error: String(error?.message || error).slice(0, 200) });
+      }
+    }, delayMs);
+    this.corpusTimer.unref();
+    return this.corpusTimer;
   }
 
   publish(event, data) { this.emit('event', { event, channel: EVENT_CHANNEL[event] || event, data, ts: Date.now() }); }
@@ -543,6 +599,14 @@ class DaemonEngine extends EventEmitter {
     // where a wrong answer is worse than no answer, and it is also the one class we can
     // answer exactly — so it never reaches the model at all.
     if (isStatusQuestion(clean)) return this._statusTurn(session, clean);
+    // "Is the token limit lifted?" — same argument, different snapshot.
+    //
+    // Checked before the classifier, not after, because the widened action lexicon reads
+    // 「確認して欲しい」 as work and would answer a rate-limit question by spending a run on
+    // it. The breaker already holds the exact number of seconds left.
+    if (isProviderQuestion(clean)) {
+      return this._measuredTurn(session, providerReport(this.providerFacts(), { text: clean }), 'providers');
+    }
     // The owner answering the question the front desk asked last turn.
     //
     // Bound to the session that was asked and to a window, because "what did you mean
@@ -571,8 +635,16 @@ class DaemonEngine extends EventEmitter {
     }
     const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
+    // `degraded` and `error` go on the record, not just on the wire.
+    //
+    // The session jsonl held provider and latency and nothing else, so a turn served by
+    // the model and a turn that timed out looked identical apart from a string inside
+    // `text`. Diagnosing 2026-08-09 needed `ps -Ao stat` on a live process to establish
+    // that Ollama had been SIGSTOPped — a fact the file could have carried and did not.
+    // Two extra fields make the log answer the question by itself.
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
-      turnId: result.turnId, provider: result.provider, latencyMs: result.latencyMs });
+      turnId: result.turnId, provider: result.provider, latencyMs: result.latencyMs,
+      degraded: !!result.degraded, gpuFrozen: !!result.gpuFrozen, ...(result.error ? { error: result.error } : {}) });
     let draft = null; let run = null;
     if (result.kind === 'TASK' || (result.kind === 'IDEA' && this.conversationConfig.autoIdeas)) {
       draft = this.ideas.create({ ...result, sessionId: session.id, turnId: result.turnId, sourceExcerpt: clean, provider: result.provider,
@@ -639,7 +711,16 @@ class DaemonEngine extends EventEmitter {
       // fixed; the value arriving here has already been narrowed to 'plan' for anything
       // that is not a loopback request (see effectiveMode in the HTTP layer), which is
       // what keeps a phone on the LAN from asking for auto-edit.
-      run = this.coordinator.submit({ prompt: clean, promptSpec, planHash: facilitation?.planHash || null, cwd: this.workspace, mode });
+      // A TASK the lexicon did not recognise runs under `plan`, whatever the mode says.
+      //
+      // The conversation model is now allowed to call a turn TASK on its own (see
+      // classifyKind) — that is what re-opened the door after every request outside a
+      // fourteen-word list started nothing. The price of letting a small model decide is
+      // paid here rather than in the classifier: `plan` means the run stops at
+      // AWAITING_APPROVAL even under `auto-edit`, so a wrong promotion costs one prompt
+      // and never an edit. An explicit request keeps whatever mode the owner set.
+      const runMode = result.promotedByModel ? 'plan' : mode;
+      run = this.coordinator.submit({ prompt: clean, promptSpec, planHash: facilitation?.planHash || null, cwd: this.workspace, mode: runMode });
       // submit() emits 'run' synchronously, so onRun has already appended this run
       // to the session and published it. Doing it again here printed the same run
       // twice in the transcript and wrote it twice into the session file.
@@ -667,7 +748,8 @@ class DaemonEngine extends EventEmitter {
         at: Date.now(), request: clean };
     }
     const output = { accepted: true, kind: result.kind, reply, sessionId: session.id, turnId: result.turnId,
-      provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded, draft, run,
+      provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded,
+      gpuFrozen: !!result.gpuFrozen, draft, run, promotedByModel: !!result.promotedByModel,
       questions, awaitingAnswer: questions.length > 0, requiresApproval: !!run || false };
     this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('stats', { turn: { input: result.context?.estimatedTokens || 0, output: Math.max(1, Math.ceil(result.reply.length / 4)) },
@@ -822,15 +904,32 @@ class DaemonEngine extends EventEmitter {
    * that this came from measurement rather than from a model. It can never open an
    * idea or a run: asking how things are going is not asking for work.
    */
-  _statusTurn(session, text) {
+  _statusTurn(session, text) { return this._measuredTurn(session, statusReport(this.statusFacts(), { text }), 'status'); }
+
+  /**
+   * A reply assembled from this machine's own state, with no model in the path.
+   *
+   * Two kinds of question qualify: what is running (`statusReport`) and which providers
+   * can be asked (`providerReport`). Both were being answered by a 3B model that had the
+   * true numbers in its prompt and reported something else anyway. Recorded as
+   * `provider: 'bigkiji-state'` so a later reader can tell a measurement from an opinion.
+   * @returns {object}
+   */
+  _measuredTurn(session, reply, tag) {
     const started = Date.now();
-    const reply = statusReport(this.statusFacts(), { text });
-    const turnId = `turn-${started.toString(36)}-status`;
+    const turnId = `turn-${started.toString(36)}-${tag}`;
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'CHAT', text: reply,
       turnId, provider: 'bigkiji-state', latencyMs: Date.now() - started });
+    // A measured answer does not consume the front desk's question — 「進んでる？」 asked
+    // while a plan is waiting on a decision still gets the status, and the decision is
+    // still owed. So the flag has to say so, or the CLI's footer clears "asking" while
+    // the daemon goes on treating the next line as the answer.
+    const holding = this.facilitatorPending;
+    const stillAsking = !!holding && holding.sessionId === session.id && Date.now() - holding.at < FACILITATION_WINDOW_MS;
     const output = { accepted: true, kind: 'CHAT', reply, sessionId: session.id, turnId,
       provider: 'bigkiji-state', model: 'measured', latencyMs: Date.now() - started, degraded: false,
-      draft: null, run: null, requiresApproval: false };
+      draft: null, run: null, requiresApproval: false,
+      questions: stillAsking ? holding.questions || [] : [], awaitingAnswer: stillAsking };
     this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('session', this.sessions.read(session.id));
     return output;
@@ -1242,24 +1341,60 @@ class DaemonEngine extends EventEmitter {
         createdAt: run.createdAt, startedAt: run.startedAt || run.updatedAt };
     };
     return {
-      running: runs.filter((run) => ['EXECUTING', 'REPAIRING', 'VERIFYING', 'PLANNING', 'DISPATCHING'].includes(run.status)).map(counted),
+      running: runs.filter((run) => ACTIVE_RUN.includes(run.status)).map(counted),
       waiting: runs.filter((run) => run.status === 'AWAITING_APPROVAL').map(counted),
     };
   }
 
-  facts() {
-    const runs = this.coordinator.snapshot();
-    const waiting = runs.filter((run) => run.status === 'AWAITING_APPROVAL');
-    const active = runs.filter((run) => ['EXECUTING', 'REPAIRING', 'VERIFYING', 'PLANNING'].includes(run.status));
-    const tasks = this.runner.snapshot();
-    const byStatus = tasks.reduce((acc, task) => ({ ...acc, [task.status]: (acc[task.status] || 0) + 1 }), {});
+  /**
+   * Which AI can actually be asked to do something, right now, and why not.
+   *
+   * Three sources had the answer and none of them were joined: the fleet store knows who
+   * is authenticated, `circuit-breaker.json` knows who is inside a cooldown, and
+   * `model_performance.json` records the rate-limit and quota hits that put them there.
+   * Measured 2026-08-09 — live cooldowns on disk while `facts()` announced all four
+   * providers as able to run work, which is the list the conversation model then answered
+   * 「どのAIが使えますか」 from.
+   *
+   * Returned as objects rather than prose so the deterministic reply and the model's
+   * briefing read one snapshot, the same arrangement `statusFacts()` has with `facts()`.
+   * @returns {{usable: string[], cooling: object[], busy: string[], throttled: object[], unreachable: string[]}}
+   */
+  providerFacts() {
     const fleet = this.models.snapshot()?.models || [];
     // `connected` means "has a task running right now". Reported as reachability it
     // told the conversation model that no external provider was available while all
     // four were authenticated and idle — so it answered questions about what it
     // could do with the opposite of the truth.
-    const usable = fleet.filter((model) => (model.available ?? model.connected)).map((model) => model.id);
-    const busy = fleet.filter((model) => model.connected).map((model) => model.id);
+    const reachable = fleet.filter((model) => (model.available ?? model.connected)).map((model) => model.id);
+    const unreachable = fleet.filter((model) => !(model.available ?? model.connected)).map((model) => model.id);
+    const cooling = (this.breaker?.openCircuits?.() || []);
+    const chilled = new Set(cooling.map((item) => item.provider));
+    // `connected` is not "busy".
+    //
+    // model-status-store.js:53 pins `connected: true` for pi-agent-core because it is
+    // resident, so the busy list always contained it and the screen always read
+    // 「pi-agent-core が忙しく…」 — an idle machine reporting itself busy, in the app's own
+    // voice. Busy is a task in the `running` state, which the runner already knows.
+    const busy = [...new Set(this.runner.snapshot()
+      .filter((task) => task.status === 'running').map((task) => task.provider).filter(Boolean))];
+    const performance = this.coordinator.registry?.snapshot?.()?.performance?.models || {};
+    // Rows keyed `provider::model` are the per-tier record; the provider-level row is the
+    // one a sentence about "which AI" is about. A provider already named in `cooling` is
+    // not repeated — the cooldown is the live fact and this is only its history.
+    const throttled = Object.entries(performance)
+      .filter(([id, row]) => row?.throttledReason && !id.includes('::') && !chilled.has(id))
+      .map(([id, row]) => ({ provider: id, reason: String(row.throttledReason), at: row.throttledAt || '' }));
+    return { usable: reachable.filter((id) => !chilled.has(id)), cooling, busy, throttled, unreachable };
+  }
+
+  facts() {
+    const runs = this.coordinator.snapshot();
+    const waiting = runs.filter((run) => run.status === 'AWAITING_APPROVAL');
+    const active = runs.filter((run) => ACTIVE_RUN.includes(run.status));
+    const tasks = this.runner.snapshot();
+    const byStatus = tasks.reduce((acc, task) => ({ ...acc, [task.status]: (acc[task.status] || 0) + 1 }), {});
+    const { usable, cooling, busy, throttled } = this.providerFacts();
     const ideas = this.ideas.list(6);
     const lines = [
       `- workspace: ${this.workspace}`,
@@ -1269,7 +1404,11 @@ class DaemonEngine extends EventEmitter {
       `- saved ideas: ${ideas.length}${ideas.length ? `; most recent: ${ideas.slice(0, 3).map((idea) => idea.title).join(' / ')}` : ''}`,
       `- conversation sessions on record: ${this.sessions.count()}`,
       `- providers that can run work: ${usable.length ? usable.join(', ') : 'none — only local work can run'}`,
+      `- providers on cooldown: ${cooling.length
+        ? cooling.map((item) => `${item.provider} (${Math.max(1, Math.round(item.retryInMs / 1000))}s${item.reason ? `, ${item.reason}` : ''})`).join(', ')
+        : 'none'}`,
       `- providers busy right now: ${busy.length ? busy.join(', ') : 'none'}`,
+      ...(throttled.length ? [`- providers throttled earlier: ${throttled.map((item) => `${item.provider} (${item.reason})`).join(', ')}`] : []),
       `- to start a waiting run the owner types /approve in the bigkiji CLI`,
     ];
     return lines.join('\n');
@@ -1287,7 +1426,8 @@ class DaemonEngine extends EventEmitter {
       conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: currentPhase(this.coordinator.snapshot()) };
   }
   shutdown() {
-    clearInterval(this.inventoryTimer); clearInterval(this.toolTimer);
+    clearInterval(this.inventoryTimer); clearInterval(this.toolTimer); clearInterval(this.sweepTimer);
+    clearTimeout(this.corpusTimer);
     // Pi is a child process. Leaving it behind means the next daemon finds the port
     // free and the model still loaded by a process nobody owns.
     try { this.piSession?.dispose(); } catch (_) {}
