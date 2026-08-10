@@ -573,9 +573,25 @@ class ConversationEngine extends EventEmitter {
       // status word rather than a paragraph. `degradedPrefix` is the no-cause default,
       // so anything else is the GPU explanation.
       gpuFrozen = header !== degradedPrefix(ownerText);
-      result.reply = `${header}${result.reply}`;
+      // Shown, not remembered. `spoken` stays the model's own words.
+      //
+      // The header is a fact about this minute — 「GPUを『u09-tile-answer』が10:55:51から
+      // 使用中のため…」 — and it was being written into the transcript as part of the
+      // reply. Measured 2026-08-10 from the owner's own session file: the render exited
+      // at 12:00, and at 12:42 a resumed session had the model saying 「GPU が使用中のため
+      // 生成は待機中ですが」 twice, to an idle GPU. It was not hallucinating. It was
+      // reading the sentence we saved an hour earlier and continuing the pattern.
+      //
+      // A 6.6B model handed a transcript that says the machine is frozen will keep
+      // saying the machine is frozen, and the owner has no way to tell that apart from a
+      // live reading. So the notice goes on screen and the record keeps `degraded` and
+      // `gpuFrozen` — fields that were added for exactly this and cannot be misread as
+      // something the assistant believes.
+      result.spoken = result.reply;
+      result.reply = `${header}${result.spoken}`;
     } finally { clearTimeout(stall); clearTimeout(ceiling); this.active = Math.max(0, this.active - 1); }
-    history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.reply });
+    if (!result.spoken) result.spoken = result.reply;
+    history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.spoken });
     while (history.length > this.maxTurns * 2) history.shift();
     onDelta?.(result.reply); const finished = Date.now();
     // ttftMs is null when nothing was streamed — a fallback answer, or a response

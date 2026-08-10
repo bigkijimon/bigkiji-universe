@@ -688,7 +688,15 @@ class DaemonEngine extends EventEmitter {
     // `text`. Diagnosing 2026-08-09 needed `ps -Ao stat` on a live process to establish
     // that Ollama had been SIGSTOPped — a fact the file could have carried and did not.
     // Two extra fields make the log answer the question by itself.
-    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.reply,
+    // `spoken`, not `reply`: the machine notice is shown and not saved.
+    //
+    // `sessionSeed()` reads these back on /resume and hands them to the model as its own
+    // previous turns. Measured 2026-08-10 from the owner's session file — the notice
+    // 「GPUを『u09-tile-answer』が10:55:51から使用中のため…」 was stored at 10:55, the render
+    // exited at 12:00, and at 12:42 the resumed model told them twice that the GPU was in
+    // use. A fact about one minute, saved as prose, becomes something the assistant
+    // believes forever. The two fields below carry it instead, which is what they are for.
+    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: result.kind, text: result.spoken || result.reply,
       turnId: result.turnId, provider: result.provider, latencyMs: result.latencyMs,
       degraded: !!result.degraded, gpuFrozen: !!result.gpuFrozen, ...(result.error ? { error: result.error } : {}) });
     let draft = null; let run = null;

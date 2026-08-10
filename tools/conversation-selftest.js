@@ -306,10 +306,27 @@ function ollama(value) {
     assert.strictEqual(blocked.gpuFrozen, true, 'the surfaces that show a status word need the flag, not the paragraph');
     assert.ok(blocked.reply.startsWith('（GPUを「u09-final」が使用中です'), `it has to name the job: ${blocked.reply.slice(0, 40)}`);
 
+    // Shown, never remembered.
+    //
+    // From the owner's own session file, 2026-08-10. The notice was saved at 10:55 as
+    // part of the assistant's reply. The render exited at 12:00. At 12:42 they typed
+    // /resume and the model told them 「GPU が使用中のため生成は待機中ですが」 — twice —
+    // with no lock, every Ollama process in state S and nothing rendering.
+    //
+    // It was not inventing that. `sessionSeed()` had handed it back its own sentence from
+    // an hour earlier and a 6.6B model continues the pattern it is given. A fact about one
+    // minute, written into the transcript as prose, becomes something the assistant
+    // believes for good. `degraded` and `gpuFrozen` carry it instead — they were added for
+    // exactly this and cannot be mistaken for something the assistant said.
+    assert.doesNotMatch(blocked.spoken, /使用中/, 'the stored text is the model’s own words');
+    assert.ok(!frozen.history('degraded-frozen').some((turn) => /使用中/.test(turn.text)),
+      'and nothing carries the freeze into the next turn — this is the whole defect');
+
     const alive = new ConversationEngine({ fetchImpl: ollama({ kind: 'CHAT', reply: 'A real answer.' }) });
     const good = await alive.turn({ text: 'hello', sessionId: 'not-degraded' });
     assert.strictEqual(good.degraded, false);
     assert.strictEqual(good.reply, 'A real answer.', 'a served turn is not decorated');
+    assert.strictEqual(good.spoken, good.reply, 'and it has nothing to strip, so shown and stored are one string');
   }
 
   // maxTurns counts exchanges; the seed is individual messages, and the trim is
