@@ -178,6 +178,54 @@ const readyFacilitator = () => ({
     dispose(engine);
   });
 
+  await okAsync('answering one question does not walk a gated request past the gate', async () => {
+    // Found on the live daemon, 2026-08-10, doing the end-to-end check the tests had not
+    // covered: 「BKUのスキル一覧を出して」 (soft) correctly waited, the front desk asked
+    // which format, the owner answered 「1a」 — and the run was `auto / EXECUTING`.
+    //
+    // `_answerTurn` submitted with the owner's mode, and the gate lived in the other
+    // branch. Since 「1a」 is not a request in any lexicon, every gated request could be
+    // walked straight past the approval by answering a single question. The gate now
+    // travels on the pending question, so it belongs to the request being satisfied.
+    const asking = readyFacilitator();
+    asking.facilitate = async () => ({ status: 'needs_clarification', provider: 'stub',
+      questions: [{ ask: 'which format?', options: ['json', 'markdown'] }] });
+    const conversationEngine = alwaysTask();
+    const inner = conversationEngine.turn;
+    conversationEngine.turn = async (args) => ({ ...(await inner(args)), promotedByModel: false });
+    const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'answered'), workspace: process.cwd(),
+      conversationEngine, facilitator: asking, gpuLock: machine() }));
+
+    const soft = await engine.turn('BKUのスキル一覧を出して', { mode: 'auto' });
+    assert.equal(soft.awaitingAnswer, true, 'the front desk holds it');
+    assert.equal(soft.run, null);
+    asking.facilitate = readyFacilitator().facilitate;   // the answer produces a spec
+    const answered = await engine.turn('1a', { mode: 'auto', sessionId: soft.sessionId });
+    assert.ok(answered.run, 'the answer does build the run');
+    assert.equal(answered.run.mode, 'plan', 'and it inherits the standing of the request, not of the word "1a"');
+    assert.equal(answered.run.status, 'AWAITING_APPROVAL');
+    dispose(engine);
+  });
+
+  await okAsync('a go-ahead always makes a plan, which is what its own comment promised', async () => {
+    // `isAffirmative` reads 「はい」, 「そう」, `ok` out of ordinary conversation, so the
+    // branch that turns a go-ahead into a run has always said in its comment that the run
+    // it creates is a plan. It passed the owner's mode through instead. A misreading that
+    // costs an approval prompt is a design; one that costs an edit is a bug.
+    const conversationEngine = alwaysTask();
+    const inner = conversationEngine.turn;
+    conversationEngine.turn = async (args) => ({ ...(await inner(args)), promotedByModel: false });
+    const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'goahead'), workspace: process.cwd(),
+      conversationEngine, facilitator: readyFacilitator(), gpuLock: machine() }));
+    // A strong request, so nothing but the go-ahead rule can be what holds this back.
+    const asked = await engine.turn('READMEのタイポを修正して', { mode: 'auto' });
+    assert.equal(asked.run?.mode, 'auto', 'the request itself keeps the owner’s mode');
+    const started = await engine.turn('お願いします', { mode: 'auto', sessionId: asked.sessionId });
+    assert.ok(started.run, 'the go-ahead starts the request it refers to');
+    assert.equal(started.run.mode, 'plan', 'and it waits, because a go-ahead is the easiest thing to misread');
+    dispose(engine);
+  });
+
   await okAsync('an explicit request keeps the owner’s own mode', async () => {
     const conversationEngine = alwaysTask();
     const inner = conversationEngine.turn;
@@ -367,6 +415,7 @@ const readyFacilitator = () => ({
   if (failures) { console.error(`work gate selftest: ${failures} FAILED`); process.exit(1); }
   console.log('work gate selftest: PASS · kanji and kana are one request · a work verb with a request ending starts work · '
     + 'the status answer still wins · a model-promoted TASK always waits for one approval · an explicit request keeps its mode · '
+    + 'answering a question does not walk a gated request past the gate · a go-ahead always makes a plan · '
     + 'which AI can be asked is measured from the breaker · a stopped local model is not offered · '
     + 'a freeze nobody will lift says so · a resident agent is not busy · an open question reads as asking');
   fs.rmSync(root, { recursive: true, force: true });

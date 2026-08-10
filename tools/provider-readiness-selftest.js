@@ -166,9 +166,11 @@ ok('the front desk router is not a status display', async () => {
   for (const provider of ['claude', 'codex', 'gemini']) {
     assert.match(routerSource, new RegExp(`${provider}: false`), `${provider} is false here by design, and that is not a status`);
   }
-  const shut = await fastRouter.detect({ gpuHeld: true });
+  // `gpuHeld` and `localReady` are stated rather than probed: otherwise this reads the
+  // owner's GPU and answers differently at midnight than at noon.
+  const shut = await fastRouter.detect({ gpuHeld: true, localReady: false });
   assert.equal(shut.glm, false, 'with no setting turned on, glm is as unavailable here as the other three');
-  assert.equal((await fastRouter.detect({ cloudFallback: 'gpu-busy', gpuHeld: false })).glm, false,
+  assert.equal((await fastRouter.detect({ cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true })).glm, false,
     'and a working local model closes it again — this is an escape, not a status');
   assert.equal(typeof fastRouter.ollamaReady, 'function', 'the display needs the local probe without the paid falses');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'main.js'), 'utf8');

@@ -40,8 +40,12 @@ async function ollamaReady(timeoutMs = 850) {
 // It is still not "the front desk may use paid providers": nothing is reachable while the
 // GPU is free, the text is redacted before it leaves, and the provider is named in the
 // result so the owner can see which words went where. See `runGlm`.
-async function detect({ cloudFallback = 'off', gpuHeld = null } = {}) {
-  const local = await ollamaReady();
+// `gpuHeld` and `localReady` exist so a caller — in practice a test — can state the
+// machine instead of probing it. Both default to measuring. Without them every assertion
+// about this function would depend on what the owner's GPU happened to be doing, which
+// this repository has now been bitten by three times.
+async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null } = {}) {
+  const local = localReady === null ? await ollamaReady() : !!localReady;
   const stopped = gpuHeld === null ? (readGpuLock().held || ollamaFrozen()?.frozen === true) : !!gpuHeld;
   return { ollama: local, glm: cloudFallback === 'gpu-busy' && !local && stopped,
     claude: false, codex: false, gemini: false, kimi: false, openrouter: false };

@@ -97,15 +97,17 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
   // listening on 11434 while the suite runs, so a deepStrictEqual here passes at midnight
   // and fails at noon. This file is not allowed to have an opinion about the owner's GPU.
   {
-    const shut = await router.detect({ cloudFallback: 'off', gpuHeld: true });
+    const shut = await router.detect({ cloudFallback: 'off', gpuHeld: true, localReady: false });
     for (const paid of ['glm', 'claude', 'codex', 'gemini', 'kimi', 'openrouter']) {
       assert.equal(shut[paid], false, `${paid}: the default is shut, whatever the GPU is doing`);
     }
   }
-  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false })).glm, false,
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true })).glm, false,
     'a free GPU means local — the escape is not a preference for the cloud');
-  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true })).glm, true,
-    'held card plus an owner who asked for it: this one turn may leave the machine');
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: true })).glm, false,
+    'and a lock held by a job that left Ollama answering is still no reason to leave the machine');
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: false })).glm, true,
+    'held card, local silent, and an owner who asked for it: this one turn may leave the machine');
 
   // The dispatch table. The loop used to call runOllama whatever the candidate was — a
   // provider name recorded against another model's output. Invisible while nothing but

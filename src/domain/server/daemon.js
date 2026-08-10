@@ -213,6 +213,33 @@ function jsonSafe(value, seen = new WeakSet()) {
 
 /** How long an unanswered front-desk question stays the meaning of the next thing typed. */
 const FACILITATION_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * May this request run without stopping for approval — `'owner'` yes, `'plan'` no.
+ *
+ * One function because the decision is made in two places and they drifted. Measured
+ * 2026-08-10 on the live daemon: 「BKUのスキル一覧を出して」 (soft) correctly waited, the
+ * front desk asked which format, the owner answered 「1a」 — and the run that came out of
+ * the answer was `auto / EXECUTING`. The gate was reading the *answer* text, and "1a" is
+ * not a request at all, so it fell through to the owner's mode. Every gated request could
+ * be walked straight past it by answering one question.
+ *
+ * So the gate belongs to the request being satisfied, and it is carried on the pending
+ * question rather than recomputed from whatever the owner typed last.
+ *
+ * - a model-promoted TASK — a 3B classifier's opinion, paid for with one prompt
+ * - the soft lexical tier — a work verb near a request ending, widened 2026-08-09
+ * - anything with no recorded gate — fail closed; an answer whose request we cannot
+ *   identify must not dispatch paid work on the owner's behalf
+ *
+ * `strong` (the original fourteen words, 作って, 直して) keeps the owner's own mode. That
+ * door was never the problem, and an approval in front of 「修正して」 is how this goes
+ * back to feeling like nothing ever starts.
+ */
+function runGate(text, promotedByModel = false) {
+  if (promotedByModel) return 'plan';
+  return actionTier(text) === 'strong' ? 'owner' : 'plan';
+}
 // ACTIVE_RUN and TERMINAL_RUN come from the coordinator that sets those statuses.
 // They used to be written out by hand here and in two methods below, with three
 // different answers — see the comment on ACTIVE_RUN for what that cost.
@@ -640,7 +667,12 @@ class DaemonEngine extends EventEmitter {
     // creates is a *plan*, so a wrong reading costs an approval prompt, not an action.
     const open = this.lastRequest;
     if (open && open.sessionId === session.id && Date.now() - open.at < FACILITATION_WINDOW_MS && isAffirmative(clean)) {
-      return await this._answerTurn(session, clean, mode, { request: open.text, questions: open.questions });
+      // Always `plan` here, whatever the original request's own standing was — and this
+      // line is why the sentence above could be written. `isAffirmative` reads 「はい」,
+      // 「そう」, `ok` out of ordinary conversation; a misreading that costs an approval
+      // prompt is a design, a misreading that costs an edit is a bug. It was asserted in
+      // this comment and not implemented until 2026-08-10.
+      return await this._answerTurn(session, clean, mode, { request: open.text, questions: open.questions, gate: 'plan' });
     }
     const result = await this.conversation.turn({ text: clean, sessionId: session.id, seed, facts: this.facts(),
       onDelta: (delta) => this.publish('pi', { kind: 'delta', text: delta, model: this.conversation.model }) });
@@ -693,7 +725,12 @@ class DaemonEngine extends EventEmitter {
       if (facilitation?.status === 'needs_clarification') {
         // No run yet. A missing decision is cheaper to ask about than to guess at,
         // and a plan built on a guess is what the owner has been rejecting.
-        this.facilitatorPending = { sessionId: session.id, questions: facilitation.questions, at: Date.now() };
+        // `gate` travels with the question. The answer that comes back is 「1a」 or
+        // 「はい、Markdownで」 — text that is not a request and never classifies as one —
+        // so the run it produces has to inherit the standing of the request it completes,
+        // not of the words that completed it. See runGate().
+        this.facilitatorPending = { sessionId: session.id, questions: facilitation.questions, at: Date.now(),
+          gate: runGate(clean, result.promotedByModel) };
       }
     }
     // What a later go-ahead refers to. Recorded for anything the owner asked *for* —
@@ -701,6 +738,7 @@ class DaemonEngine extends EventEmitter {
     // the most recent request rather than something from an hour ago.
     if (result.kind === 'TASK') {
       this.lastRequest = { sessionId: session.id, text: clean, at: Date.now(),
+        gate: runGate(clean, result.promotedByModel),
         questions: facilitation?.status === 'needs_clarification' ? facilitation.questions : [] };
     }
     if (result.kind === 'TASK' && facilitation?.status !== 'needs_clarification') {
@@ -744,8 +782,7 @@ class DaemonEngine extends EventEmitter {
       // `strong` — the original fourteen words plus 作って/直して — is untouched. That door
       // was never the problem, and putting an approval in front of it is how the machine
       // goes back to feeling like nothing ever starts.
-      const softlyAsked = !result.promotedByModel && actionTier(clean) === 'soft';
-      const runMode = (result.promotedByModel || softlyAsked) ? 'plan' : mode;
+      const runMode = runGate(clean, result.promotedByModel) === 'plan' ? 'plan' : mode;
       run = this.coordinator.submit({ prompt: clean, promptSpec, planHash: facilitation?.planHash || null, cwd: this.workspace, mode: runMode });
       // submit() emits 'run' synchronously, so onRun has already appended this run
       // to the session and published it. Doing it again here printed the same run
@@ -779,7 +816,7 @@ class DaemonEngine extends EventEmitter {
     // Conversation is allowed to be conversation.
     if (!run && !questions.length && result.kind === 'TASK' && endsWithQuestion(result.reply)) {
       this.facilitatorPending = { sessionId: session.id, questions: [lastSentence(result.reply)],
-        at: Date.now(), request: clean };
+        at: Date.now(), request: clean, gate: runGate(clean, result.promotedByModel) };
     }
     const output = { accepted: true, kind: result.kind, reply, sessionId: session.id, turnId: result.turnId,
       provider: result.provider, model: result.model, latencyMs: result.latencyMs, degraded: result.degraded,
@@ -871,8 +908,12 @@ class DaemonEngine extends EventEmitter {
     const written = spec.promptSpec;
     const promptSpec = { goal: written.goal || text, constraints: asList(written.constraints), steps: asList(written.steps),
       acceptance: asList(written.acceptance), questions: [] };
+    // The gate of the request being satisfied, not of the answer. `pending.gate` is set
+    // where the question was asked; absent means we cannot identify the request, and an
+    // unidentifiable request does not get to spend money — see runGate().
+    const runMode = pending?.gate === 'owner' ? mode : 'plan';
     const run = this.coordinator.submit({ prompt: `${written.goal || text}\n\nOwner answers: ${text}`,
-      promptSpec, planHash: spec.planHash || null, cwd: this.workspace, mode });
+      promptSpec, planHash: spec.planHash || null, cwd: this.workspace, mode: runMode });
     this.runSessions.set(run.id, session.id);
     // The goal stays on the table. In the owner's session the first run FAILED and the
     // next thing typed was 「please start」 — a retry, which has to find something to
