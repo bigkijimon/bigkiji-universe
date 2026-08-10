@@ -293,6 +293,38 @@ const DOT_CAT = Object.freeze({
   frameMs: 67,
   frames: Object.freeze(DOT_CAT_POSES.map(brailleCell)),
 });
+// Two beats and a rest. The spinner the owner asked for, modelled on Claude Code's.
+//
+// What was taken from it is the *property*, not the shape: it does not rotate. It swells
+// in place and settles, so there is no direction for the eye to follow, which is why a
+// mark you see several hundred times a day stops being tiring. Claude Code does this with
+// sparkles; this does it with density, and ends on two held frames so the loop breathes
+// instead of running — a cat asleep on the desk rather than a wheel.
+//
+// Braille is not a taste. `charWidth` (transcript.js:62) counts East Asian Ambiguous
+// characters as one column, and ○ ● ◇ ◆ · ∘ are all Ambiguous — a terminal set to render
+// them wide draws two cells where this measures one, and the footer row overflows by one
+// per frame on the owner's Japanese-configured terminal. U+2800–28FF is Narrow, with no
+// ambiguity to get wrong, and it is what the previous default already used here.
+//
+// 110ms rather than 67: this interval is also the footer's repaint tick, so a calmer
+// pulse costs less. See the ticker in bigkiji-cli.js, which already cites pi issue #3881
+// — a permanent spinner raising CPU in proportion to transcript size.
+const HEARTBEAT = Object.freeze({
+  id: 'heartbeat',
+  label: 'Two beats and a rest — the calm pulse (1 cell)',
+  rows: 1,
+  width: 1,
+  frameMs: 110,
+  frames: Object.freeze([
+    '⠒',   // in
+    '⠶',   // and up
+    '⣿',   // full
+    '⠶',   // out
+    '⠒',   // and down
+    '⠒',   // held — the rest, which is what makes the other five read as a pulse
+  ]),
+});
 const RETIRED_DOT_CAT = Object.freeze({
   id: 'dot-cat-flat',
   label: 'One-cell braille cat — the 2026-08-03 poses, kept selectable',
@@ -356,6 +388,7 @@ function buildFaceFrameSets() {
 const NO_ART = Object.freeze({ id: 'none', label: 'No mascot — plain status text', rows: 1, width: 1, frameMs: 1000, frames: Object.freeze([' ']) });
 
 const FRAME_SETS = Object.freeze({
+  [HEARTBEAT.id]: HEARTBEAT,
   [DOT_CAT.id]: DOT_CAT,
   [RETIRED_DOT_CAT.id]: RETIRED_DOT_CAT,
   [WINGED_CAT_ASCII.id]: WINGED_CAT_ASCII,
@@ -379,10 +412,14 @@ const FRAME_SETS = Object.freeze({
 // cat does not look like a cat at all". The default is the five-cell face, which is
 // four columns more than the braille and is actually a cat. `dot-cat` is still there
 // by name, and NO_COLOR still falls through to the colourless silhouette.
+// 2026-08-10, fourth pass: the owner asked for a spinner rather than a mascot, modelled
+// on Claude Code's. Four attempts at drawing a cat in one or five cells is enough
+// evidence that the cell is too small to be a cat; what it CAN be is a pulse. Every
+// earlier set is still selectable by name — the default moves, nothing is deleted.
 function defaultFrameSetId() {
   const requested = String(process.env.BIGKIJI_CLI_CAT || '');
   if (FRAME_SETS[requested]) return requested;
-  return DOT_CAT.id;
+  return HEARTBEAT.id;
 }
 const DEFAULT_FRAME_SET_ID = defaultFrameSetId();
 const LOADING_TEXT = 'loading...';

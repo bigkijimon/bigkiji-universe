@@ -431,9 +431,23 @@ ok('the loading cat is a shape, not a filled bar, and it fits in one column', ()
   for (const [index, frame] of active.frames.entries()) {
     assert.equal(T.stringWidth(frame), 1,
       `frame ${index} of "${id}" is ${T.stringWidth(frame)} columns wide, not 1: |${frame}|`);
-    assert.ok(!/[█⣿]/.test(frame), `frame ${index} is a solid block, which reads as a bar: |${frame}|`);
   }
+  // Not "never solid" — "never mostly solid".
+  //
+  // This forbade █ and ⣿ outright, and the reason was sound: the mark the owner
+  // photographed was a filled rectangle that never changed. But the property that
+  // failed was that it read as a bar for the whole cycle, not that a filled cell
+  // existed. A pulse needs a peak; `heartbeat` is full for one frame in six, between
+  // two half-height ones, and reads as a swell rather than a block. Forbidding the
+  // glyph would have banned the shape that the swell is made of.
+  const solid = active.frames.filter((frame) => /^[█⣿]+$/.test(frame)).length;
+  assert.ok(solid * 3 <= active.frames.length,
+    `"${id}" is a filled cell for ${solid} of ${active.frames.length} frames, which reads as a bar rather than motion`);
   assert.ok(new Set(active.frames).size >= 3, `a loading animation has to actually change: ${JSON.stringify(active.frames)}`);
+  // A held frame is allowed — RETIRED_DOT_CAT holds so a blink reads as a blink, and
+  // `heartbeat` holds so the rest reads as a rest — but the set must not be mostly held.
+  const moves = active.frames.filter((frame, index) => frame !== active.frames[(index + 1) % active.frames.length]).length;
+  assert.ok(moves * 2 >= active.frames.length, `"${id}" barely changes between frames: ${JSON.stringify(active.frames)}`);
 
   // The sprite sets stay selectable, and must not regress to the brown bar.
   //
