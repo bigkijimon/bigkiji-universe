@@ -875,6 +875,35 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
     assert.ok(painted.includes(providerColor(provider)), `${provider} has to be its own colour`);
   }
   assert.notEqual(providerColor('codex'), providerColor('gemini'), 'two AIs in one colour is the thing being fixed');
+  // A queued assignment gets no meter, even an empty one.
+  assert.match(flat, /debug\s+glm.*not started/, 'something that has not begun says so rather than showing a gauge');
+
+  // Waiting for the owner is not work in progress.
+  //
+  // The owner read this block as work under way and asked why nothing moved —
+  // 「作業してると思うんですけど、様子がわかりません」. Nothing moved because nothing had
+  // started: every assignment was awaiting_approval and this drew them like running ones,
+  // under the goal with no label. Two specialists with meters is the picture of work.
+  {
+    const held = { runs: [{ id: 'run-w', status: 'AWAITING_APPROVAL',
+      promptSpec: { goal: 'Append one line to README' },
+      assignments: [
+        { role: 'leader', provider: 'gemini', title: 'Architecture', status: 'awaiting_approval' },
+        { role: 'debug', provider: 'glm', title: 'Diagnostics', status: 'awaiting_approval' }] }] };
+    const text = stripAnsi(buildFooter({ cols: 100, mode: 'ask', state: held, phase: 'AWAITING_APPROVAL' }).lines.filter(Boolean).join('\n'));
+    assert.match(text, /waiting for you/, 'the block says whose turn it is, in the part of the screen that does not scroll');
+    assert.match(text, /Append one line to README/, 'and still says what it is waiting to do');
+    assert.ok(!/━|─{5}\s+—/.test(text.split('\n').filter((l) => /leader|debug/.test(l)).join('\n')),
+      `no meters on work that has not started:\n${text}`);
+    assert.equal((text.match(/not started/g) || []).length, 2, 'every held assignment says so, not just the first');
+
+    // With more than one plan behind the rows, naming one goal names the wrong thing.
+    // Measured on the owner's screen with two waiting: `leader gemini` twice, one goal.
+    const two = { runs: [held.runs[0], { ...held.runs[0], id: 'run-w2', promptSpec: { goal: 'Something else entirely' } }] };
+    const flat2 = stripAnsi(buildFooter({ cols: 100, mode: 'ask', state: two, phase: 'AWAITING_APPROVAL' }).lines.filter(Boolean).join('\n'));
+    assert.match(flat2, /waiting for you — 2 plans/, 'it counts them instead of picking one');
+    assert.ok(!/Append one line to README/.test(flat2), 'and does not caption the second plan with the first one’s goal');
+  }
   // Nothing running draws nothing at all: an idle machine repainting an empty panel
   // every 67ms is chrome that stops being read.
   const idle = stripAnsi(buildFooter({ cols: 100, mode: 'plan', state: { runs: [] } }).lines.filter(Boolean).join('\n'));

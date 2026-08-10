@@ -273,24 +273,38 @@ ok('circuits are per provider', () => {
 // 3. The routing memory must not be poisoned by an outage
 // ---------------------------------------------------------------------------
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-breaker-'));
-ok('being throttled costs a provider nothing in the routing table', () => {
+ok('being throttled costs a provider no penalty — but it is not nothing either', () => {
   const registry = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'a-')) });
-  const before = registry.score('gemini', 'facilitator');
   for (let i = 0; i < 10; i += 1) {
     registry.record({ provider: 'gemini', role: 'facilitator', ok: false, durationMs: 900, reason: 'rate-limit' });
   }
   for (let i = 0; i < 10; i += 1) {
     registry.record({ provider: 'gemini', role: 'facilitator', ok: false, durationMs: 900, reason: 'quota' });
   }
-  assert.equal(registry.score('gemini', 'facilitator'), before,
-    'twenty throttles must leave the score exactly where it was');
   const row = registry.snapshot().performance.models.gemini;
   assert.equal(row.samples, 0, 'a throttled attempt is not a sample of how well it works');
   assert.equal(row.failures, 0, 'and specifically not a failure');
   assert.equal(row.throttled, 20, 'but it is counted, so the owner can see how often it happens');
   assert.equal(row.throttledReason, 'quota');
   const entry = registry.snapshot().capabilities.models.gemini;
-  assert.ok(!entry.penalties || !entry.penalties.facilitator, 'and no penalty is written');
+  assert.ok(!entry.penalties || !entry.penalties.facilitator, 'and no penalty is written — that is the rule this test exists for');
+
+  // This asserted the score was byte-identical afterwards, and that went one step too far.
+  //
+  // Not being penalised and being indistinguishable from a provider nobody has ever tried
+  // are different claims, and the second one had a cost the owner paid: gemini reached
+  // twenty times, completing nothing, kept the score of a total unknown and Auto handed
+  // it the leader role over a provider with 128 completions (measured 2026-08-10). The
+  // penalty rule is untouched — a throttle is still a fact about the calendar, not about
+  // the provider — but silence after twenty attempts is a record, not ignorance.
+  const untried = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'a2-')) });
+  assert.ok(registry.score('gemini', 'facilitator') < untried.score('gemini', 'facilitator'),
+    'twenty attempts that completed nothing must not score the same as never having been asked');
+
+  // And it recovers the moment it completes one, because this is evidence, not a ban.
+  const held = registry.score('gemini', 'facilitator');
+  registry.record({ provider: 'gemini', role: 'facilitator', ok: true, durationMs: 4000 });
+  assert.ok(registry.score('gemini', 'facilitator') > held, 'one completion puts it back in the running');
 });
 ok('a real failure is still learned from — the fix must not blind the router', () => {
   const registry = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'b-')) });
@@ -465,13 +479,20 @@ ok('the breaker never touches the approval gate', () => {
   checks += 3;
 
   const registry = new ModelCapabilityRegistry({ root: fs.mkdtempSync(path.join(root, 'e-')) });
-  const before = registry.score('gemini', 'facilitator');
   registry.record({ provider: 'gemini', model: task.model, role: 'facilitator', ok: false, durationMs: 400, reason: task.failureReason });
-  assert.equal(registry.score('gemini', 'facilitator'), before,
-    'and by the time it reaches the routing table it has cost the provider nothing');
-  checks += 1;
+  // The claim this checks is that the quota body arrives classified — unscored as a
+  // failure and unpenalised — not that it leaves no trace. It does leave one: see the
+  // routing-table test above for why silence after repeated attempts stopped counting as
+  // ignorance on 2026-08-10.
+  const row = registry.snapshot().performance.models.gemini;
+  assert.equal(row.samples, 0, 'the quota body did not become a sample of how well it works');
+  assert.equal(row.failures, 0, 'nor a failure');
+  assert.equal(row.throttled, 1, 'it is filed as a throttle, which is what the whole path exists to get right');
+  const entry = registry.snapshot().capabilities.models.gemini;
+  assert.ok(!entry?.penalties?.facilitator, 'and by the time it reaches the routing table it has cost the provider no penalty');
+  checks += 4;
   if (process.env.VERBOSE) console.log('  ok  a real 429 body travels runner → classification → registry unscored');
 
   fs.rmSync(root, { recursive: true, force: true });
-  console.log(`circuit breaker selftest: PASS · ${checks} checks · quota outranks 429 · window forgets · cooldown doubles and caps · success closes · retry-after honoured only when longer · throttles cost no penalty · real failures still do · fallback walks past cooldowns · a real 429 body survives the whole path · approval gate untouched`);
+  console.log(`circuit breaker selftest: PASS · ${checks} checks · quota outranks 429 · window forgets · cooldown doubles and caps · success closes · retry-after honoured only when longer · throttles cost no penalty but are not invisible · real failures still do · fallback walks past cooldowns · a real 429 body survives the whole path · approval gate untouched`);
 })().catch((error) => { console.error(error); process.exit(1); });

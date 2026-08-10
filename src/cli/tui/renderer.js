@@ -214,15 +214,24 @@ function modelPanel(state = {}, options = {}) {
     facts.push(fit(chipRow(false), chipRow(true)));
     // Longest first: bar + step + percent, then step + percent, then percent alone. The
     // percentage is last to go because it is the one number the row exists for.
+    // `0%` is correct and it is not what the owner needs to read.
+    //
+    // AWAITING_APPROVAL scores zero on purpose and that stays — see keywordProgress. But
+    // the owner looked at `1/3 0%` and asked why nothing was happening; nothing was
+    // happening because the machine was waiting for *them*, and the number does not say
+    // so. The percentage is not inflated by one point; it is replaced, for this one
+    // phase, by the thing it means.
+    const waiting = phaseName(phase).toUpperCase().includes('AWAIT');
+    const readout = waiting ? 'waiting for you' : `${String(percent).padStart(3)}%`;
     const meterRow = (width) => {
-      const plainText = `${bar(percent, width)} ${step}  ${String(percent).padStart(3)}%`;
+      const plainText = `${bar(percent, width)} ${step}  ${readout}`;
       return { width: stringWidth(plainText),
-        text: `${theme.accent}${bar(percent, width)}${theme.reset} ${theme.muted}${step}${theme.reset}  ${theme.strong}${String(percent).padStart(3)}%${theme.reset}` };
+        text: `${theme.accent}${bar(percent, width)}${theme.reset} ${theme.muted}${step}${theme.reset}  ${theme.strong}${readout}${theme.reset}` };
     };
-    const stepOnly = `${step}  ${String(percent).padStart(3)}%`;
+    const stepOnly = `${step}  ${readout}`;
     facts.push(fit(meterRow(PANEL_METER), meterRow(Math.max(4, Math.floor(PANEL_METER / 2))),
-      { width: stringWidth(stepOnly), text: `${theme.muted}${step}${theme.reset}  ${theme.strong}${String(percent).padStart(3)}%${theme.reset}` },
-      { width: 4, text: `${theme.strong}${String(percent).padStart(3)}%${theme.reset}` }));
+      { width: stringWidth(stepOnly), text: `${theme.muted}${step}${theme.reset}  ${theme.strong}${readout}${theme.reset}` },
+      { width: stringWidth(readout), text: `${theme.strong}${readout}${theme.reset}` }));
   }
 
   const rows = Math.max(mark.length, facts.length);

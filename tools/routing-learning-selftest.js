@@ -21,12 +21,29 @@ assert.strictEqual(registry.record({ provider: 'codex', role: 'ui', ok: true, du
   'a provider doing its job at normal speed must not move the routing weights');
 
 // ---- a slow assignment is recorded against the pair that actually ran --------
-const baseline = registry.score('claude-code', 'leader');
 const lesson = registry.record({ provider: 'claude-code', model: 'claude-opus-5', role: 'leader', ok: true, durationMs: SLOW });
 assert(lesson, 'a slow assignment must produce a lesson');
 assert.match(lesson.reason, /exceeded/);
 assert(lesson.penalty > 0);
-assert(registry.score('claude-code', 'leader') < baseline, 'the lesson has to change the next decision, not just be logged');
+
+// The lesson has to change the next decision — measured against a provider that did the
+// same work quickly, not against one nobody has ever used.
+//
+// This compared the score after the lesson with the score before it, when the provider
+// had no record at all. That worked only because an unmeasured provider was scored on a
+// different scale from a measured one, which was itself the defect fixed on 2026-08-10:
+// a slow success is still a success, and ranking it below a total unknown was never the
+// property this test was defending. Ranking it below a fast one is.
+{
+  const twin = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-routing-speed-'));
+  const speed = new ModelCapabilityRegistry({ root: twin });
+  speed.record({ provider: 'slowcoach', model: 'm', role: 'leader', ok: true, durationMs: SLOW });
+  speed.record({ provider: 'quick', model: 'm', role: 'leader', ok: true, durationMs: FAST });
+  assert(speed.score('slowcoach', 'leader') < speed.score('quick', 'leader'),
+    'the same work, done slowly, must lose to the same work done quickly');
+  assert.equal(speed.choose('leader', ['slowcoach', 'quick']), 'quick', 'and choose() has to act on it');
+  fs.rmSync(twin, { recursive: true, force: true });
+}
 
 const perf = registry.snapshot().performance.models;
 assert(perf['claude-code::claude-opus-5'], 'observations are keyed by (provider, model)');
@@ -157,4 +174,54 @@ for (const dir of [root, blank, dirty]) fs.rmSync(dir, { recursive: true, force:
   fs.rmSync(shared, { recursive: true, force: true });
 }
 
-console.log('routing learning selftest: PASS · slow work penalised · keyed by (provider, model) · re-routes · decays · persists · unmeasured latency stays neutral · poisoned history repaired once');
+// Being measured must not cost a provider the assignment.
+//
+// `score()` returned the raw prior for anything with no samples while everything with a
+// record had its prior multiplied by 0.55, so the two branches were on different scales
+// and comparing them meant nothing. Measured on the owner's data 2026-08-10:
+//
+//   codex   prior 0.78  penalty 0.24  152 samples  →  0.5706
+//   gemini  prior 0.74  penalty 0.00    0 samples  →  0.7400
+//
+// The higher prior scored lower, purely for having been used, and Auto handed the leader
+// role to the provider with zero completions and a limit:0 free quota.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-routing-unknown-'));
+  const registry = new ModelCapabilityRegistry({ root });
+  const prior = (id, value) => {
+    registry.capabilities.models[id] = registry.capabilities.models[id] || { roles: {}, penalties: {} };
+    registry.capabilities.models[id].roles.leader = value;
+  };
+  prior('proven', 0.5); prior('untouched', 0.9); prior('tried', 0.9);
+
+  // Reached 152 times and mostly succeeded.
+  for (let i = 0; i < 20; i += 1) registry.record({ provider: 'proven', role: 'leader', ok: true, durationMs: 5000 });
+  // Never reached at all — genuinely unknown, and neutral is the honest reading.
+  // Reached repeatedly and never once completed: throttles only, no samples. That is not
+  // ignorance, it is a record, and it is the exact shape of gemini on this machine.
+  for (let i = 0; i < 6; i += 1) registry.record({ provider: 'tried', role: 'leader', ok: false, reason: 'quota' });
+
+  const snap = registry.snapshot().performance.models;
+  assert.equal(snap.tried.samples, 0, 'a throttle is still not a sample — that rule is untouched');
+  assert.ok(Number(snap.tried.throttled) >= 6, 'but it is still counted, which is what makes it evidence');
+
+  const score = (id) => registry.score(id, 'leader');
+  assert.ok(score('proven') > score('tried'),
+    `a provider that has completed work outranks one that has only ever been turned away: ${score('proven')} vs ${score('tried')}`);
+  assert.ok(score('untouched') > score('tried'),
+    'and never having been asked is not worse than having failed every time');
+  assert.equal(registry.choose('leader', ['tried', 'proven']), 'proven', 'choose() follows the score');
+
+  // Unknown stays neutral rather than free: a prior of 0.9 with no evidence must not beat
+  // measured success outright, or the fix simply moves the same defect one provider over.
+  assert.ok(score('untouched') < 0.9, 'an unmeasured provider no longer keeps its full prior');
+
+  // Self-healing. One completion and it is scored like anything else — this demotes on
+  // evidence, it does not ban.
+  const before = score('tried');
+  registry.record({ provider: 'tried', role: 'leader', ok: true, durationMs: 4000 });
+  assert.ok(score('tried') > before, `one completion puts it back in the running: ${before} -> ${score('tried')}`);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+console.log('routing learning selftest: PASS · slow work penalised · keyed by (provider, model) · re-routes · decays · persists · unmeasured latency stays neutral · being measured costs nothing · reached-and-never-completed is evidence, not ignorance · poisoned history repaired once');

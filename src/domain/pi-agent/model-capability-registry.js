@@ -176,14 +176,39 @@ class ModelCapabilityRegistry {
     const penalties = this.capabilities.models[provider]?.penalties || {};
     const penalty = Number(penalties[model ? `${model}::${role}` : role] || penalties[role] || 0);
     const perf = this.performance.models[ModelCapabilityRegistry.key(provider, model)] || this.performance.models[provider];
-    if (!perf?.samples) return Math.max(0, prior - penalty);
     // An unmeasured latency is not a fast one. Reading a missing duration as 0ms handed
     // the full speed bonus to assignments that never started, so the providers that
     // failed earliest scored best on speed. Unknown stays neutral until something is
     // actually timed.
-    const latency = Number(perf.latencySamples || 0)
+    const latency = Number(perf?.latencySamples || 0)
       ? Math.max(0, 1 - Number(perf.ewmaLatencyMs || 0) / 120000) : .5;
-    return Math.max(0, prior * .55 + Number(perf.successRate || 0) * .3 + latency * .15 - penalty);
+    // Being measured used to cost you the assignment.
+    //
+    // This returned the raw prior for anything with no samples, while everything with a
+    // record had its prior multiplied by 0.55. Measured 2026-08-10 on the owner's data:
+    //
+    //   codex    prior 0.78  penalty 0.24  152 samples  →  0.5706
+    //   gemini   prior 0.74  penalty 0.00    0 samples  →  0.7400
+    //
+    // codex has the higher prior and the lower score, purely because it has been used.
+    // Auto therefore handed the leader role to gemini — free quota limit:0 on this
+    // machine, zero completions ever — over a provider with 128 of them. The two branches
+    // were on different scales, so the comparison between them meant nothing.
+    //
+    // Three states, not two. "Never reached" is genuinely unknown and stays neutral;
+    // "reached and never once completed" is not unknown, it is a record, and gemini has
+    // one: six throttles and no samples. `record()` files throttles without scoring them
+    // — right for a provider that was busy on Tuesday, wrong for one whose quota is
+    // structurally zero — and this is the only place that distinction can be drawn
+    // without pretending to know which kind it is. Throttles still cost no penalty; they
+    // only decide whether silence counts as ignorance or as evidence.
+    //
+    // It heals itself: one completion gives it samples and it is scored normally again.
+    // Nothing is banned here.
+    const samples = Number(perf?.samples || 0);
+    const throttled = Number(perf?.throttled || 0);
+    const successRate = samples ? Number(perf.successRate || 0) : (throttled ? 0 : .5);
+    return Math.max(0, prior * .55 + successRate * .3 + latency * .15 - penalty);
   }
   choose(role, candidates) { return [...candidates].sort((a, b) => this.score(b, role) - this.score(a, role))[0] || null; }
 

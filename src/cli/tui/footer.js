@@ -180,17 +180,44 @@ function buildFooter(options = {}) {
   // the same lie as a progress percentage for an unstarted run.
   const agents = runningAgents(state, AGENT_LIMIT);
   if (agents.length) {
-    const goal = agents.find((agent) => agent.goal)?.goal || '';
-    if (goal) lines.push(`${MARGIN}${C.dim}${clip(goal, inner)}${C.reset}`);
-    else lines.push(`${MARGIN}${C.dim}${clip('working', inner)}${C.reset}`);
+    // Whose turn it is, before anything else on this block.
+    //
+    // The owner read this block as work in progress and asked why nothing was moving —
+    // 「作業してると思うんですけど、様子がわかりません」. Nothing was moving because nothing
+    // had started: every assignment was `awaiting_approval`, and this drew them exactly
+    // like running ones under the goal text with no label, or under the literal word
+    // `working`. Two specialists with meters is the picture of work under way. Measured
+    // 2026-08-10 on their own screen.
+    const waiting = agents.filter((agent) => agent.status === 'awaiting_approval');
+    const allWaiting = waiting.length === agents.length;
+    // One goal is only the headline when there is one plan behind these rows.
+    //
+    // The block flattens every live run up to AGENT_LIMIT, so with two plans waiting the
+    // third row belongs to the second one — and printing the first plan's goal above all
+    // of them names one thing while listing another. Measured on the owner's screen with
+    // two runs waiting: `leader gemini` appeared twice under a single goal.
+    const plans = new Set(agents.map((agent) => agent.runId).filter(Boolean));
+    const goal = plans.size > 1 ? '' : (agents.find((agent) => agent.goal)?.goal || '');
+    const many = plans.size > 1 ? `${plans.size} plans` : '';
+    const headline = allWaiting
+      ? `waiting for you${goal ? ` ${DASH} ${goal}` : many ? ` ${DASH} ${many}` : ''}`
+      : (goal || many || 'working');
+    lines.push(`${MARGIN}${allWaiting ? C.strong : C.dim}${clip(headline, inner)}${C.reset}`);
     const roleWidth = Math.min(10, Math.max(...agents.map((agent) => agent.role.length)));
     for (const agent of agents) {
       const tint = providerColor(agent.provider);
       const known = Number.isFinite(agent.done) && Number.isFinite(agent.total) && agent.total > 0;
       const percent = known ? Math.max(0, Math.min(100, Math.round((agent.done / agent.total) * 100))) : 0;
-      const gauge = known ? `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${agent.done}/${agent.total}${C.reset}`
-        : `${C.dim}${'─'.repeat(METER_WIDTH)} ${DASH}${C.reset}`;
-      const gaugePlain = known ? `${bar(percent, METER_WIDTH)} ${agent.done}/${agent.total}` : `${'─'.repeat(METER_WIDTH)} ${DASH}`;
+      // A meter on a task that has not started is a claim about progress that has not
+      // begun. `runningAgents` has carried each assignment's status all along and this
+      // threw it away, which is the whole of the defect: an empty gauge still reads as a
+      // gauge, and a gauge means something is under way.
+      const idle = agent.status === 'awaiting_approval' || agent.status === 'queued';
+      const gauge = idle ? `${C.muted}○ not started${C.reset}`
+        : known ? `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${agent.done}/${agent.total}${C.reset}`
+          : `${C.dim}${'─'.repeat(METER_WIDTH)} ${DASH}${C.reset}`;
+      const gaugePlain = idle ? '○ not started'
+        : known ? `${bar(percent, METER_WIDTH)} ${agent.done}/${agent.total}` : `${'─'.repeat(METER_WIDTH)} ${DASH}`;
       const head = `${clip(lower(agent.role), roleWidth).padEnd(roleWidth)}  ${lower(agent.provider)}`;
       const room = inner - stringWidth(head) - stringWidth(gaugePlain) - 4;
       const note = room > 6 ? clip(agent.title, room) : '';
@@ -294,7 +321,12 @@ function workSegment(state = {}) {
 }
 
 /**
- * The specialists working right now, in the order they were assigned.
+ * The specialists a live run has, in the order they were assigned — working or not.
+ *
+ * It said "working right now" and returned `awaiting_approval` ones too, which is how
+ * they came to be drawn with meters under a heading that said `working`. The list is
+ * right; the word was wrong, and so was every caller that read it as a list of things in
+ * flight. `status` travels with each entry so the footer can say which is which.
  *
  * Read from the live state rather than tracked separately: the daemon already
  * publishes every assignment of every run, and a second copy would be a second thing
@@ -312,7 +344,7 @@ function runningAgents(state = {}, limit = 3) {
     for (const item of (Array.isArray(run.assignments) ? run.assignments : [])) {
       if (!['running', 'queued', 'awaiting_approval'].includes(String(item.status || ''))) continue;
       out.push({ role: String(item.role || item.kind || '?'), provider: String(item.provider || ''),
-        title: String(item.title || '').replace(/\s+/g, ' ').trim(), goal,
+        title: String(item.title || '').replace(/\s+/g, ' ').trim(), goal, runId: String(run.id || ''),
         // Steps finished over steps planned. Absent is absent: a gauge drawn from a
         // total nobody published would be a number invented to fill a bar.
         done: Number(item.stepsDone ?? NaN), total: Number(item.stepsTotal ?? NaN),

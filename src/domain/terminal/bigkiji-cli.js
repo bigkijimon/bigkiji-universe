@@ -60,6 +60,25 @@ function machineNote({ gpu = null, turnNote = '' } = {}) {
 //
 // Out here rather than inline so the contract can be asserted without a daemon, a tty or
 // a run: what these keys mean is the part that must not drift.
+// The letters a question's options are offered under.
+//
+// The same letters `questionText` prints beside them (fast-api-router), and they have to
+// stay the same letters: the owner reads "b) Upclass" on one line and presses b on the
+// next. Two lists that drift are a prompt that lies. Five because normalizeQuestions caps
+// options at five.
+const PICK_LETTERS = Object.freeze(['a', 'b', 'c', 'd', 'e']);
+
+/** True when every question can be answered by pressing one key. */
+function pickable(questions) {
+  return Array.isArray(questions) && questions.length > 0
+    && questions.every((question) => Array.isArray(question?.options) && question.options.length > 0);
+}
+
+/** The answer string a set of presses makes — the format the prompt itself documents. */
+function answerFromPicks(picks) {
+  return picks.map((letter, index) => `${index + 1}${letter}`).join(' ');
+}
+
 const APPROVAL_CHOICES = Object.freeze([
   Object.freeze({ id: 'approve', keys: Object.freeze(['y', 'Y', '1']) }),
   Object.freeze({ id: 'reject', keys: Object.freeze(['n', 'N', '2']) }),
@@ -383,8 +402,49 @@ async function repl(client) {
   });
 
   let deciding = false;
-  // Set by  at the approval prompt; consumed by the next line the owner types.
+  // Set by `t` at the approval prompt; consumed by the next line the owner types.
   let pendingTell = null;
+
+  /**
+   * The front desk's questions, answered by pressing a letter.
+   *
+   * They have always arrived with options — `normalizeQuestions` gives every question up
+   * to five and `questionText` letters them a) b) c) — and the owner has always had to
+   * read them and then type `1a 2c` by hand. The structured questions were already on the
+   * turn result, beside the `awaitingAnswer` flag this file did read; nothing had ever
+   * looked at them.
+   *
+   * One question at a time, because one key cannot answer four. What comes back is the
+   * same `1a 2c` string the owner would have typed, in the format the prompt itself
+   * documents — this assembles an answer, it does not invent a second way to send one.
+   *
+   * @returns {Promise<string|null>} null when the owner would rather type, or leave it
+   */
+  const pickAnswers = async (questions) => {
+    const letters = PICK_LETTERS;
+    const mark = glyphs().note;
+    const parts = [];
+    for (const [index, question] of questions.entries()) {
+      // A question with no options is a request for prose. Offering keys for it would be
+      // pretending there is a choice, so the whole set falls back to typing.
+      if (!pickable([question])) return null;
+      const shown = question.options.slice(0, letters.length);
+      emit([...renderNote(`${index + 1}/${questions.length}  ${question.ask}`, view()),
+        ...shown.map((option, j) => `   ${A.accent}${letters[j]}${A.reset}  ${A.ink}${option}${A.reset}`),
+        ...renderNote(`o ${mark} おまかせ   t ${mark} 打ち込む   (esc = 後で)`, view())]);
+      const choices = shown.map((_, j) => ({ id: letters[j], keys: [letters[j], letters[j].toUpperCase()] }));
+      choices.push({ id: '__any', keys: ['o', 'O'] }, { id: '__type', keys: ['t', 'T'] });
+      const picked = await askKey(choices);
+      if (picked === '') return null;          // esc — nothing is sent, the question stays on screen
+      if (picked === '__type') return null;    // prose wanted; the question is already printed
+      // 「おまかせ」 answers all of them at once, which is what it means and what the
+      // prompt already tells the owner they may say. Asking the rest afterwards would be
+      // ignoring what they just chose.
+      if (picked === '__any') return 'おまかせ';
+      parts.push(picked);
+    }
+    return answerFromPicks(parts);
+  };
   /**
    * Say that a run is waiting, and offer to start it right here.
    *
@@ -730,6 +790,25 @@ async function repl(client) {
         emit(renderAssistantText(result.reply, view()));
         if (result.draft) emit(renderNote(`draft ${result.draft.id} · ${result.draft.title}`, view()));
         if (result.run) emitRun(result.run);
+        // Offer the letters, having just printed the question.
+        //
+        // Same rules as the approval prompt, for the same reasons: `ask` mode only —
+        // `plan` deliberately states things and gets out of the way — a real tty, nothing
+        // else already holding the keyboard, and never while there is a half-typed line.
+        //
+        // What it produces is submitted the way a typed answer always has been: through
+        // `/answer` when a waiting plan is the thing asking, and as an ordinary turn when
+        // the front desk is holding one without a run (the daemon takes the next turn as
+        // the answer). No new endpoint, no new format.
+        const asking = result.questions || [];
+        if (asking.length && mode === 'ask' && process.stdin.isTTY && !deciding && !pendingTell && !rl.line) {
+          deciding = true;
+          const answer = await pickAnswers(asking).catch(() => null).finally(() => { deciding = false; });
+          if (answer) {
+            const askingRun = result.run?.promptSpec?.questions?.length ? result.run : null;
+            chain = chain.then(() => handleTurn(askingRun ? `/answer ${shortRunId(askingRun.id)} ${answer}` : answer));
+          }
+        }
       }
     } catch (error) {
       // An abort the owner asked for is not an error to report as one. They pressed
@@ -1010,5 +1089,5 @@ if (require.main === module) {
   main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
 }
 
-module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES,
+module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES, PICK_LETTERS, pickable, answerFromPicks,
   FROZEN_TURN_NOTE, APP_ROOT };

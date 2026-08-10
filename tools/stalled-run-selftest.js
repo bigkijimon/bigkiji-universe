@@ -384,6 +384,37 @@ ok('the approval prompt offers yes, no and tell — and still takes the digits',
   }
 });
 
+// A question with options can be answered by pressing a letter.
+//
+// The front desk has always sent options — normalizeQuestions gives every question up to
+// five and questionText letters them a) b) c) — and the owner has always had to read them
+// and type `1a 2c` by hand. The structured questions were already on the turn result,
+// beside the awaitingAnswer flag the CLI did read.
+ok('the letters offered are the letters printed', () => {
+  const { PICK_LETTERS, pickable, answerFromPicks } = require('../src/domain/terminal/bigkiji-cli');
+  const { normalizeQuestions, questionText } = require('../src/domain/pi-agent/fast-api-router');
+  const questions = normalizeQuestions([{ ask: 'どちらの教材ですか', options: ['H&S', 'Upclass', '両方'] },
+    { ask: '形式は', options: ['Markdown', 'CSV'] }]);
+  // The drift that would break this silently: the owner reads "b) Upclass" on one line
+  // and presses b on the next. Two lists, one contract.
+  const printed = questionText(questions);
+  PICK_LETTERS.slice(0, 3).forEach((letter) => assert.ok(printed.includes(`${letter}) `), `questionText does not letter with "${letter}"`));
+  assert.equal(PICK_LETTERS.length, 5, 'normalizeQuestions caps options at five, so five letters is the whole range');
+
+  // The assembled answer is the format the prompt tells the owner they may type — this
+  // builds one, it does not invent a second way to send an answer.
+  assert.equal(answerFromPicks(['a', 'c']), '1a 2c');
+  assert.ok(printed.includes('1a 2c'), 'and that format is the one already documented on screen');
+
+  // A question with no options is a request for prose. Offering keys for it would be
+  // pretending there is a choice, so the whole set falls back to typing.
+  assert.equal(pickable(questions), true);
+  assert.equal(pickable([{ ask: 'なにを直しますか', options: [] }]), false);
+  assert.equal(pickable([questions[0], { ask: 'ほかには', options: [] }]), false, 'one prose question sends the whole set to typing');
+  assert.equal(pickable([]), false);
+  assert.equal(pickable(undefined), false);
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`stalled run selftest: ${failures} FAILED`); process.exit(1); }
-console.log('stalled run selftest: PASS · the approval prompt offers yes/no/tell · the gpu lock is read and named · a frozen model is reported as frozen, never as running · the footer shows degraded · checkpoints stop when nothing moves · slow work is still never killed · the stall sweep reaches DIAGNOSING · one active-run list · a stuck run cannot erase the event log · plan records learn their outcome');
+console.log('stalled run selftest: PASS · the approval prompt offers yes/no/tell · a question with options is answered by a letter · the gpu lock is read and named · a frozen model is reported as frozen, never as running · the footer shows degraded · checkpoints stop when nothing moves · slow work is still never killed · the stall sweep reaches DIAGNOSING · one active-run list · a stuck run cannot erase the event log · plan records learn their outcome');
