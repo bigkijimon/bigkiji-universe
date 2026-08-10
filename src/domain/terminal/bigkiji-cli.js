@@ -21,7 +21,36 @@ const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
 const APP_VERSION = require('../../../package.json').version;
+// The one degraded reason that describes the machine rather than the turn, and therefore
+// the one that must not outlive the machine being in that state. See `machineNote`.
+const FROZEN_TURN_NOTE = 'local model frozen — gpu busy';
 let activeMode = 'plan'; let A = themeFor(activeMode);
+
+/**
+ * What the footer says about the machine, taken from the machine.
+ *
+ * `turnNote` is a fact about the last turn and was drawn as a fact about now. Measured on
+ * the owner's machine 2026-08-10: the render finished at 12:00 — `/tmp/bigkiji_gpu.lock`
+ * gone, every Ollama process back in state S — and at 12:32 the footer still read
+ * "local model frozen — gpu busy". The only thing that would have cleared it was typing
+ * another turn, which is precisely what an owner does not do while the screen says the
+ * model is stopped. It spent thirty-two minutes lying about the single fact that decides
+ * whether asking is worth it.
+ *
+ * The freeze comes from the four-second state poll now, so it reads forwards as well as
+ * backwards: the model stopping shows up without having to ask it first. A turn's own
+ * degraded reason still shows when the machine is fine and that one turn was not.
+ */
+function machineNote({ gpu = null, turnNote = '' } = {}) {
+  if (gpu?.frozen) {
+    return gpu.orphaned
+      ? 'local model frozen — nobody holds the gpu'
+      : `local model frozen — gpu busy${gpu.holder ? ` (${lower(gpu.holder)})` : ''}`;
+  }
+  // The machine is fine, so a freeze remembered from an earlier turn is not news about it.
+  return turnNote === FROZEN_TURN_NOTE ? '' : turnNote;
+}
+
 const prefs = new CliPreferences();
 function setMode(value, persist = true) { activeMode = normalizeMode(value); A = themeFor(activeMode); if (persist) prefs.update({ mode: activeMode }); return activeMode; }
 
@@ -207,7 +236,7 @@ async function repl(client) {
     sticky.setFooterHeight(footerHeightFor(frameSet, runningAgents(live).length));
     const { lines, inputIndex } = buildFooter({ cols: sticky.cols, mode, state: live, phase: phaseInfo, comment,
       busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet,
-      degraded: degradedTurn, degradedNote: degradedWhy, awaitingAnswer });
+      degraded: degradedTurn, degradedNote: machineNote({ gpu: live?.gpu, turnNote: degradedWhy }), awaitingAnswer });
     inputOffset = inputIndex;
     const signature = lines.join(' ');
     if (!force && signature === painted) return;
@@ -595,7 +624,7 @@ async function repl(client) {
         // on screen was one parenthesis at the top of a paragraph — which reads as the
         // model talking, not as the model being absent.
         degradedTurn = !!result.degraded;
-        degradedWhy = result.gpuFrozen ? 'local model frozen — gpu busy' : (result.degraded ? 'local model unavailable' : '');
+        degradedWhy = result.gpuFrozen ? FROZEN_TURN_NOTE : (result.degraded ? 'local model unavailable' : '');
         // The daemon has published `awaitingAnswer` on every turn since the front desk
         // could ask a question, and no surface drew it. The question is in the reply, but
         // once it scrolls, an idle-looking footer is the only thing left — and the daemon
@@ -851,4 +880,5 @@ if (require.main === module) {
   main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
 }
 
-module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, APP_ROOT };
+module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote,
+  FROZEN_TURN_NOTE, APP_ROOT };

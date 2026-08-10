@@ -39,6 +39,7 @@ const { CoreExecutionCoordinator, ACTIVE_RUN, TERMINAL_RUN, STALL_CHECKPOINTS,
 const { ModelCapabilityRegistry } = require('../src/domain/pi-agent/model-capability-registry');
 const { degradedHeader, degradedPrefix } = require('../src/domain/pi-core/conversation-engine');
 const { buildFooter } = require('../src/cli/tui/footer');
+const { machineNote, FROZEN_TURN_NOTE } = require('../src/domain/terminal/bigkiji-cli');
 
 let failures = 0;
 const ok = (name, body) => { try { body(); console.log(`  ok  ${name}`); } catch (error) { failures += 1; console.error(`  FAIL ${name}\n       ${error.message}`); } };
@@ -126,6 +127,30 @@ ok('the CLI footer draws degraded, which it never did', () => {
   const normal = buildFooter({ cols: 100, mode: 'plan', state: {}, comment: 'thinking' });
   assert.match(normal.lines.filter(Boolean).map(plain).join('\n'), /thinking/,
     'an undegraded turn keeps the comment slot it always had');
+});
+
+ok('the freeze on the footer is the machine now, not the machine when they last typed', () => {
+  // 2026-08-10, from a screenshot. The render finished at 12:00 — lock gone, every Ollama
+  // process back in state S — and at 12:32 the footer still read 「local model frozen —
+  // gpu busy」. It was drawing the last turn's `gpuFrozen`, and the only thing that would
+  // have cleared it was typing another turn, which is exactly what an owner does not do
+  // while being told the model is stopped. Thirty-two minutes wrong about the one fact
+  // that decides whether asking is worth it.
+  assert.equal(machineNote({ gpu: { frozen: false }, turnNote: FROZEN_TURN_NOTE }), '',
+    'the render is over — stop saying it is not');
+  assert.match(machineNote({ gpu: { frozen: true, holder: 'u09-tile-answer' } }), /gpu busy/,
+    'and while it really is held, say so without waiting to be asked');
+  assert.match(machineNote({ gpu: { frozen: true, holder: 'u09-tile-answer' } }), /u09-tile-answer/,
+    'naming the job is the difference between "wait" and "wait for what"');
+  assert.match(machineNote({ gpu: { frozen: true, orphaned: true } }), /nobody holds the gpu/,
+    'a freeze nobody will lift needs a hand, not patience — a different sentence');
+
+  // A reason that is about the turn survives, because the machine being fine does not
+  // make that turn fine.
+  assert.equal(machineNote({ gpu: { frozen: false }, turnNote: 'local model unavailable' }),
+    'local model unavailable', 'only the freeze is a claim about the machine');
+  assert.equal(machineNote({ gpu: null, turnNote: '' }), '', 'and a healthy turn says nothing at all');
+  assert.equal(machineNote(), '', 'a state poll that has not landed yet is not evidence of a freeze');
 });
 
 // ---------------------------------------------------------------------------

@@ -1633,7 +1633,29 @@ class DaemonEngine extends EventEmitter {
       // actually did). They are different questions and only the first was answered.
       models: { ...this.models.snapshot(), performance: this.coordinator.registry?.snapshot?.().performance || { models: {} } },
       inventory: this.inventory, tools: this.tools, security: this.securityState,
-      conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: currentPhase(this.coordinator.snapshot()) };
+      conversation: this.conversation.snapshot(), ideas: this.ideas.list(24), phase: currentPhase(this.coordinator.snapshot()),
+      // Whether the local model is stopped *now*, not whether it was stopped when the
+      // owner last typed.
+      //
+      // The CLI footer printed 「local model frozen — gpu busy」 from the last turn's
+      // `gpuFrozen` flag and kept printing it, because the flag describes a turn and the
+      // footer reads as a description of the machine. Measured 2026-08-10: the render
+      // finished at 12:00, `/tmp/bigkiji_gpu.lock` was gone and every Ollama process was
+      // back in state S, and at 12:32 the footer still said the GPU was busy — for
+      // thirty-two minutes the only way to correct it was to type something, which is
+      // exactly what the owner would not do while being told the machine was frozen.
+      //
+      // One `ps` per four-second poll, and gpu-lock memoises it for two, so a poll costs
+      // one reading and a burst of pollers costs the same one.
+      gpu: this.gpuState() };
+  }
+
+  /** The freeze as a fact about now: `{frozen, holder, since, orphaned}`. */
+  gpuState() {
+    const [frozen] = this.frozenProviders();
+    return frozen
+      ? { frozen: true, holder: frozen.holder, since: frozen.since, orphaned: !!frozen.orphaned }
+      : { frozen: false, holder: '', since: '', orphaned: false };
   }
   shutdown() {
     clearInterval(this.inventoryTimer); clearInterval(this.toolTimer); clearInterval(this.sweepTimer);
