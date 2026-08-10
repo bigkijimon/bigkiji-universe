@@ -109,6 +109,57 @@ function actionTier(text) {
   if (EN_REQUEST.test(value) && EN_WORK.test(value) && !EN_CAPABILITY.test(value)) return 'soft';
   return '';
 }
+// 見るだけの依頼か、直す依頼か。
+//
+// 2026-08-10、オーナーが「データ見せてください」と打った結果:
+//
+//   1. どのデータを表示しますか？  a) ユーザーリスト  b) 売上レポート  c) システムログ
+//   2. 表示形式はどちらですか？    a) テーブル  b) チャート  c) JSON
+//
+// 選択肢は3つとも実在しない（このシステムに「売上レポート」は無い）。前受付は
+// 「materially important decisions が欠けていたら全部聞け」と指示されていて、6.6B の
+// モデルは何を聞かれても欠けていると判断し、知らないものについて選択肢を作る。
+//
+// 質問の数は「間違えたときの損害」に比例すべきで、前受付はそれを見ていなかった。
+// 一覧の並び順を間違えたら1ターンやり直すだけ。フォルダを消す向きを間違えたら戻らない。
+// **見るだけの依頼には既定値を選んで進む**——これが答え。
+const READ_VERB = /(?:見せ|見して|表示|一覧|出して|出力|教え|確認|調べ|調査|検索|探し|読ん|読み|チェック|レビュー|分析|解析|まとめ|要約|プレビュー|見たい|知りたい|どこ|何が|いくつ|ある[？?か]|あります|存在)/;
+const WRITE_VERB = /(?:実装|修正|変更|追加|削除|消して|作って|作成|生成|書いて|書き換え|置き換え|更新|同期|移動|コピー|リネーム|整理|セットアップ|設定|導入|インストール|デプロイ|公開|再起動|起動|停止|バックアップ|直して|なおして|リファクタ)/;
+const EN_READ = /\b(?:show|list|display|find|search|read|check|explain|tell|preview|summar\w*|what|which|where|how many)\b/i;
+const EN_WRITE = /\b(?:build|implement|fix|refactor|commit|create|write|make|delete|remove|deploy|install|update|move|rename|restart|set\s?up|configure)\b/i;
+
+/** Where a pattern last matches, or -1. */
+function lastIndexOfMatch(value, pattern) {
+  const scan = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+  let last = -1; let match;
+  while ((match = scan.exec(value)) !== null) { last = match.index; if (scan.lastIndex === match.index) scan.lastIndex += 1; }
+  return last;
+}
+
+/**
+ * True when the request only looks at something.
+ *
+ * Decided by which verb comes **last**, not by whether a write word appears at all.
+ * Japanese puts the governing verb at the end, and the two readings differ by nothing
+ * else:
+ *
+ *   ログを調べて直して      調べ(read) … 直して(write)   → a change
+ *   設定を見せてください     設定(write noun) … 見せ(read) → an inspection
+ *   バックアップある？       バックアップ(write noun) … ある？(read) → an inspection
+ *   バックアップを取っておいて   no read verb at all         → a change
+ *
+ * A flat "any write word disqualifies it" test called all four of those changes, because
+ * バックアップ・設定・整理 are nouns as readily as verbs. English is governed the same way
+ * by its trailing conjunct: `list the files and delete the old ones` is a change.
+ */
+function isInspection(text) {
+  const value = normalizeRequest(text);
+  const read = Math.max(lastIndexOfMatch(value, READ_VERB), lastIndexOfMatch(value, EN_READ));
+  if (read < 0) return false;
+  const write = Math.max(lastIndexOfMatch(value, WRITE_VERB), lastIndexOfMatch(value, EN_WRITE));
+  return read > write;
+}
+
 function heuristicKind(text) {
   if (actionTier(text)) return 'TASK';
   if (/(?:アイデア|思いつ|どうかな|できたら|将来|考えたい|検討したい|考えている|ならどう|はどうだろう|idea|maybe|what if|could we|構想|案)/i.test(text)) return 'IDEA';
@@ -538,6 +589,6 @@ class ConversationEngine extends EventEmitter {
     maxContextTokens: this.maxContextTokens, keepAlive: this.keepAlive }; }
 }
 
-module.exports = { ConversationEngine, heuristicKind, guardedKind, classifyKind, actionTier, normalizeRequest,
+module.exports = { ConversationEngine, heuristicKind, guardedKind, classifyKind, actionTier, normalizeRequest, isInspection,
   isAffirmative, endsWithQuestion, fallback, normalize, clean,
   deriveTitle, usableTitle, degradedPrefix, degradedHeader, isJapanese, normalizeKeepAlive, DEFAULT_KEEP_ALIVE };

@@ -37,8 +37,9 @@ const { SessionStore } = require('./session-store');
 const { MobileDeviceStore } = require('./mobile-device-store');
 const { writeSystemMemory } = require('../pi-core/system-memory');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
+const { localLookup } = require('../pi-core/local-lookup');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
-const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion, actionTier } = require('../pi-core/conversation-engine');
+const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion, actionTier, isInspection } = require('../pi-core/conversation-engine');
 const { isStatusQuestion, statusReport, isProviderQuestion, providerReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
@@ -328,7 +329,7 @@ async function readJson(req, max = 1024 * 1024) {
 class DaemonEngine extends EventEmitter {
   constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = '',
     conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null,
-    gpuLock = gpuLockModule } = {}) {
+    gpuLock = gpuLockModule, lookup = localLookup } = {}) {
     super();
     // Defaulted here rather than in the parameter list so resolveWorkspace can tell an
     // explicit choice from a fallen-back one — process.cwd() in the signature makes the
@@ -363,6 +364,10 @@ class DaemonEngine extends EventEmitter {
     // and a suite whose verdict depends on what the owner's GPU happens to be doing is
     // the machine-state dependence conversation-selftest.js was already burned by once.
     this.gpuLock = gpuLock;
+    // The read-only local answer for a look-at-it request. Injectable for the same reason
+    // gpuLock is: the real one spawns pi against the GPU, and a suite that does that has
+    // an opinion about what the owner is rendering.
+    this.lookup = lookup;
     this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
@@ -705,15 +710,46 @@ class DaemonEngine extends EventEmitter {
     // asking the same question instead of building. The front desk writes the spec
     // now; the conversation model's fields remain the fallback for when it cannot.
     let facilitation = null;
+    // A request that only looks at something is answered by looking.
+    //
+    // 「データ見せてください」 used to become a plan: two invented questions, then a spec,
+    // then a paid dispatch held for an approval. Three steps and a bill to list what is on
+    // disk. The owner said it twice — 「まだすぐにだしてくれません」 — and chose (2026-08-10)
+    // to have these answered locally instead.
+    //
+    // Free, read-only and enforced by pi's own tool allowlist rather than by a sentence in
+    // a prompt. See local-lookup.js. If it cannot serve the turn — pi missing, GPU frozen,
+    // nothing found — it says so and the ordinary planning route runs underneath, because
+    // a broken shortcut must not be how a request disappears.
+    if (result.kind === 'TASK' && isInspection(clean)) {
+      const looked = await this._lookLocally(session, clean, result);
+      if (looked) return looked;
+    }
     if (result.kind === 'TASK') {
       facilitation = await this._facilitate(clean);
       // Hands-off: the fleet decides rather than the owner. Same two-stage front desk,
       // with the answer supplied here instead of waited for, so the decisions are made
       // once and written into the spec rather than left open for a specialist to guess
       // at mid-run — which is the failure this whole path exists to stop.
-      if (facilitation?.status === 'needs_clarification' && mode === 'demo') {
+      // …and for a request that only looks at something, whether the owner asked for
+      // hands-off or not.
+      //
+      // 2026-08-10, the owner's own line 「データ見せてください」 came back as two questions
+      // with six invented options — 「売上レポート」 is not a thing this system has. The
+      // front desk is told to ask for every materially important decision that is
+      // missing, and a 6.6B model reading a four-word request decides everything is
+      // missing and makes up the choices. The owner's report: 「まだすぐにだしてくれません。
+      // 質問が多いです。」
+      //
+      // Questions should cost what being wrong costs. Sorting a list the wrong way costs
+      // one more turn; deleting the wrong folder costs the folder. The front desk asked
+      // the same number either way. An inspection gets safe defaults and goes.
+      const inspection = isInspection(clean);
+      if (facilitation?.status === 'needs_clarification' && (mode === 'demo' || inspection)) {
         this.publish('commentary', { source: 'Front desk', status: 'PLANNING',
-          text: `Deciding ${facilitation.questions.length} open question${facilitation.questions.length === 1 ? '' : 's'} without the owner — hands-off mode.` });
+          text: inspection
+            ? `Choosing defaults for ${facilitation.questions.length} question${facilitation.questions.length === 1 ? '' : 's'} — this only reads, so a wrong guess costs one turn.`
+            : `Deciding ${facilitation.questions.length} open question${facilitation.questions.length === 1 ? '' : 's'} without the owner — hands-off mode.` });
         const decided = facilitation.questions;
         facilitation = await this._facilitate(HANDS_OFF_ANSWER);
         // What was decided without asking. Hands-off is not the same as unaccountable:
@@ -858,6 +894,46 @@ class DaemonEngine extends EventEmitter {
       this.facilitator.reset();
       return await this._facilitate(`${request}\n\nOwner answers: ${said}`);
     }
+  }
+
+  /**
+   * Answer a look-at-it request from the local model, or return null and let the
+   * ordinary planning route have it.
+   *
+   * Null on every failure, on purpose. The alternative — reporting "I could not look" as
+   * the answer — turns a working request into a dead end, and this whole path exists
+   * because requests were dying in the corridor. What went wrong is published as
+   * commentary so it is visible without being terminal.
+   *
+   * @returns {Promise<object|null>}
+   */
+  async _lookLocally(session, text, result) {
+    const started = Date.now();
+    this.publish('commentary', { source: 'Local', status: 'READING',
+      text: 'Looking, locally — this request only reads, so nothing paid is started.' });
+    let looked = null;
+    try {
+      looked = await this.lookup(text, { facts: this.facts(), cwd: this.workspace,
+        model: this.conversation.model });
+    } catch (error) {
+      looked = { ok: false, text: '', reason: String(error?.message || error).slice(0, 160) };
+    }
+    if (!looked?.ok) {
+      this.publish('commentary', { source: 'Local', status: 'DEGRADED',
+        text: `Could not look it up locally (${looked?.reason || 'unknown'}) — planning it instead.` });
+      return null;
+    }
+    const turnId = `turn-${started.toString(36)}-look`;
+    this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'TASK',
+      text: looked.text, turnId, provider: 'local-lookup', latencyMs: looked.ms });
+    // No run, no approval, no draft. The answer is the whole of it, which is the point.
+    const output = { accepted: true, kind: 'TASK', reply: looked.text, sessionId: session.id, turnId,
+      provider: 'local-lookup', model: this.conversation.model, latencyMs: Date.now() - started,
+      degraded: false, gpuFrozen: false, draft: null, run: null, promotedByModel: !!result?.promotedByModel,
+      questions: [], awaitingAnswer: false, requiresApproval: false, readOnly: true };
+    this.publish('conversation', { kind: 'turn_complete', ...output });
+    this.publish('session', this.sessions.read(session.id));
+    return output;
   }
 
   async _facilitate(ownerText) {

@@ -18,6 +18,23 @@ const ESC = '\x1b';
 // owner photographed. ED0 from the home position clears exactly the same cells and
 // never touches scrollback.
 const WIPE = `${ESC}[H${ESC}[J`;
+// How many printed lines are kept so the screen can be rebuilt after a wipe.
+//
+// The transcript used to disappear, and the owner photographed it: an empty window with
+// the header still on top and the footer row printed twice. Both halves of that picture
+// are the same bug.
+//
+// The screen is wiped and re-laid out whenever the terminal resizes OR the footer changes
+// height — and the footer changes height by itself. `footerHeightFor()` reserves a row per
+// running agent and the CLI calls `setFooterHeight()` on every footer tick, so starting or
+// finishing one piece of work wipes the screen. Nothing kept a copy of what had been
+// printed, so `layout()` redrew the header and the footer onto an empty region.
+//
+// The terminal's own scrollback does not save it either. Output goes into a DECSTBM
+// region, and lines that scroll off the top of a scroll region are discarded rather than
+// pushed into scrollback. That is the price of a header and footer that stay put, and it
+// means this buffer is the only copy there is.
+const SCROLLBACK_LINES = 4000;
 // Width-aware: measuring with String#length silently overflowed every line
 // carrying Japanese by up to 2x. ASCII behaviour is unchanged.
 const clip = (value, width) => truncateToWidth(value, width);
@@ -305,6 +322,8 @@ class StickyScreen {
   constructor({ output = process.stdout, footerHeight = 1 } = {}) {
     this.output = output; this.header = []; this.headerFn = null; this.footer = []; this.active = false; this.onLayout = null; this._resize = null;
     this.used = 0; this.laidOutRows = 0;
+    // Everything print() has been given, so a wipe is a repaint and not a loss.
+    this.buffer = [];
     this.footerHeight = Math.max(1, Math.trunc(Number(footerHeight) || 1));
     this.columns = this.cols; this.lines = this.rows;
   }
@@ -380,15 +399,54 @@ class StickyScreen {
     this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
     return out ? `${ESC}7${out}${ESC}8` : '';
   }
+  /** How many terminal rows one logical line occupies at the current width. */
+  rowsFor(line) {
+    const width = stringWidth(String(line ?? ''));
+    return width <= 0 ? 1 : Math.max(1, Math.ceil(width / this.cols));
+  }
+
+  /** Keep what was printed, newest last, bounded. */
+  remember(lines) {
+    for (const line of lines) this.buffer.push(String(line));
+    const over = this.buffer.length - SCROLLBACK_LINES;
+    if (over > 0) this.buffer.splice(0, over);
+  }
+
+  /**
+   * The tail of the buffer that fits in the scroll region, as one positioned block.
+   *
+   * Measured in rows rather than lines. A Japanese sentence at 40 columns is three rows,
+   * and counting it as one is how a narrowing resize used to push output over the footer.
+   * Sets `used` as a side effect so print() knows where the next free row is.
+   */
+  repaint() {
+    const capacity = Math.max(1, this.bottom - this.top + 1);
+    const tail = []; let height = 0;
+    for (let index = this.buffer.length - 1; index >= 0; index -= 1) {
+      const rows = this.rowsFor(this.buffer[index]);
+      // The newest line goes in even if it alone is taller than the region — showing the
+      // top of it beats showing nothing.
+      if (tail.length && height + rows > capacity) break;
+      tail.unshift(this.buffer[index]); height += rows;
+    }
+    this.used = Math.min(capacity, height);
+    return tail.length ? `${ESC}[${this.top};1H${tail.join('\r\n')}` : '';
+  }
+
   layout() {
     if (this.headerFn) this.header = this.headerFn(this.cols) || [];
     let out = `${ESC}[r${ESC}[H`;
     this.header.slice(0, this.top - 1).forEach((text, index) => { out += `${ESC}[${index + 1};1H${ESC}[2K${text}`; });
     out += this.footerPaint();
-    out += `${ESC}[${this.top};${this.bottom}r${ESC}[${this.top};1H`;
-    this.output.write(out);
-    // The scroll region starts empty again, and print() fills it downward.
+    // The region has to be set before anything is written into it, or a tall repaint
+    // scrolls the header away instead of the region.
+    out += `${ESC}[${this.top};${this.bottom}r`;
     this.used = 0;
+    // Put the transcript back. Every caller of layout() has just wiped the screen, and
+    // before this line that wipe was permanent — see SCROLLBACK_LINES.
+    out += this.repaint();
+    out += `${ESC}[${Math.min(this.bottom, this.top + this.used)};1H`;
+    this.output.write(out);
     this.laidOutRows = this.rows;
     this.onLayout?.();
   }
@@ -409,23 +467,28 @@ class StickyScreen {
    * So a size change re-lays out before anything else happens.
    */
   print(text) {
-    if (!this.active) { this.output.write(`${String(text)}\n`); return; }
-    if (this.rows !== this.laidOutRows) { this.output.write(WIPE); this.layout(); }
     const lines = String(text).split('\n');
+    if (!this.active) { this.output.write(`${String(text)}\n`); return; }
+    this.remember(lines);
+    // A size change re-lays out first, and layout() now paints the buffer — which already
+    // contains these lines. Writing them again below would double them.
+    if (this.rows !== this.laidOutRows) { this.output.write(WIPE); this.layout(); return; }
     const capacity = Math.max(1, this.bottom - this.top + 1);
     const used = Number(this.used) || 0;
-    if (used + lines.length <= capacity) {
+    const height = lines.reduce((sum, line) => sum + this.rowsFor(line), 0);
+    if (used + height <= capacity) {
       // Still room: place the block at the next free row, no scrolling at all.
-      let out = '';
-      lines.forEach((line, index) => { out += `${ESC}[${this.top + used + index};1H${ESC}[2K${line}`; });
+      let out = ''; let row = this.top + used;
+      lines.forEach((line) => { out += `${ESC}[${row};1H${ESC}[2K${line}`; row += this.rowsFor(line); });
       this.output.write(out);
-      this.used = used + lines.length;
+      this.used = used + height;
       return;
     }
     this.used = capacity;
     this.output.write(`${ESC}[${this.bottom};1H${lines.map((line) => `\n\r${line}`).join('')}`);
   }
-  clear() { if (this.active) { this.output.write(WIPE); this.layout(); } }
+  /** `/clear` — the owner asking for an empty screen, so the copy goes too. */
+  clear() { this.buffer = []; if (this.active) { this.output.write(WIPE); this.layout(); } }
   suspend() { if (!this.active) return; this.active = false; this.output.write(`${ESC}[r${WIPE}`); }
   resume() { if (!this.output.isTTY) return; this.active = true; this.output.write(WIPE); this.layout(); }
   stop() {
