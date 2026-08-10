@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
-const { SecurityPolicy, isSensitivePath } = require('../src/domain/pi-core/security/security-policy');
+const { SecurityPolicy, isSensitivePath, canonical: canonicalise } = require('../src/domain/pi-core/security/security-policy');
 const { redactPayload, sanitizeSearchQuery } = require('../src/domain/pi-core/security/payload-redactor');
 const { ToolInterceptor } = require('../src/domain/pi-core/security/tool-interceptor');
 const { SandboxPolicyResolver } = require('../src/domain/pi-agent/sandbox-policy');
@@ -38,6 +38,62 @@ function fakeChild() {
   const security = new SecurityPolicy(); assert.throws(() => security.assertPath(policy, path.join(project, '.env')), /SENSITIVE/);
   assert.throws(() => security.assertPath(policy, outside), /OUTSIDE/);
   if (fs.existsSync(path.join(project, 'src', 'escape.txt'))) assert.throws(() => security.assertPath(policy, path.join(project, 'src', 'escape.txt')), /OUTSIDE/);
+
+  // The Vault is a list, because the owner's is in two places and one of them is the canon.
+  //
+  // Their departments are under ~/Documents; ~/BigKijiUniverse — 正典.md, the skill index,
+  // the failure memory — is a sibling of Documents, not a child. Measured 2026-08-10 with a
+  // single vaultRoot of ~/Documents: `resolve('~/Documents/School')` returned School plus its
+  // two Admin reads and silently dropped all three BigKijiUniverse entries out of School's
+  // own `.pi/sandbox.json`, because the allowRead filter discards anything outside the
+  // boundary. Every agent would have lost the canon and its record of what has already gone
+  // wrong, and nothing anywhere would have said so.
+  {
+    const docs = path.join(root, 'docs'); const canon = path.join(root, 'canon');
+    const dept = path.join(docs, 'School');
+    fs.mkdirSync(path.join(dept, '.pi'), { recursive: true });
+    fs.mkdirSync(canon, { recursive: true });
+    fs.writeFileSync(path.join(canon, 'canon.md'), '# canon');
+    fs.writeFileSync(path.join(dept, '.pi', 'sandbox.json'), JSON.stringify({
+      filesystem: { allowRead: [path.join(canon, 'canon.md')], allowWrite: ['.'] } }));
+
+    const twoRoots = new SandboxPolicyResolver({ vaultRoots: [docs, canon] });
+    const school = twoRoots.resolve(dept);
+    assert(school.valid, school.error);
+    assert(school.allowRead.includes(canonicalise(path.join(canon, 'canon.md'))),
+      `the canon is a sibling of the departments and has to survive the filter: ${JSON.stringify(school.allowRead)}`);
+    assert.deepStrictEqual(school.allowWrite, [canonicalise(dept)],
+      'and the write grant is still the one department that was asked for');
+    assert.strictEqual(school.vaultRoot, canonicalise(docs), 'the boundary reported is the one this task is inside');
+
+    // A task in the other root climbs to ITS root, not to whichever is listed first.
+    assert(twoRoots.resolve(canon).valid, 'the second root is a Vault too, not a read grant');
+
+    // And the home directory is not a workspace. On 2026-08-10 a run with cwd=$HOME sent
+    // gemini 711,395 input tokens against a 250,000 free-tier limit, because allowRead was
+    // the entire home directory. With Documents as the boundary, that cwd is refused here
+    // rather than being paid for by the owner.
+    const home = twoRoots.resolve(root);
+    assert.strictEqual(home.valid, false, 'a cwd containing the roots is outside them, not above them');
+    assert.deepStrictEqual(home.allowRead, [], 'and a refused policy grants nothing');
+
+    // A dot means "this folder", measured from the file it is written in.
+    //
+    // `expand()` called `path.resolve` with no base, so `"allowWrite": ["."]` in School's
+    // own sandbox granted whichever directory the daemon was started from — the BigKiji
+    // repo — and never School. Nothing failed; the grant landed somewhere else. The
+    // assertion above is what caught it: allowWrite came back `[]` because the app repo is
+    // outside this test's roots. ~/.pi/sandbox.json carries a hand-written warning about
+    // this (「パスは必ず絶対パス」), which is a workaround for a trap, not a rule to keep.
+    assert.deepStrictEqual(twoRoots.resolve(dept).allowWrite, [canonicalise(dept)],
+      'a relative grant belongs to the config that declares it, not to the process reading it');
+
+    // The singular form still means a list of one — every existing caller passes it.
+    const single = new SandboxPolicyResolver({ vaultRoot: docs });
+    assert(single.resolve(dept).valid);
+    assert.deepStrictEqual(single.resolve(dept).allowRead.filter((p) => p.startsWith(canon)), [],
+      'with only Documents registered, the canon is outside and is dropped — which is the bug this pair documents');
+  }
 
   const redacted = redactPayload('Authorization: Bearer abcdefghijklmnopqrstuvwxyz owner@example.com AIzaABCDEFGHIJKLMNOPQRSTUVWX');
   assert(!redacted.text.includes('abcdefghijklmnopqrstuvwxyz')); assert(!redacted.text.includes('owner@example.com')); assert(redacted.redactionCount >= 2);

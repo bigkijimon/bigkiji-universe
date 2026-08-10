@@ -50,19 +50,49 @@ function uniqueRoots(values) {
 }
 
 class SandboxPolicyResolver {
-  constructor({ vaultRoot, paidAllowlist = PAID, security = new SecurityPolicy() } = {}) {
-    this.vaultRoot = existingRealPath(vaultRoot || process.cwd());
+  /**
+   * @param {{vaultRoot?: string, vaultRoots?: string[], paidAllowlist?: string[], security?: SecurityPolicy}} deps
+   *
+   * The Vault is a list, because the owner's is in two places and one of them is the
+   * canon. Their departments live under ~/Documents; ~/BigKijiUniverse — 正典.md, the
+   * skill index, the failure memory — is a sibling of Documents, not a child.
+   *
+   * Measured 2026-08-10: with a single vaultRoot of ~/Documents, `resolve()` returned
+   * School with its two Admin reads and silently dropped all three BigKijiUniverse
+   * entries out of every department's own `.pi/sandbox.json`, because the filters below
+   * discard anything outside the boundary. Every agent would have lost the canon and its
+   * record of what has already gone wrong, and nothing would have said so.
+   *
+   * `vaultRoot` (singular) still works and means a list of one. Every caller in the
+   * repository passes it that way.
+   */
+  constructor({ vaultRoot, vaultRoots, paidAllowlist = PAID, security = new SecurityPolicy() } = {}) {
+    const declared = (Array.isArray(vaultRoots) && vaultRoots.length ? vaultRoots : [vaultRoot || process.cwd()])
+      .filter((value) => typeof value === 'string' && value.trim());
+    this.vaultRoots = [...new Set(declared.map(existingRealPath))];
+    // The first one is the Vault for anything that still asks for a single answer —
+    // `resolve()`'s default cwd, and the `vaultRoot` reported on the policy.
+    this.vaultRoot = this.vaultRoots[0];
     this.paidAllowlist = new Set(paidAllowlist);
     this.security = security;
   }
 
+  /** The registered root that contains this path, or '' when none does. */
+  rootFor(target) {
+    return this.vaultRoots.find((root) => isInside(root, target)) || '';
+  }
+
   resolve(cwd = this.vaultRoot) {
     const taskRoot = existingRealPath(cwd);
-    if (!isInside(this.vaultRoot, taskRoot)) {
+    const boundary = this.rootFor(taskRoot);
+    if (!boundary) {
       return { valid: false, localOnly: true, error: 'Task cwd is outside the configured Vault', sandboxPath: null,
         allowRead: [], allowWrite: [], providers: [] };
     }
-    const sandboxPath = findSandbox(taskRoot, this.vaultRoot);
+    // Walked up to the root that actually contains this task, not to whichever one
+    // happens to be first: a task in ~/BigKijiUniverse must not stop climbing at
+    // ~/Documents, and vice versa.
+    const sandboxPath = findSandbox(taskRoot, boundary);
     let raw = {};
     if (sandboxPath) {
       try { raw = JSON.parse(fs.readFileSync(sandboxPath, 'utf8')); }
@@ -87,14 +117,40 @@ class SandboxPolicyResolver {
       : (typeof value === 'string' && value.trim() ? [value] : null));
     if (!raw || typeof raw !== 'object') raw = {};
     const filesystem = (raw.filesystem && typeof raw.filesystem === 'object') ? raw.filesystem : {};
-    const allowRead = uniqueRoots([taskRoot, ...(list(filesystem.allowRead) || [])])
-      .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
-    const allowWrite = uniqueRoots(list(filesystem.allowWrite) || [taskRoot])
-      .filter((root) => isInside(this.vaultRoot, root) && !isSensitivePath(root));
+    // A relative entry means "this folder", measured from the file it is written in.
+    //
+    // It used to mean the *process's* current directory, because `expand()` calls
+    // `path.resolve` with no base. So `"allowWrite": ["."]` in School's own sandbox
+    // granted the BigKiji repo — whichever directory the daemon happened to be started
+    // from — and never School. Nothing failed; the grant simply landed somewhere else.
+    // ~/.pi/sandbox.json already carries a hand-written warning about this
+    // (「パスは必ず絶対パス」), which is a workaround for a trap rather than a rule anyone
+    // should have to know.
+    //
+    // pi-sandbox, the OS-enforced layer, reads `.` as the project directory, and
+    // tools/sandbox-reachability-audit.js already models it that way. Both readers of a
+    // file named `.pi/sandbox.json` now agree about what a dot is.
+    // findSandbox accepts both `<dir>/.pi/sandbox.json` and `<dir>/sandbox.json`, so the
+    // folder the file describes is one or two levels up depending on which it found.
+    const holder = sandboxPath ? path.dirname(sandboxPath) : '';
+    const base = holder ? (path.basename(holder) === '.pi' ? path.dirname(holder) : holder) : taskRoot;
+    const here = (value) => {
+      const text = String(value || '').replace(/^~(?=$|[\\/])/, os.homedir());
+      return path.isAbsolute(text) ? text : path.resolve(base, text);
+    };
+    // Inside ANY registered root, not inside the first one. This is the filter that was
+    // eating the canon — see the constructor.
+    const allowRead = uniqueRoots([taskRoot, ...(list(filesystem.allowRead) || []).map(here)])
+      .filter((root) => this.rootFor(root) && !isSensitivePath(root));
+    const allowWrite = uniqueRoots((list(filesystem.allowWrite) || [taskRoot]).map(here))
+      .filter((root) => this.rootFor(root) && !isSensitivePath(root));
     const declared = list(raw.models?.allowPaid) || list(raw.providers?.allow) || PAID;
     const providers = [...new Set(declared.map(String))].filter((provider) => this.paidAllowlist.has(provider));
     const resolved = { valid: true, localOnly: false, sandboxPath, allowRead, allowWrite, providers,
-      source: sandboxPath ? 'sandbox' : 'safe-default', vaultRoot: this.vaultRoot, taskRoot };
+      // `vaultRoot` is the root this task is actually inside — the one the disclosure
+      // manifest and the run brief should name. `vaultRoots` is the whole list, for
+      // anything reporting the configuration rather than this run.
+      source: sandboxPath ? 'sandbox' : 'safe-default', vaultRoot: boundary, vaultRoots: [...this.vaultRoots], taskRoot };
     resolved.security = this.security.normalize(resolved);
     return resolved;
   }

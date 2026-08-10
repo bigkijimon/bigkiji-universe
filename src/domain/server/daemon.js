@@ -161,13 +161,33 @@ function asList(value) {
  * Being told beats detecting: an explicit BIGKIJI_WORKSPACE, or a workspace handed in
  * by a caller such as a test, is used exactly as given even if it is the home directory.
  */
-function resolveWorkspace(requested, env = process.env, home = os.homedir()) {
+function resolveWorkspace(requested, env = process.env, home = os.homedir(), dataRoot = DATA.dataRoot) {
   const explicit = requested || env.BIGKIJI_WORKSPACE;
   if (explicit) return { workspace: path.resolve(explicit), redirected: null };
   const cwd = path.resolve(process.cwd());
   if (path.resolve(home) !== cwd) return { workspace: cwd, redirected: null };
   let vault = '';
   try { vault = detectVault(env, {}, home); } catch (_) { vault = ''; }
+  // BigKiji's own storage is not the owner's workspace, whatever markers it carries.
+  //
+  // `~/BigKijiUniverse` holds 正典.md and the sessions, and it has an `.obsidian/` folder,
+  // so `detectVault` picks it first — the app would run the owner's work inside its own
+  // filing cabinet. Their departments are five folders away, under `~/Documents`.
+  if (dataRoot && path.resolve(vault || '') === path.resolve(dataRoot)) vault = '';
+  // Detection first — an `.obsidian/` marker elsewhere is the owner saying "this one is
+  // mine" — and `~/Documents` only when it finds nothing real.
+  //
+  // Without this the fallback was the home directory itself: `detectVault` ends by
+  // inventing `~/Documents/BigKiji`, which does not exist here, so the guard below gave up
+  // and every run was handed $HOME. One of them sent gemini 711,395 input tokens against a
+  // 250,000 free-tier limit (measured 2026-08-10). The owner chose `~/Documents` as the
+  // Vault the same day.
+  if (!vault || path.resolve(vault) === cwd || !fs.existsSync(vault)) {
+    const documents = path.join(home, 'Documents');
+    if (fs.existsSync(documents) && path.resolve(documents) !== cwd) {
+      return { workspace: path.resolve(documents), redirected: { from: cwd, to: path.resolve(documents) } };
+    }
+  }
   // A detector that points back at home, or at somewhere that does not exist, has not
   // found anything. Staying put and saying so beats inventing a directory.
   if (!vault || path.resolve(vault) === cwd || !fs.existsSync(vault)) return { workspace: cwd, redirected: null };
@@ -368,7 +388,17 @@ class DaemonEngine extends EventEmitter {
     // gpuLock is: the real one spawns pi against the GPU, and a suite that does that has
     // an opinion about what the owner is rendering.
     this.lookup = lookup;
-    this.runner = new TaskRunner({ cwd: this.workspace, vaultRoot: this.workspace,
+    // Two roots, because the canon is a sibling of the departments rather than a child.
+    //
+    // The five department folders are under ~/Documents; ~/BigKijiUniverse holds 正典.md,
+    // the skill index and the failure memory, and every department's own `.pi/sandbox.json`
+    // grants read on all three. With one boundary those three grants were filtered out of
+    // every policy without a word — see SandboxPolicyResolver's constructor.
+    //
+    // dataRoot is added rather than hardcoded: a test injects a throwaway stateRoot and
+    // must not have the owner's real BigKijiUniverse quietly inside its Vault.
+    this.runner = new TaskRunner({ cwd: this.workspace,
+      vaultRoots: [...new Set([this.workspace, DATA.dataRoot].filter(Boolean))],
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
       maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });

@@ -605,6 +605,33 @@ function ollama(value) {
       assert.equal(resolveWorkspace('', {}, realBare).workspace, realBare);
       assert.equal(resolveWorkspace('', {}, realBare).redirected, null);
       fs.rmSync(bare, { recursive: true, force: true });
+
+      // Nothing to detect, but there IS a Documents: that is where the work lives.
+      //
+      // On the owner's machine `detectVault` ends by inventing `~/Documents/BigKiji`,
+      // which does not exist, so this fell through and handed every run the home
+      // directory. One of them sent gemini 711,395 input tokens against a 250,000
+      // free-tier limit (measured 2026-08-10) because allowRead was the whole of $HOME.
+      const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-docs-'));
+      const realPlain = fs.realpathSync.native(plain);
+      fs.mkdirSync(path.join(realPlain, 'Documents'), { recursive: true });
+      process.chdir(realPlain);
+      const toDocs = resolveWorkspace('', {}, realPlain);
+      assert.equal(toDocs.workspace, path.join(realPlain, 'Documents'), 'the home directory is not a workspace');
+      assert.ok(toDocs.redirected, 'and moving somewhere else has to be reportable');
+
+      // BigKiji's own storage is not the owner's workspace, whatever markers it carries.
+      //
+      // ~/BigKijiUniverse holds 正典.md and the sessions and has an `.obsidian/` folder, so
+      // `detectVault` picks it first and the app would run the owner's work inside its own
+      // filing cabinet. Measured 2026-08-10: resolveWorkspace() returned it from $HOME.
+      const dataRoot = path.join(realPlain, 'BigKijiUniverse');
+      fs.mkdirSync(path.join(dataRoot, '.obsidian'), { recursive: true });
+      assert.equal(resolveWorkspace('', {}, realPlain, dataRoot).workspace, path.join(realPlain, 'Documents'),
+        'the data root is where BigKiji files things, not where the owner works');
+      assert.equal(resolveWorkspace('', {}, realPlain, '').workspace, dataRoot,
+        'and without that rule it is exactly what gets chosen — which is the defect');
+      fs.rmSync(plain, { recursive: true, force: true });
     } finally {
       process.chdir(cwd);
       fs.rmSync(home, { recursive: true, force: true });

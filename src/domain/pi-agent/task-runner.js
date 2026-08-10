@@ -33,7 +33,7 @@ const { ResearchBroker } = require('../pi-core/security/research-broker');
 const { signalChild: stopChild } = require('../../core/child-signal');
 
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, graphPath = '', dataRoots = [], spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, vaultRoots = null, graphPath = '', dataRoots = [], spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
@@ -44,7 +44,9 @@ class TaskRunner extends EventEmitter {
     this.spawnImpl = spawnImpl;
     this.broker = broker;
     this.secretProvider = null;
-    this.security = security; this.policy = new SandboxPolicyResolver({ vaultRoot, security });
+    // `vaultRoots` when the caller has more than one place — the owner's canon lives
+    // beside their departments, not inside them. `vaultRoot` still works and means one.
+    this.security = security; this.policy = new SandboxPolicyResolver({ vaultRoot, vaultRoots, security });
     // Both pruners get the same exclusion: a local task seals a manifest too, so
     // leaving the local one unguarded would keep the failure alive on the cheap path.
     this.pruner = new ContextPruner({ graphPath, dataRoots });

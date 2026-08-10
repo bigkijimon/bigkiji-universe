@@ -7,8 +7,29 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 
-function daemonSpawnEnv(baseEnv, workspace, parentPid, versions = process.versions, dataRoot = '') {
-  const env = { ...baseEnv, BIGKIJI_DAEMON_PARENT: String(parentPid), BIGKIJI_WORKSPACE: workspace };
+/**
+ * Standing in a folder is not choosing it, and the home directory is the proof.
+ *
+ * `workspace` defaults to the CLI's own `process.cwd()`, and this passed it on as
+ * BIGKIJI_WORKSPACE — which `resolveWorkspace()` documents as "being told beats
+ * detecting" and therefore uses verbatim, home directory included. The daemon's own
+ * guard against working out of $HOME could never fire, because the CLI was answering
+ * the question before it was asked.
+ *
+ * Measured on the owner's machine 2026-08-10: they ran `bigkiji` from `~`, and one run
+ * later gemini had been sent 711,395 input tokens against a 250,000 free-tier limit,
+ * with the workspace reported as `/Users/yuma`, `isolated: false` and the reason
+ * "not a git repository".
+ *
+ * So the home directory is not forwarded. Anything else is — a caller who cd'd into a
+ * project meant it, and the Electron app passes an explicitly resolved vault. Setting
+ * BIGKIJI_WORKSPACE by hand still works and still wins; that one really is being told.
+ */
+function daemonSpawnEnv(baseEnv, workspace, parentPid, versions = process.versions, dataRoot = '', home = os.homedir()) {
+  const chosen = path.resolve(String(workspace || '')) === path.resolve(home) ? '' : workspace;
+  const env = { ...baseEnv, BIGKIJI_DAEMON_PARENT: String(parentPid) };
+  if (chosen) env.BIGKIJI_WORKSPACE = chosen;
+  else delete env.BIGKIJI_WORKSPACE;
   // The daemon and the app MUST agree on the data root or they silently read and
   // write different directories.
   if (dataRoot) env.BIGKIJI_DATA_ROOT = dataRoot;
