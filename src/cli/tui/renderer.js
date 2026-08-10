@@ -1,6 +1,6 @@
 'use strict';
 
-const { themeFor } = require('../../domain/terminal/cli-theme');
+const { themeFor, stripAnsi } = require('../../domain/terminal/cli-theme');
 const {
   DASH, count, glyphs, lower, metric, padToWidth, phrase, renderNote, renderToolCall, shortenPath, stringWidth,
   truncateToWidth,
@@ -39,6 +39,9 @@ const SCROLLBACK_LINES = 4000;
 // carrying Japanese by up to 2x. ASCII behaviour is unchanged.
 const clip = (value, width) => truncateToWidth(value, width);
 const pad = (value, width) => padToWidth(value, width);
+// The gauge inside the model panel. Narrower than the footer meter it replaces: it
+// shares a row with the step count and the percentage, inside a frame.
+const PANEL_METER = 10;
 const bar = (value, width = 12) => { const n = Math.max(0, Math.min(width, Math.round((Number(value) || 0) / 100 * width))); return `${'━'.repeat(n)}${'─'.repeat(width - n)}`; };
 
 // The daemon publishes phase either as a bare string ("EXECUTING") or as the
@@ -119,7 +122,7 @@ function phaseChips(current, C = themeFor('plan'), { compact = false } = {}) {
 // daemon's `conversation` snapshot, the counts from its fleet; a field the
 // daemon did not send renders as '—' rather than a plausible default.
 function modelPanel(state = {}, options = {}) {
-  const { width = 80, theme = themeFor('plan'), label = ' model ', frame = 0 } = options;
+  const { width = 80, theme = themeFor('plan'), label = ' model ', frame = 0, phase = state?.phase } = options;
   const conversation = state.conversation || {};
   const fleet = state?.models?.models || state?.models || [];
   const bits = [lower(conversation.model) || DASH];
@@ -162,21 +165,83 @@ function modelPanel(state = {}, options = {}) {
   // ears; everything else follows underneath.
   const factRoom = Math.max(1, room - 2 - markWidth);
   const facts = [truncateToWidth(bits[0], factRoom), truncateToWidth(bits.slice(1).join(' · '), factRoom),
-    truncateToWidth(where, factRoom)];
-  const rows = Math.max(mark.length, 1);
-  const bodyWidth = Math.max(...facts.map((line) => markWidth + stringWidth(line)));
+    truncateToWidth(where, factRoom)].map((text) => ({ text, width: stringWidth(text) }));
+
+  // The gauge, in the frame with the rest of the state. The owner asked twice.
+  //
+  // It lived at the bottom of the screen while the model panel sat at the top, so the two
+  // halves of one question — what is this thing doing, and how far in is it — were at
+  // opposite edges. Nothing new is drawn: `phaseChips`, `bar` and `progressOf` are the
+  // same functions the footer used and the monitor view already composes this way.
+  //
+  // Both rows are always present, even idle. The header's height decides `StickyScreen.top`,
+  // and a height that changes mid-session re-lays out the whole screen — which is the path
+  // that used to throw the transcript away.
+  if (phase !== undefined) {
+    const percent = progressOf(state, phase);
+    const active = activePhaseIndex(phase);
+    // A number with no denominator does not answer "how much is left". `2/3` does, and it
+    // is the same three steps the chips directly above are showing.
+    //
+    // No head start, deliberately. Goal-gradient says never start a user at zero, and this
+    // is the one place that rule is outranked: AWAITING_APPROVAL scores 0 on purpose —
+    // two runs once sat at 25% for eleven hours while the owner asked four times whether
+    // anything was happening (keywordProgress). Waiting is not progress. The honest way to
+    // avoid a bare 0 is the denominator, not a bigger numerator.
+    const step = active >= 0 ? `${active + 1}/${PHASE_ORDER.length}` : DASH;
+    // Both rows shrink rather than overflow, and both keep their row whatever happens —
+    // an empty row costs one line, a row wider than the frame costs the frame. These
+    // carry their own ANSI, so `truncateToWidth` (which strips it) can never be the tool;
+    // the fallbacks below drop content instead of cutting bytes.
+    //
+    // The cat eats most of a narrow panel: at 24 columns `factRoom` is 3, which is not a
+    // gauge, and the first version of this drew 40 columns into a 24 column terminal.
+    // The gauge rows sit below the cat, not beside it, so the art-width indent under them
+    // is alignment and nothing else. On a 24 column terminal the sprite is 17 of them and
+    // `factRoom` comes to 3, which is not a gauge — so when the indent is what does not
+    // fit, the indent is what goes. Giving up alignment beats giving up the row.
+    const gaugeRoom = Math.max(1, room - 2);
+    const fit = (...candidates) => {
+      const aligned = candidates.find((row) => row.width <= factRoom);
+      if (aligned) return { ...aligned, indent: markWidth };
+      const flush = candidates.find((row) => row.width <= gaugeRoom);
+      return flush ? { ...flush, indent: 0 } : { text: '', width: 0, indent: 0 };
+    };
+    const chipRow = (compact) => {
+      const text = phaseChips(phase, theme, { compact }).join(' ');
+      return { text, width: stringWidth(stripAnsi(text)) };
+    };
+    facts.push(fit(chipRow(false), chipRow(true)));
+    // Longest first: bar + step + percent, then step + percent, then percent alone. The
+    // percentage is last to go because it is the one number the row exists for.
+    const meterRow = (width) => {
+      const plainText = `${bar(percent, width)} ${step}  ${String(percent).padStart(3)}%`;
+      return { width: stringWidth(plainText),
+        text: `${theme.accent}${bar(percent, width)}${theme.reset} ${theme.muted}${step}${theme.reset}  ${theme.strong}${String(percent).padStart(3)}%${theme.reset}` };
+    };
+    const stepOnly = `${step}  ${String(percent).padStart(3)}%`;
+    facts.push(fit(meterRow(PANEL_METER), meterRow(Math.max(4, Math.floor(PANEL_METER / 2))),
+      { width: stringWidth(stepOnly), text: `${theme.muted}${step}${theme.reset}  ${theme.strong}${String(percent).padStart(3)}%${theme.reset}` },
+      { width: 4, text: `${theme.strong}${String(percent).padStart(3)}%${theme.reset}` }));
+  }
+
+  const rows = Math.max(mark.length, facts.length);
+  const bodyWidth = Math.max(...facts.map((line) => (line.indent ?? markWidth) + line.width));
   const inner = Math.min(room, Math.max(stringWidth(heading) + 1, bodyWidth + 2));
 
   const out = [`${theme.border}╭─${theme.reset}${theme.muted}${heading}${theme.reset}${theme.border}${'─'.repeat(Math.max(0, inner - stringWidth(heading) - 1))}╮${theme.reset}`];
   // Three facts, three weights. Flat `ink` on every row made the panel one block of
   // text where the model, the readiness counts and the directory all looked equally
   // important; the model is the one you read first, so it is the one that is bright.
-  const tones = [`${theme.bold}${theme.ink}`, theme.muted, theme.dim];
+  // The gauge rows carry their own colour — a chip is green when the step is done and a
+  // meter is accent-coloured — so they are emitted with no tone in front of them.
+  const tones = [`${theme.bold}${theme.ink}`, theme.muted, theme.dim, '', ''];
   for (let index = 0; index < rows; index += 1) {
-    const art = mark[index] ? `${mark[index]}  ` : ' '.repeat(markWidth);
-    const text = facts[index] || '';
-    const used = markWidth + stringWidth(text);
-    out.push(`${theme.border}│${theme.reset} ${art}${tones[index] || theme.ink}${text}${theme.reset}${' '.repeat(Math.max(0, inner - used - 2))} ${theme.border}│${theme.reset}`);
+    const line = facts[index] || { text: '', width: 0 };
+    const indent = line.indent ?? markWidth;
+    const art = mark[index] ? `${mark[index]}  ` : ' '.repeat(indent);
+    const used = indent + line.width;
+    out.push(`${theme.border}│${theme.reset} ${art}${tones[index] || ''}${line.text}${theme.reset}${' '.repeat(Math.max(0, inner - used - 2))} ${theme.border}│${theme.reset}`);
   }
   out.push(`${theme.border}╰${'─'.repeat(inner)}╯${theme.reset}`);
   return out;
@@ -191,7 +256,7 @@ function spread(left, right, width) {
 
 // Full screen monitor (`bigkiji monitor`).
 //
-//   Sticky Top    = title + model panel + phase vector + fleet (fixed header)
+//   Sticky Top    = title + model panel (with the phase gauge inside it) + fleet
 //   Middle        = live agent relay (DECSTBM scroll region)
 //   Sticky Bottom = key hints (always last row)
 //
@@ -241,16 +306,14 @@ class TUIRenderer {
       '',
     ];
 
-    // Phase — one headline line, the vector and the meter folded underneath it.
+    // Phase — one headline line. The chips and the meter are inside the panel above.
+    //
+    // They used to be repeated here, three rows below the box that now carries them. That
+    // was fine while the panel held only the model and the counts; with the gauge in the
+    // frame it is the same two facts twice on one screen, and the second copy is the one
+    // nobody asked for. The headline stays: it names the phase in words, which the chips
+    // do not.
     header.push(...renderToolCall('phase', `${phrase(phaseName(phase))} ${mark.note} ${pct}%`, { width, theme: C, mark }));
-    // The chip row is the one line here that was a fixed 40 columns whatever the
-    // terminal was, so it ran off the right edge below 45 columns — measured, and
-    // true before this file was last touched. Under pressure the names go and the
-    // numbered dots stay, because which step is lit is the part worth keeping.
-    const chipRow = (compact) => phaseChips(phase, C, { compact }).join('  ');
-    const chips = stringWidth(chipRow(false)) + 5 <= width ? chipRow(false) : chipRow(true);
-    const meterWidth = Math.max(8, Math.min(24, width - 46));
-    header.push(`     ${chips}${narrow ? '' : `   ${C.accent}${bar(pct, meterWidth)}${C.reset} ${C.strong}${String(pct).padStart(3)}%${C.reset}`}`);
     header.push('');
 
     // Fleet — the accent is reserved for models that are actually connected.

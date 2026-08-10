@@ -90,12 +90,17 @@ function screenWidth(output = process.stdout) { return Math.max(40, Math.min(200
 // The old banner also drew five permanently lit model dots; they were
 // decoration, not state — every dot was on regardless of whether the model was
 // reachable — so they are gone and the panel counts what is really connected.
-function header(state = {}, width = screenWidth(), frame = 0) {
+function header(state = {}, width = screenWidth(), frame = 0, phase = state?.phase) {
   const mark = glyphs();
   // The workspace moved inside the panel — it is the third row now, beside the cat's
   // nose — so repeating it here would be the same fact twice in four rows.
+  //
+  // `phase` is passed explicitly rather than left to `state.phase`: the REPL tracks the
+  // live phase in its own variable, updated from the SSE stream between the slow state
+  // polls, and reading it off the last polled snapshot would leave the gauge up to four
+  // seconds behind the chips it sits under.
   const panel = modelPanel({ workspace: process.cwd(), ...state },
-    { width, theme: A, label: ` bigkiji universe v${APP_VERSION} `, frame });
+    { width, theme: A, label: ` bigkiji universe v${APP_VERSION} `, frame, phase });
   const facts = truncateToWidth(`pi-orchestrator ${mark.note} core 8777 ${mark.note} pid ${state.pid || '—'}`, width);
   return [...panel, `${A.dim}${facts}${A.reset}`].join('\n');
 }
@@ -244,10 +249,18 @@ async function repl(client) {
     sticky.setFooter(lines, { paint: false });
     process.stdout.write('\x1b[?25l'); refreshPrompt(); process.stdout.write('\x1b[?25h');
   };
+  // The gauge lives in the header now, so a phase change has to repaint the header.
+  //
+  // The footer is repainted on every tick and after every event; the header was only
+  // redrawn while a turn was in flight, because until today the only thing on it that
+  // moved was the cat. `restoreHeader()` addresses the header rows absolutely and cannot
+  // touch the transcript, and the header's height does not change with the phase — the
+  // two gauge rows are always there — so this cannot trigger a re-layout.
+  const paintHeader = () => { if (!sticky.active) return; const out = sticky.restoreHeader(); if (out) process.stdout.write(out); };
   // A function, not an array: StickyScreen re-evaluates it on every layout, so a
   // resize re-renders the panel and the hints at the new width instead of repainting
   // lines measured for the old one.
-  const stickyOn = sticky.start({ header: (cols) => [...header(live, cols, frameIndex).split('\n'), ...hintLines(cols)], onLayout: () => paintFooter(true) });
+  const stickyOn = sticky.start({ header: (cols) => [...header(live, cols, frameIndex, phaseInfo).split('\n'), ...hintLines(cols)], onLayout: () => paintFooter(true) });
   const say = (value) => {
     const text = typeof value === 'string' ? value : util.inspect(value, { colors: process.env.NO_COLOR === undefined, depth: 4 });
     if (sticky.active) sticky.print(text); else console.log(text);
@@ -422,7 +435,11 @@ async function repl(client) {
     : null;
   ticker?.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
-  const statePoll = setInterval(() => { client.state().then((next) => { live = next; paintFooter(); }).catch(() => {}); }, 4000); statePoll.unref?.();
+  // The header carries fleet counts and the workspace as well as the gauge, so the slow
+  // poll repaints it too — otherwise `6/6 ready` would be whatever it was at startup.
+  const statePoll = setInterval(() => {
+    client.state().then((next) => { live = next; paintFooter(); paintHeader(); }).catch(() => {});
+  }, 4000); statePoll.unref?.();
   /**
    * Which delegated agent a step belongs to.
    *
@@ -444,9 +461,11 @@ async function repl(client) {
   client.on('event', ({ event, data }) => {
     if (event === 'state') live = { ...live, ...data };
     else if (event === 'models') live = { ...live, models: data };
-    else if (event === 'phase') phaseInfo = data;
+    else if (event === 'phase') { phaseInfo = data; paintHeader(); }
     else if (event === 'run') {
+      const before = phaseInfo;
       phaseInfo = data.status || phaseInfo;
+      if (phaseInfo !== before) paintHeader();
       // Keep the live list current between four-second polls: the footer's waiting
       // count and /approve both read it, and a stale one under-reports what is waiting.
       live = { ...live, runs: mergeRun(live.runs, data) };

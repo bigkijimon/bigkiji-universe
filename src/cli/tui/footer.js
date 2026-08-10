@@ -4,7 +4,6 @@
 // so it can be unit rendered and diffed before being painted.
 //
 //   <loading icon>  <status>  <comment>            <elapsed>  <tokens>
-//   phase vector  ●1 preflight  ○2 execute  ○3 verify    ━━━━━───── 58%
 //   ──────────────────────────────────────────────────────────────────
 //   π> <text input>                       <- readline owns this row (null)
 //   ──────────────────────────────────────────────────────────────────
@@ -21,14 +20,14 @@
 
 const path = require('path');
 const { stripAnsi, themeFor } = require('../../domain/terminal/cli-theme');
-const { bar, clip, phaseChips, phaseName, progressOf } = require('./renderer');
+const { bar, clip, phaseName } = require('./renderer');
 const { providerColor } = require('../../domain/terminal/cli-theme');
 const { lower, phrase, stringWidth } = require('./transcript');
 const { LOADING_TEXT, frameRows, loadingFrames } = require('./loading-frames');
 
 const DASH = '—';
 const MARGIN = '  ';
-const ROWS_BELOW_ART = 5; // phase vector, rule, input, rule, status
+const ROWS_BELOW_ART = 4; // rule, input, rule, status — the phase vector moved into the model panel
 const METER_WIDTH = 10;
 const plain = (value) => stripAnsi(value);
 
@@ -163,25 +162,14 @@ function buildFooter(options = {}) {
   const left = `${C.brownLight}${icon}${C.reset}  ${busy ? C.accent : C.strong}${statusText}${C.reset}${note ? `  ${noteColour}${note}${C.reset}` : ''}`;
   lines.push(MARGIN + spread(left, right, inner, leftPlain, rightPlain).text);
 
-  // Row n+1 — PHASE VECTOR + real progress meter
+  // The phase vector used to be here, and it is in the model panel now.
   //
-  // The chip row was a fixed width whatever the terminal was, so in the owner's split
-  // pane (63 columns) `spread()` ran out of room and fell through to its clip branch,
-  // which printed `phase vector ●1 preflight ○2 execute ○3 verify ———…` — the meter and
-  // the percentage, the two things the row exists for, cut off mid-glyph. `phaseChip`
-  // has had a `compact` mode since it was written and nothing ever passed it. Under
-  // pressure the names go and the numbered dots stay, exactly as the monitor already
-  // does, because which step is lit is the part worth keeping.
-  const percent = progressOf(state, phase);
-  const chipRow = (compact) => phaseChips(phase, C, { compact }).join('  ');
-  const meterPlain = `${bar(percent, METER_WIDTH)} ${String(percent).padStart(3)}%`;
-  const meter = `${C.accent}${bar(percent, METER_WIDTH)}${C.reset} ${C.strong}${String(percent).padStart(3)}%${C.reset}`;
-  const fits = (compact) => stringWidth(`phase vector  ${plain(chipRow(compact))}`) + stringWidth(meterPlain) + 2 <= inner;
-  const compactChips = !fits(false);
-  const chips = chipRow(compactChips);
-  const vectorLeft = `${C.bold}${C.ink}phase vector${C.reset}  ${chips}`;
-  const vectorLeftPlain = `phase vector  ${plain(chips)}`; // measured by spread() in display columns
-  lines.push(MARGIN + spread(vectorLeft, meter, inner, vectorLeftPlain, meterPlain).text);
+  // The owner asked for it twice (2026-08-10): the gauge was on the bottom row of the
+  // screen while the panel answering the other half of the same question — which model,
+  // which directory, how much of the fleet is up — was on the top. One question, two
+  // edges of the terminal. renderer.modelPanel draws both rows inside the frame from the
+  // same phaseChips/bar/progressOf this row used, so nothing new is rendered and the
+  // footer gives a row back to the transcript.
 
   // The running block — what is being built, then a gauge per specialist.
   //
@@ -275,7 +263,11 @@ function buildFooter(options = {}) {
   const chosen = candidates.find((segments) => stringWidth(join(segments, 'plain')) <= inner);
   lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([workSeg || agentSeg], 'plain'), inner)));
 
-  return { lines, inputIndex: art.length + 2, height: art.length + ROWS_BELOW_ART };
+  // art rows, then the status row, then the rule — so the input is one past the rule.
+  // This was `art.length + 2` while the phase vector sat between the status row and the
+  // rule; leaving it there after the vector moved would have put readline's prompt one
+  // row below where the footer actually leaves the gap.
+  return { lines, inputIndex: art.length + 1, height: art.length + ROWS_BELOW_ART };
 }
 
 /**

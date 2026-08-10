@@ -324,11 +324,14 @@ ok('the local tools are on screen at all', () => {
   const without = T.renderStatus({ ...state, tools: undefined }, { width: 88 }).join('\n');
   assert.ok(!/tools\(/.test(without), 'no tools known is no tools section');
   // And the panel counts them without growing a row.
-  const panel = modelPanel(state, { width: 60, theme: require('../src/domain/terminal/cli-theme').themeFor('plan'), label: ' bigkiji ' });
+  const panel = modelPanel({ ...state, phase: undefined }, { width: 60, theme: require('../src/domain/terminal/cli-theme').themeFor('plan'), label: ' bigkiji ', phase: undefined });
   // Five: a border, three content rows and a border. The cat is three terminal rows
   // as of 2026-08-04 — two rows of this sprite rendered as a brown bar with a dot in
   // it, because the ears live in pixel rows 0-1 and a two-row crop cannot hold ears
   // and eyes at once. The third row is not empty: it carries the working directory.
+  //
+  // Five only when no phase is passed. With one it is seven, and the two extra rows are
+  // always both there — see the height assertions below.
   assert.equal(panel.length, 5, 'the header box is five rows: border, three facts, border');
   assert.match(panel.join(' ').replace(/\x1b\[[0-9;]*m/g, ''), /2\/3 tools/);
 });
@@ -338,9 +341,12 @@ ok('the header carries exactly one box, and it is the model panel', () => {
     const renderer = new TUIRenderer({ output: { columns: cols, rows, write() {} } });
     const { header } = renderer.sections(MONITOR_STATE, MONITOR_RELAY);
     const boxed = plainLines(header).filter((line) => BOX.test(line));
-    // Five rows: a border, three content rows and a border. The cat needs three —
-    // ears, eyes, nose — and two of anything smaller renders as a coloured bar.
-    assert.equal(boxed.length, 5, `one box, five rows, at ${cols}x${rows}: ${boxed.length}`);
+    // Seven rows: a border, three content rows, the two gauge rows, a border. The cat
+    // needs three — ears, eyes, nose — and two of anything smaller renders as a coloured
+    // bar. The gauge moved inside the frame on 2026-08-10 at the owner's request, asked
+    // twice: it was on the bottom row of the screen while the panel answering the other
+    // half of the same question was on the top.
+    assert.equal(boxed.length, 7, `one box, seven rows, at ${cols}x${rows}: ${boxed.length}`);
     assert.ok(boxed[0].startsWith('╭─') && boxed[0].endsWith('╮'), `top: ${boxed[0]}`);
     for (const line of boxed.slice(1, -1)) assert.ok(line.startsWith('│') && line.endsWith('│'), `content: ${line}`);
     assert.ok(boxed.at(-1).startsWith('╰') && boxed.at(-1).endsWith('╯'), `bottom: ${boxed.at(-1)}`);
@@ -670,21 +676,23 @@ ok('TERM=dumb still produces readable output with no escapes and no kaomoji', ()
 // ---------------------------------------------------------------------------
 // 12. The sticky footer contract is untouched
 // ---------------------------------------------------------------------------
-ok('the footer is still six rows in the owner-specified order', () => {
+ok('the footer is five rows in the owner-specified order', () => {
+  // Six until 2026-08-10. The phase vector moved into the model panel at the owner's
+  // request — asked twice — and the footer gave that row back to the transcript.
   const set = loadingFrames();
-  assert.equal(footerHeightFor(set), 6);
+  assert.equal(footerHeightFor(set), 5);
   const { lines, inputIndex, height } = buildFooter({ cols: 100, mode: 'plan', state: {}, comment: 'note', elapsedMs: 65000 });
-  assert.equal(height, 6);
-  assert.equal(inputIndex, 3, 'readline owns row index 3');
-  assert.strictEqual(lines[3], null, 'the input row must be left to readline');
+  assert.equal(height, 5);
+  assert.equal(inputIndex, 2, 'readline owns row index 2');
+  assert.strictEqual(lines[2], null, 'the input row must be left to readline');
   const flat = plainLines(lines.map((line) => line || ''));
   assert.ok(/loading|idle/.test(flat[0]) && flat[0].includes('1m 05s'), `row 0: ${flat[0]}`);
-  assert.ok(flat[1].includes('phase vector'), `row 1: ${flat[1]}`);
-  assert.match(flat[2], /^\s*─+$/, `row 2 should be a rule: ${flat[2]}`);
-  assert.match(flat[4], /^\s*─+$/, `row 4 should be a rule: ${flat[4]}`);
-  assert.ok(flat[5].includes('mode:') && flat[5].includes('shell:') && flat[5].includes('agent:'), `row 5: ${flat[5]}`);
-  assert.ok(!/[A-Z]/.test(flat[1]) && !/[A-Z]/.test(flat[5]),
-    `every character BigKiji paints is lowercase: ${flat[1]} / ${flat[5]}`);
+  assert.match(flat[1], /^\s*─+$/, `row 1 should be a rule: ${flat[1]}`);
+  assert.match(flat[3], /^\s*─+$/, `row 3 should be a rule: ${flat[3]}`);
+  assert.ok(flat[4].includes('mode:') && flat[4].includes('shell:') && flat[4].includes('agent:'), `row 4: ${flat[4]}`);
+  assert.ok(!/[A-Z]/.test(flat[4]), `every character BigKiji paints is lowercase: ${flat[4]}`);
+  // And it is gone from here rather than drawn in both places.
+  assert.ok(!flat.some((line) => line.includes('phase vector')), 'the phase vector is in the panel, not the footer');
 });
 ok('the footer never overflows, even with a long Japanese comment', () => {
   for (const cols of [60, 80, 100, 140]) {
