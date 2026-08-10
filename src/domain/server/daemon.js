@@ -30,6 +30,7 @@ const { readiness, survey } = require('../pi-agent/provider-readiness');
 const gpuLockModule = require('../pi-agent/gpu-lock');
 const { detectAndProbeAll } = require('../pi-agent/tool-registry');
 const { FastFacilitatorRouter, questionText } = require('../pi-agent/fast-api-router');
+const { escape } = require('../pi-agent/cloud-escape');
 const { ModelStatusStore } = require('../hud/model-status-store');
 const { FleetMetricsStore } = require('../../core/fleet-metrics-store');
 const knowledge = require('../pi-agent/pi-knowledge-orchestrator');
@@ -415,7 +416,22 @@ class DaemonEngine extends EventEmitter {
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
       maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });
-    this.conversation = conversationEngine || new ConversationEngine();
+    // The conversation, with a way out when a render has switched the local model off.
+    //
+    // `gpu-signal.sh` SIGSTOPs Ollama for the whole of a render, so the owner's questions
+    // came back as a template for as long as their video took: 「生成中のためローカルが
+    // 使えないので会話ができないと表示されています」. Their `cloudFallback` had said
+    // 'gpu-busy' for a day and reached only the front desk, and only GLM, which has never
+    // had a key here.
+    //
+    // Read per call, not captured, and for the same reason the facilitator's switch is:
+    // a privacy control that needs a restart to take effect is one nobody can trust in the
+    // moment. Off means the escape function is never called at all, not called and refused.
+    this.conversation = conversationEngine || new ConversationEngine({
+      cloudEscape: (prompt) => (this.ownerSettings()?.conversation?.cloudFallback === 'gpu-busy'
+        ? escape(prompt)
+        : Promise.resolve(null)),
+    });
     // The front desk that turns a one-line request into a spec worth executing.
     //
     // It existed and worked — measured 2026-08-05, 17 characters in, a 945-character
@@ -622,6 +638,19 @@ class DaemonEngine extends EventEmitter {
         // only for loopback requests. This stays as the safe default underneath it.
         routing: { ...(saved.routing || {}), executionMode: 'plan', facilitationComplete: true },
         quality: { gate: 'strict', maxRepairCycles: 2, ...(saved.quality || {}) },
+        // The block this object forgot to carry.
+        //
+        // Two keys were assembled here and `conversation` was not one of them, so
+        // `cloudFallback: () => this.ownerSettings()?.conversation?.cloudFallback || 'off'`
+        // (below) read `undefined` and answered 'off' on every call, whatever the owner
+        // had chosen. Measured 2026-08-10: their settings.json has said
+        // `"cloudFallback": "gpu-busy"` for a day, and the escape it enables has never
+        // once been reachable. A switch the owner has already thrown, wired to nothing.
+        //
+        // Passed through rather than defaulted: this is a privacy control, and the safe
+        // value is the store's own ('off' — settings-store.js DEFAULTS). Inventing a
+        // second default here is how the two would disagree.
+        conversation: { ...(saved.conversation || {}) },
       };
     }
     return this._settings;
@@ -896,7 +925,13 @@ class DaemonEngine extends EventEmitter {
     // opens with the holder and the time, and printing the same sentence twice is noise,
     // which is its own way of not being read.
     const draftNote = facilitation?.degradedNote && !result.gpuFrozen ? facilitation.degradedNote : '';
-    const reply = [facilitation?.viaCloud ? facilitation.cloudNote : '', draftNote, spoken].filter(Boolean).join('\n');
+    // The facilitator's note says 「この整理だけ」クラウドに出した — only the organising. That
+    // is true when the reply itself was written here, and false the moment the conversation
+    // took the same escape, which it now can. `result.reply` already opens with its own
+    // note in that case, so printing this one after it would both repeat the fact and
+    // misstate its scope.
+    const cloudNote = facilitation?.viaCloud && !result.viaCloud ? facilitation.cloudNote : '';
+    const reply = [cloudNote, draftNote, spoken].filter(Boolean).join('\n');
     // A question the conversation model asked in prose is still a question.
     //
     // Only the facilitator's questions were ever registered, so when the model asked one

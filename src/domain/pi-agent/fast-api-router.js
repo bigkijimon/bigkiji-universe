@@ -1,17 +1,18 @@
 'use strict';
 
-const { execFile } = require('child_process');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { GLM_MODELS } = require('./model-router');
 const { readGpuLock, ollamaFrozen } = require('./gpu-lock');
-const { readiness } = require('./provider-readiness');
-const { redactPayload } = require('../pi-core/security/payload-redactor');
+const { escapeReady, runEscape, escapeModel, ESCAPE_ORDER, ESCAPE_TIMEOUT_MS } = require('./cloud-escape');
 // One residency window for every local model BigKiji loads. See conversation-engine.
 const { DEFAULT_KEEP_ALIVE: KEEP_ALIVE } = require('../pi-core/conversation-engine');
 
-// Local first, always. `glm` is reachable only while the GPU is held by someone else and
-// only when the owner has turned the escape on — see `cloudFallback` below.
-const PRIORITY = ['ollama', 'glm'];
+// Local first, always. The rest are reachable only while the GPU is held by someone else
+// and only when the owner has turned the escape on — see `cloudFallback` below.
+// Then the owner's escape chain in their order (2026-08-10). GLM is last and kept
+// rather than dropped: the key is one settings entry away, and a chain that silently
+// omits a provider is worse than one that tries it and says why it failed.
+const PRIORITY = ['ollama', 'claude', 'codex', 'glm'];
 const PAID_EXECUTORS = ['claude', 'codex', 'gemini', 'glm'];
 const BLOCKED_PAID = ['kimi', 'openrouter', 'openai-tts', 'elevenlabs'];
 // 前受付は軽量・高速が要件なのでGLMはflash枠を使う（IDの正本はmodel-router）
@@ -45,7 +46,8 @@ async function ollamaReady(timeoutMs = 850) {
 // state the machine instead of probing it. All three default to measuring. Without them
 // every assertion about this function would depend on what the owner's GPU happened to be
 // doing, which this repository has now been bitten by three times.
-async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null, glmReady = null } = {}) {
+async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null, glmReady = null,
+  cloudReady = null } = {}) {
   // One `ps` per call at most, and none at all when the caller states the machine.
   let frozen = null;
   const isFrozen = () => { if (frozen === null) frozen = ollamaFrozen()?.frozen === true; return frozen; };
@@ -58,9 +60,23 @@ async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null
   // the local model unable to answer, is something else holding the card, and is there a
   // key for the thing we are about to spawn.
   const allowed = cloudFallback === 'gpu-busy';
-  const keyed = glmReady === null ? glmCredentialled() : !!glmReady;
-  return { ollama: local, glm: allowed && !local && stopped && keyed,
-    claude: false, codex: false, gemini: false, kimi: false, openrouter: false };
+  const window = allowed && !local && stopped;
+  // `glmReady` stays for the callers that already state it; `cloudReady` states the whole
+  // chain at once. Both default to measuring, because every assertion about this function
+  // that depended on what the owner's GPU happened to be doing has cost this repository a
+  // debugging session.
+  const ready = (provider) => {
+    if (provider === 'glm' && glmReady !== null) return !!glmReady;
+    if (typeof cloudReady === 'function') return !!cloudReady(provider);
+    return escapeReady(provider);
+  };
+  // Claude, then Codex, then GLM — the owner's order (2026-08-10), and the same order the
+  // conversation escape walks. This used to be GLM alone, which on this machine meant the
+  // escape was open onto a provider that has never had a key: the front desk fell through
+  // to three generic steps for the whole of every render.
+  return { ollama: local,
+    claude: window && ready('claude'), codex: window && ready('codex'), glm: window && ready('glm'),
+    gemini: false, kimi: false, openrouter: false };
 }
 
 /**
@@ -73,15 +89,15 @@ async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null
  * offered it anyway — a setting is a permission, not a credential — so every front-desk
  * turn during a render spawned a provider that could only fail.
  *
- * `secret` is deliberately empty. `readiness()` will report a key saved inside BigKiji as
- * ready, and it would be, for anything that reads the settings store — but `runGlm` hands
- * this to a child process, and a child sees the environment. The question here is
- * strictly what pi will see, and pi documents `ZAI_API_KEY` for the `zai` provider
- * (docs/providers.md). The key name is taken from provider-readiness so the two cannot
- * drift apart.
+ * The reasoning moved to `cloud-escape.escapeReady`, which asks it for every provider in
+ * the chain rather than only this one: `readiness()` counts a key saved inside BigKiji as
+ * ready, and it would be for anything reading the settings store, but these providers are
+ * child processes and a child sees the environment and the login files. This name is kept
+ * because it reads better at its two call sites and because the front desk's tests address
+ * it directly.
  */
 function glmCredentialled(env = process.env) {
-  return readiness('glm', { env, secret: () => '' }).ready;
+  return escapeReady('glm', env);
 }
 
 /**
@@ -98,8 +114,13 @@ function glmCredentialled(env = process.env) {
  * is off" is not an explanation for anything when the local model answered fine. Reporting
  * both at once is how a true sentence becomes a misleading one.
  */
-function draftNote(cloudFallback, availability = {}) {
-  if (availability.ollama || availability.glm) {
+function draftNote(cloudFallback, availability = {}, { ready = escapeReady } = {}) {
+  // "A model was there and produced nothing usable" is a different fact from "no model at
+  // all", and it is true of any candidate that was offered — not only the two this
+  // function used to name. It listed `ollama || glm` while the escape chain was one
+  // provider long; with Claude and Codex in it, a run that reached Claude and came back
+  // with unparseable text would have been explained as if nothing had been available.
+  if (PRIORITY.some((id) => availability[id])) {
     return '（下書きです：モデルは応答しましたが、整理として使える形になりませんでした）';
   }
   const parts = [];
@@ -112,7 +133,15 @@ function draftNote(cloudFallback, availability = {}) {
     parts.push('ローカルモデルが応答しませんでした');
   }
   if (cloudFallback !== 'gpu-busy') parts.push('クラウド退避は off です');
-  else if (!glmCredentialled()) parts.push('クラウド退避（GLM）は ZAI_API_KEY が未設定なので使えません');
+  else {
+    // Which door was locked, by name. "The cloud escape is unavailable" tells the owner
+    // nothing they can act on; "Claude and Codex are not signed in" tells them the one
+    // command that fixes it. `ready` is injectable for the same reason `detect()`'s
+    // arguments are: an assertion about this sentence must not depend on whether the
+    // machine running the test happens to be signed in.
+    const shut = ESCAPE_ORDER.filter((id) => !ready(id));
+    if (shut.length === ESCAPE_ORDER.length) parts.push(`クラウド退避先（${shut.join(' / ')}）はどれも未ログイン・鍵未設定です`);
+  }
   return `（下書きです：${parts.join('。')}。整理はまだ誰も書いていません）`;
 }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
@@ -144,7 +173,8 @@ function facilitatorPrompt(ownerText, prior = '') {
 // a stall deadline because this route is `stream: false` — there is nothing to observe
 // until the JSON is complete.
 const OLLAMA_TIMEOUT_MS = 30000;
-const GLM_TIMEOUT_MS = 60000;
+// One timeout for every escape, defined where the escape lives.
+const GLM_TIMEOUT_MS = ESCAPE_TIMEOUT_MS;
 
 async function runOllama(prompt) {
   // A deadline, because a SIGSTOPped Ollama accepts the connection and never answers.
@@ -181,50 +211,24 @@ async function callOllama(prompt, signal) {
 }
 
 /**
- * The escape hatch: one turn of facilitation on GLM's free flash tier.
+ * The escape hatch: one turn of facilitation off this machine.
  *
  * Reached only through `detect()`, which opens it only while the GPU is held and only
- * when the owner has switched `cloudFallback` on. Chosen by the owner on 2026-08-09 over
- * Gemini, whose free quota this machine has already exhausted once (it is the recorded
- * dispatch failure of run-mshw0qbn).
+ * when the owner has switched `cloudFallback` on.
  *
- * The command is the one `task-runner.js` already uses for GLM, minus the parts a
- * facilitation turn has no business having: `--no-tools` so it cannot read or write
- * anything, `--no-context-files` and `--no-skills` so nothing from this repository is
- * attached, `--no-session` so the text is not retained anywhere by pi. What leaves the
- * machine is one prompt and nothing else — no file contents, no repository context.
+ * It was GLM alone, chosen 2026-08-09 over Gemini (whose free quota this machine had
+ * already exhausted — the recorded dispatch failure of run-mshw0qbn). Measured 2026-08-10:
+ * GLM has never had a key here, so the one door in the escape opened onto a wall and every
+ * turn taken during a render fell through to three generic steps. The owner chose Claude
+ * then Codex. GLM stays last, because the key is one settings entry away.
  *
- * And it is redacted first. `redactPayload` is the same function the disclosure manifest
- * runs before any paid provider sees a byte; the front desk has no manifest, so it at
- * least keeps that half. A secret found here throws rather than being sent.
+ * The flags, the redaction and the closed stdin all live in cloud-escape.js now — one
+ * place, so the next provider added cannot get a weaker contract than this one. What
+ * leaves the machine is one prompt: no tools, no context files, no session, no repository.
  */
-function runGlm(prompt, { spawn = execFile, timeoutMs = GLM_TIMEOUT_MS, model = MODELS.glm } = {}) {
-  const inspected = redactPayload(String(prompt || ''));
-  if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_FACILITATOR_PROMPT');
-  const args = ['--print', '--model', `zai/${model}`, '--no-context-files', '--no-session',
-    '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', inspected.text];
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.env.PI_BIN || 'pi', args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
-      (error, stdout, stderr) => {
-        if (error) return reject(new Error(`glm ${String(stderr || error.message).trim().slice(0, 160)}`));
-        return resolve(String(stdout || ''));
-      });
-    // The whole 60 seconds, every single time. Nothing is going to type at this.
-    //
-    // Measured 2026-08-10 on the owner's machine, while they were watching it happen:
-    // `pi --print --model zai/... < /dev/null` prints "No API key found for zai." and
-    // exits in 0.56 s. The same command through execFile — whose stdin is an open pipe —
-    // ran for 60010 ms and returned empty stdout and empty stderr, because pi wants to
-    // offer `/login` and waits for an answer that cannot arrive. Every simple question
-    // asked during a render therefore cost exactly one timeout and came back as the
-    // generic three-step spec. Their report: 「シンプルな質問にたいしての回答がとても遅いです」.
-    //
-    // local-lookup.js closes stdin for exactly this reason and says so in a comment. The
-    // reason did not reach the second place that spawns pi, which is the third time this
-    // repository has shipped a fix to one of two identical call sites.
-    try { child?.stdin?.end(); } catch (_) {}
-  });
-}
+function runGlm(prompt, options = {}) { return runEscape('glm', prompt, { model: MODELS.glm, ...options }); }
+function runClaude(prompt, options = {}) { return runEscape('claude', prompt, options); }
+function runCodex(prompt, options = {}) { return runEscape('codex', prompt, options); }
 
 // Which function actually runs for a candidate name.
 //
@@ -234,7 +238,7 @@ function runGlm(prompt, { spawn = execFile, timeoutMs = GLM_TIMEOUT_MS, model = 
 // name with the local model's answer inside it. A provider label that does not name the
 // thing that wrote the text is worse than no label, because the cost record, the routing
 // history and the owner all read it.
-const RUNNERS = { ollama: runOllama, glm: runGlm };
+const RUNNERS = { ollama: runOllama, claude: runClaude, codex: runCodex, glm: runGlm };
 function fallbackSpec(ownerText) {
   return { status: 'ready', questions: [], promptSpec: {
     goal: knowledge.cleanText(ownerText, 900), constraints: ['Paid execution is limited to Claude, Codex, Gemini and GLM', 'Persist approved state locally'],
@@ -339,9 +343,12 @@ class FastFacilitatorRouter {
     // is not — the GPU was held and the escape was on — that is a fact about their privacy,
     // not an implementation detail, so it travels with the result and the daemon puts it
     // in front of the reply rather than only in a log.
-    const viaCloud = provider === 'glm';
+    // Anything that is not the local model is off this machine. This read `=== 'glm'`
+    // while GLM was the only escape; with Claude and Codex in the chain, that literal
+    // would have let two providers see the owner's words and told them nothing.
+    const viaCloud = ESCAPE_ORDER.includes(provider);
     const cloudNote = viaCloud
-      ? `（GPUが埋まっていたので、この整理だけ ${MODELS.glm}（クラウド）に出しました）`
+      ? `（GPUが埋まっていたので、この整理だけ ${escapeModel(provider) || provider}（クラウド）に出しました）`
       : '';
     if (!parsed) parsed = fallbackSpec(combined);
     const questions = normalizeQuestions(parsed.questions);

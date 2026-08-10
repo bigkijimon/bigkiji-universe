@@ -40,6 +40,10 @@ const CODEX_MODELS = Object.freeze({
 const CLAUDE_MODELS = Object.freeze({
   design: process.env.BIGKIJI_CLAUDE_DESIGN_MODEL || 'claude-fable-5',
   general: process.env.BIGKIJI_CLAUDE_MODEL || 'claude-opus-5',
+  // Not a work tier. This is the cloud escape's conversation turn (cloud-escape.js),
+  // reached only while a render holds the GPU and the local model is stopped. Answering
+  // 「はい」 on Opus because Ollama is frozen is the wrong instrument and the wrong bill.
+  chat: process.env.BIGKIJI_CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001',
 });
 
 // Two of these used to fire on words that were not about design at all, and each

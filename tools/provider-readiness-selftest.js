@@ -162,16 +162,26 @@ ok('every provider declares how to fix it', () => {
 // and a source match would pass on a comment.
 ok('the front desk router is not a status display', async () => {
   const fastRouter = require('../src/domain/pi-agent/fast-api-router');
-  const routerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
-  for (const provider of ['claude', 'codex', 'gemini']) {
-    assert.match(routerSource, new RegExp(`${provider}: false`), `${provider} is false here by design, and that is not a status`);
+  // `gpuHeld`, `localReady` and `cloudReady` are all stated rather than probed: otherwise
+  // this reads the owner's GPU and login files and answers differently at midnight than
+  // at noon. The claim is about behaviour, so it is made by calling detect() — a source
+  // match for `claude: false` used to stand in for it, and stopped being true the day the
+  // escape chain grew past GLM without the assertion noticing.
+  const stated = { gpuHeld: true, localReady: false, cloudReady: () => true };
+  const shut = await fastRouter.detect(stated);
+  for (const provider of ['claude', 'codex', 'gemini', 'glm']) {
+    assert.equal(shut[provider], false, `${provider} is shut with no setting turned on, and that is not a status`);
   }
-  // `gpuHeld` and `localReady` are stated rather than probed: otherwise this reads the
-  // owner's GPU and answers differently at midnight than at noon.
-  const shut = await fastRouter.detect({ gpuHeld: true, localReady: false });
-  assert.equal(shut.glm, false, 'with no setting turned on, glm is as unavailable here as the other three');
-  assert.equal((await fastRouter.detect({ cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true })).glm, false,
-    'and a working local model closes it again — this is an escape, not a status');
+  const free = await fastRouter.detect({ ...stated, cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true });
+  for (const provider of ['claude', 'codex', 'gemini', 'glm']) {
+    assert.equal(free[provider], false, `a working local model closes ${provider} again — this is an escape, not a status`);
+  }
+  // Open, in exactly one situation: the owner asked, the GPU is held, and the local model
+  // is therefore stopped. Gemini stays shut in all of them — limit:0 free quota here.
+  const open = await fastRouter.detect({ ...stated, cloudFallback: 'gpu-busy' });
+  assert.equal(open.claude, true, 'the owner asked and the card is busy — that is the whole window');
+  assert.equal(open.codex, true);
+  assert.equal(open.gemini, false, 'gemini is not in the escape chain at any setting');
   assert.equal(typeof fastRouter.ollamaReady, 'function', 'the display needs the local probe without the paid falses');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'main.js'), 'utf8');
   assert.ok(!/fastRouter\.detect\(\)\.then\(\(availability\) => fleetMetrics\.setAvailability/.test(main),
@@ -189,5 +199,5 @@ ok('a ready provider is shown as usable, an unready one is not', () => {
 });
 
 Promise.all(pending).then(() => {
-  console.log(`provider readiness selftest: PASS · ${checks} checks · a CLI login counts · GOOGLE_API_KEY works for gemini · an empty variable does not · settings outrank env · reasons carry no secrets · the daemon uses it for both routing and display · the front desk opens to glm only while the GPU is held and the owner asked`);
+  console.log(`provider readiness selftest: PASS · ${checks} checks · a CLI login counts · GOOGLE_API_KEY works for gemini · an empty variable does not · settings outrank env · reasons carry no secrets · the daemon uses it for both routing and display · the front desk opens to Claude then Codex only while the GPU is held and the owner asked`);
 }).catch((error) => { console.error(error); process.exit(1); });

@@ -719,5 +719,88 @@ function ollama(value) {
     assert.ok(!ConversationEngine.isSmall('   '));
   }
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not · a go-ahead starts the request it refers to, and starts nothing when it refers to nothing · home is redirected to the vault, and being told still wins · a two-character question is answered in one sentence');
+  // ---- a render must not end the conversation --------------------------------
+  //
+  // The owner's report: 「生成中のためローカルが使えないので会話ができないと表示されています」.
+  // gpu-signal.sh SIGSTOPs Ollama for the whole of a render — by process name, so the size
+  // of the model is irrelevant and no smaller one would have survived it — and there was
+  // no path here but the template. Their settings had said `cloudFallback: "gpu-busy"` for
+  // a day; it reached only the front desk, and only GLM, which has never had a key here.
+  {
+    const spec = (reply) => JSON.stringify({ kind: 'CHAT', reply, confidence: 0.9 });
+    let asked = null;
+    const escaped = new ConversationEngine({
+      fetchImpl: async () => { throw new Error('local must not be asked while it is stopped'); },
+      isFrozen: () => true,
+      cloudEscape: async (prompt) => { asked = prompt; return { text: spec('いま動いているのは1件です。'), provider: 'claude', model: 'claude-haiku-4-5-20251001' }; },
+    });
+    const out = await escaped.turn({ text: 'いまの状況を教えて', sessionId: 'escape' });
+
+    assert.equal(out.provider, 'claude', 'the provider names who wrote it');
+    assert.equal(out.model, 'claude-haiku-4-5-20251001', 'and so does the model — not the local id it did not use');
+    assert.equal(out.viaCloud, true);
+    // A model answered. Marking this degraded would put the "it did not answer" status on
+    // a real reply and leave the footer saying the local model is unavailable while the
+    // owner reads a considered answer.
+    assert.equal(out.degraded, false, 'a turn a model served is not a degraded turn');
+    assert.equal(out.gpuFrozen, false, 'and the freeze did not stop this one');
+    assert.match(out.reply, /クラウド/, 'which words left the machine is said on screen, not only logged');
+    assert.match(out.reply, /いま動いているのは1件です。/);
+    // Shown, not remembered — the lesson of the freeze notice that a resumed session read
+    // back to an idle GPU an hour later. `spoken` is what the transcript keeps.
+    assert.equal(out.spoken, 'いま動いているのは1件です。', 'the note is shown, never stored as the assistant’s words');
+    assert.doesNotMatch(out.spoken, /クラウド/);
+    // The escape is sent the same prompt the local model would have had, or the reply
+    // answers a question the owner never asked.
+    assert.match(asked, /いまの状況を教えて/, 'the escape gets the owner’s actual question');
+    assert.match(asked, /Return JSON only/, 'and the same envelope, which is why parsing and classification still work');
+
+    // The shape a real provider actually sends.
+    //
+    // Measured against the live `claude` CLI on 2026-08-10 with these exact flags: it
+    // answers in 7.3 s and wraps the object in a ```json fence. Every assertion above used
+    // bare JSON, so the fence is the thing that would have worked in the test suite and
+    // failed on the owner's machine. json() finds the first { and the last }, and this is
+    // what pins that it must keep doing so.
+    const fenced = new ConversationEngine({
+      fetchImpl: async () => { throw new Error('stopped'); }, isFrozen: () => true,
+      cloudEscape: async () => ({ text: '```json\n{"kind":"CHAT","reply":"準備できています。","confidence":0.9}\n```\n', provider: 'claude' }),
+    });
+    const fromFence = await fenced.turn({ text: 'つながってる？', sessionId: 'escape-fence' });
+    assert.equal(fromFence.degraded, false, 'a fenced object is still an answer');
+    assert.equal(fromFence.spoken, '準備できています。', 'and the fence never reaches the transcript');
+
+    // Only the freeze buys the escape. A local model that timed out or returned bad JSON
+    // is a fault worth seeing, and paying a provider to paper over it hides the defect.
+    let calls = 0;
+    const broken = new ConversationEngine({
+      fetchImpl: async () => { throw new Error('local returned nonsense'); },
+      isFrozen: () => false,
+      cloudEscape: async () => { calls += 1; return { text: spec('cloud'), provider: 'claude' }; },
+    });
+    const local = await broken.turn({ text: 'いまの状況を教えて', sessionId: 'escape-local' });
+    assert.equal(calls, 0, 'a local fault is not billed to a cloud provider');
+    assert.equal(local.degraded, true);
+    assert.equal(local.provider, 'deterministic-local');
+
+    // Every way the escape can fail lands on the template the owner would have had
+    // anyway. A broken shortcut must never be how a request disappears.
+    for (const [name, escape] of [
+      ['nothing wired', null],
+      ['nobody signed in', async () => null],
+      ['provider refused', async () => { throw new Error('claude 401'); }],
+      ['unparseable output', async () => ({ text: 'I would love to help!', provider: 'claude' })],
+      ['empty reply', async () => ({ text: JSON.stringify({ kind: 'CHAT', reply: '   ' }), provider: 'claude' })],
+    ]) {
+      const engine = new ConversationEngine({
+        fetchImpl: async () => { throw new Error('stopped'); }, isFrozen: () => true, cloudEscape: escape,
+      });
+      const fell = await engine.turn({ text: 'いまの状況を教えて', sessionId: `escape-${name}` });
+      assert.equal(fell.degraded, true, `${name}: falls back rather than losing the turn`);
+      assert.equal(fell.viaCloud, false, `${name}: and does not claim a cloud answer`);
+      assert.ok(String(fell.reply || '').trim(), `${name}: the owner still gets something`);
+    }
+  }
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not · a go-ahead starts the request it refers to, and starts nothing when it refers to nothing · home is redirected to the vault, and being told still wins · a two-character question is answered in one sentence · a render no longer ends the conversation, and every way the escape can fail lands on the template');
 })().catch((error) => { console.error(error); process.exit(1); });

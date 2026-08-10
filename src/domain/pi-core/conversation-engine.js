@@ -409,7 +409,7 @@ class ConversationEngine extends EventEmitter {
     endpoint = process.env.BIGKIJI_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434', timeoutMs = 8000, maxTurnMs = 90000,
     firstTokenTimeoutMs = 20000,
     maxContextTokens = 4096, maxTurns = 8, keepAlive = DEFAULT_KEEP_ALIVE, explainFreeze = freezeExplanation,
-    isFrozen = null } = {}) {
+    isFrozen = null, cloudEscape = null } = {}) {
     super(); this.fetchImpl = fetchImpl; this.model = model; this.endpoint = endpoint.replace(/\/$/, ''); this.timeoutMs = timeoutMs;
     // Never shorter than the stall deadline: a caller that passes only `timeoutMs` (the
     // reflection engine passes 12000) must not end up with a first-token budget smaller
@@ -432,6 +432,15 @@ class ConversationEngine extends EventEmitter {
     this.isFrozen = isFrozen || (fetchImpl === global.fetch
       ? () => ollamaFrozen()?.frozen === true
       : () => false);
+    // The way out when this machine's model has been switched off for a render.
+    //
+    // Injected rather than imported, and null by default, because this engine's identity
+    // is "local, private, free" and it must stay that way for every caller that does not
+    // deliberately opt in. The daemon supplies it only while the owner's `cloudFallback`
+    // says 'gpu-busy'. Given one, it is called with the same prompt this engine would
+    // have sent Ollama, and its answer goes through the same parser — so classification,
+    // history and the JSON envelope all keep working.
+    this.cloudEscape = cloudEscape || null;
     this.histories = new Map(); this.active = 0;
   }
 
@@ -523,6 +532,7 @@ class ConversationEngine extends EventEmitter {
     const history = this.history(sessionId, seed); const compacted = this.compact(history); onStart?.({ turnId, model: this.model });
     this.emit('start', { turnId, sessionId, model: this.model, at: started }); this.active++;
     let result; let provider = 'local-qwen'; let degraded = false; let ttftMs = null; let gpuFrozen = false;
+    let viaCloud = false; let cloudNote = '';
     const controller = new AbortController();
     // Streaming changes what a deadline can honestly mean. With stream:false the whole
     // turn shared one 8s budget, so a model that was generating correctly but slowly
@@ -541,6 +551,10 @@ class ConversationEngine extends EventEmitter {
     };
     const ceiling = setTimeout(() => controller.abort(), this.maxTurnMs); ceiling.unref?.();
     armStall();
+    // Composed once, outside the try, because the escape below sends the same prompt.
+    // Building it twice would be two prompts that drift; sending a different one would
+    // mean the cloud answer came from a question the owner never asked.
+    const composed = this.prompt(ownerText, compacted.turns, facts);
     try {
       if (!this.fetchImpl) throw new Error('Local conversation fetch unavailable');
       // Do not spend eight seconds asking a stopped process.
@@ -558,7 +572,7 @@ class ConversationEngine extends EventEmitter {
       if (this.isFrozen()) throw new Error('Ollama is stopped — the GPU is held by another job');
       const response = await this.fetchImpl(`${this.endpoint}/api/generate`, { method: 'POST', signal: controller.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: this.model,
-          prompt: this.prompt(ownerText, compacted.turns, facts), stream: true, format: 'json', keep_alive: this.keepAlive,
+          prompt: composed, stream: true, format: 'json', keep_alive: this.keepAlive,
           // A reasoning model deliberates before it answers, and that deliberation
           // comes out of the same num_predict budget as the answer: qwen3.5 spent
           // the whole 650 thinking and returned nothing. Ollama 0.30.8 takes
@@ -585,6 +599,37 @@ class ConversationEngine extends EventEmitter {
       const parsed = json(raw); if (!parsed) throw new Error('Local conversation model returned invalid JSON');
       result = normalize(parsed, ownerText);
     } catch (error) {
+      // Off the machine, rather than nothing at all.
+      //
+      // The owner's report: 「生成中のためローカルが使えないので会話ができないと表示されて
+      // います」. While a render holds the card there was no path here but the template —
+      // and they had already set `cloudFallback: "gpu-busy"`, which until today reached
+      // only the front desk and only GLM, which has never had a key on this machine.
+      //
+      // Only when the GPU is what stopped us. A model that timed out or returned bad JSON
+      // is a local fault and spending the owner's money on it would hide a real problem;
+      // a SIGSTOPped Ollama is nobody's fault and no amount of waiting fixes it.
+      //
+      // The answer goes through the very same `json()` → `normalize()` the local path
+      // uses. The prompt already demands "Return JSON only", so kind, title and the
+      // knowledge fields all survive the detour — the transcript cannot tell which model
+      // wrote it, which is the point, and `provider` says so for anyone who asks.
+      const escaped = this.isFrozen() ? await this._escape(composed, ownerText) : null;
+      if (escaped) {
+        result = escaped.result;
+        provider = escaped.provider;
+        viaCloud = true;
+        // Which words left the machine, and who wrote the ones coming back. Shown, not
+        // logged: the owner is entitled to assume this engine is local, so the one turn
+        // where it is not has to say so on screen.
+        cloudNote = `（GPUが埋まっているので、この返事は ${escaped.model || escaped.provider}（クラウド）が書きました）`;
+        result.spoken = result.reply;
+        result.reply = `${cloudNote}\n${result.spoken}`;
+        // Deliberately not degraded and not gpuFrozen. A model answered. Marking this
+        // turn degraded would put the "it did not answer" template's own status on a real
+        // reply, and the footer would go on saying the local model is unavailable while
+        // the owner reads a considered answer.
+      } else {
       degraded = true; provider = 'deterministic-local'; result = fallback(ownerText);
       result.error = clean(error.name === 'AbortError'
         // Which deadline ran out, named, because they mean different things: nothing at
@@ -624,6 +669,7 @@ class ConversationEngine extends EventEmitter {
       // something the assistant believes.
       result.spoken = result.reply;
       result.reply = `${header}${result.spoken}`;
+      }
     } finally { clearTimeout(stall); clearTimeout(ceiling); this.active = Math.max(0, this.active - 1); }
     if (!result.spoken) result.spoken = result.reply;
     history.push({ role: 'owner', text: ownerText }, { role: 'assistant', text: result.spoken });
@@ -631,9 +677,46 @@ class ConversationEngine extends EventEmitter {
     onDelta?.(result.reply); const finished = Date.now();
     // ttftMs is null when nothing was streamed — a fallback answer, or a response
     // delivered in one piece. Null means "not measured", never zero.
-    const output = { ...result, turnId, sessionId, provider, model: this.model, degraded, gpuFrozen, latencyMs: finished - started, ttftMs,
+    // `model` names what actually wrote this. It was `this.model` unconditionally, which
+    // was true for as long as the only writer was the local one; a cloud escape reported
+    // under the local model's name would put the wrong id in the cost record and on screen.
+    const output = { ...result, turnId, sessionId, provider, model: viaCloud ? (result.escapeModel || provider) : this.model,
+      degraded, gpuFrozen, viaCloud, cloudNote, latencyMs: finished - started, ttftMs,
       context: { turns: compacted.turns.length, estimatedTokens: compacted.tokens, limit: this.maxContextTokens }, redactions: inspected.findings };
     this.emit('finish', output); return output;
+  }
+
+  /**
+   * One escape turn, parsed exactly like a local one. Null when it cannot help.
+   *
+   * Null is the important half. A broken shortcut must never be the road a request
+   * disappears down, so every failure here — no escape wired, nobody signed in, the
+   * provider refused, unparseable output — lands the caller back on the template it
+   * would have used anyway, with the local error still attached. local-lookup.js states
+   * the same rule for the same reason.
+   *
+   * @returns {Promise<{result: object, provider: string, model: string}|null>}
+   */
+  async _escape(composed, ownerText) {
+    if (!this.cloudEscape) return null;
+    try {
+      const answer = await this.cloudEscape(composed);
+      if (!answer?.text) return null;
+      const parsed = json(answer.text);
+      if (!parsed) return null;
+      // Checked before `normalize`, not after, and this is the whole reason the check is
+      // here at all: normalize() substitutes the deterministic template whenever the
+      // reply is missing, under six characters, or an echo of the summary. So a provider
+      // that returned `{"reply":""}` would have produced a perfectly ordinary-looking
+      // answer labelled `provider: claude` — a template presented as a model's work,
+      // which is the exact defect the degraded-notice work exists to stop, arriving by a
+      // new road. Caught by the `empty reply` case in conversation-selftest.
+      const wrote = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
+      if (wrote.length < 6) return null;
+      const result = normalize(parsed, ownerText);
+      result.escapeModel = answer.model || '';
+      return { result, provider: answer.provider || 'cloud', model: answer.model || '' };
+    } catch (_) { return null; }
   }
 
   snapshot() { return { model: this.model, endpoint: this.endpoint, active: this.active, sessions: this.histories.size,

@@ -3,12 +3,18 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const router = require('../src/domain/pi-agent/fast-api-router');
-// Local first, and the only other entry is the GPU-busy escape. The order matters: a
-// candidate list that put glm ahead of ollama would send the owner's text to a cloud
-// provider on a machine that was perfectly able to answer.
-assert.deepStrictEqual(router.PRIORITY, ['ollama', 'glm']);
+// Local first, then the GPU-busy escape chain in the owner's order. The order matters
+// twice over: a list that put a cloud provider ahead of ollama would send the owner's
+// text off the machine while this one was perfectly able to answer, and a chain in the
+// wrong order would bill the wrong provider first.
+assert.deepStrictEqual(router.PRIORITY, ['ollama', 'claude', 'codex', 'glm']);
 assert.deepStrictEqual(router.PAID_EXECUTORS, ['claude', 'codex', 'gemini', 'glm']);
-assert.deepStrictEqual(router.availableOrder({ gemini: true, ollama: true, glm: false, codex: true, kimi: true }), ['ollama']);
+// Whatever else is true, local wins outright when local can answer.
+assert.deepStrictEqual(router.availableOrder({ gemini: true, ollama: true, glm: true, codex: true, kimi: true }), ['ollama', 'codex', 'glm']);
+assert.deepStrictEqual(router.availableOrder({ ollama: false, claude: true, codex: true, glm: true }), ['claude', 'codex', 'glm']);
+// Gemini is not in the chain and must not sneak in through the availability map: its free
+// quota is limit:0 on this machine and it has never completed an assignment.
+assert.deepStrictEqual(router.availableOrder({ gemini: true }), []);
 for (const blocked of ['kimi', 'openrouter', 'openai-tts', 'elevenlabs']) assert(router.BLOCKED_PAID.includes(blocked));
 assert.deepStrictEqual(router.availableOrder({}), []);
 const fallback = router.fallbackSpec('Implement a safe test');
@@ -253,12 +259,35 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
   // cloud escape is off" — true, irrelevant, and pointing at the wrong thing to fix. The
   // test below is the one that caught it.
   {
-    const held = router.draftNote('gpu-busy', { ollama: false, glm: false });
-    assert.match(held, /ローカルモデル/, 'what is down');
-    assert.ok(/ZAI_API_KEY/.test(held) || /クラウド退避/.test(held), 'and why the escape did not cover for it');
+    // Nothing signed in anywhere: say so, and name the doors, because "the cloud escape
+    // is unavailable" is not something the owner can act on and `claude` is.
+    const shut = router.draftNote('gpu-busy', { ollama: false, claude: false, codex: false, glm: false },
+      { ready: () => false });
+    assert.match(shut, /ローカルモデル/, 'what is down');
+    assert.match(shut, /クラウド退避先/, 'and why the escape did not cover for it');
+    for (const id of ['claude', 'codex', 'glm']) assert.ok(shut.includes(id), `${id} is named rather than lumped in`);
+
+    // The switch itself is a different reason, and outranks the doors.
+    const off = router.draftNote('off', { ollama: false, claude: false, codex: false, glm: false },
+      { ready: () => false });
+    assert.match(off, /クラウド退避は off/, 'a switch nobody turned on is not a broken login');
+    assert.doesNotMatch(off, /クラウド退避先/, 'and naming both at once is how a true sentence misleads');
+
+    // Signed in, but not offered — because the GPU was free, or the local model answered.
+    // Claiming the escape is broken here would be false, and this is the assertion that
+    // stops the sentence being pasted onto every empty draft.
+    const reachable = router.draftNote('gpu-busy', { ollama: false, claude: false, codex: false, glm: false },
+      { ready: (id) => id === 'claude' });
+    assert.doesNotMatch(reachable, /クラウド退避先/, 'a reachable Claude is not an unreachable escape');
+
     const answered = router.draftNote('off', { ollama: true, glm: false });
     assert.doesNotMatch(answered, /クラウド退避/, 'a working local model is not a cloud problem');
     assert.match(answered, /モデルは応答しました/, 'it is a model that answered and said nothing usable');
+    // The same is true of a cloud provider that answered: it was there, so the note is
+    // about unusable output, not about absence. This read `ollama || glm` while the chain
+    // was one long, and would have mis-explained every Claude turn.
+    const cloudAnswered = router.draftNote('gpu-busy', { ollama: false, claude: true, codex: false, glm: false });
+    assert.match(cloudAnswered, /モデルは応答しました/, 'Claude was there — that is not "no model at all"');
   }
 
   // runOllama had no deadline at all. `ollamaReady()` probes with 850ms in front of it,
@@ -268,7 +297,13 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
     assert.match(source, /new AbortController\(\)[\s\S]{0,200}OLLAMA_TIMEOUT_MS/,
       'the local call needs its own deadline, not the readiness probe’s');
-    assert.match(source, /redactPayload/, 'and nothing reaches a cloud provider unredacted');
+    // Redaction moved to cloud-escape.js when the chain grew from one provider to three,
+    // so the guard follows it. It is asserted on the module every escape now goes through
+    // rather than on each caller — one place is the point of the move, and a caller that
+    // stopped using it would fail the behavioural assertions above instead.
+    const escape = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'cloud-escape.js'), 'utf8');
+    assert.match(escape, /redactPayload/, 'and nothing reaches a cloud provider unredacted');
+    assert.match(escape, /child\?\.stdin\?\.end\(\)/, 'nor waits out a timeout that a closed stdin would have ended');
   }
 
   console.log('fast router selftest: PASS · think:false or the model spends the answer on thinking · '

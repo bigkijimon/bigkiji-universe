@@ -528,6 +528,31 @@ const WebSocket = require('ws');
   mark('closing listener');
   await new Promise((resolve) => listener.close(resolve));
   mark('listener closed');
-  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened · the repair asks why, does not stop to ask permission, and remembers the answer');
+  // ---- the settings block that never left the file ---------------------------
+  //
+  // `ownerSettings()` assembled two keys — routing and quality — and `conversation` was
+  // not one of them, so `cloudFallback: () => ownerSettings()?.conversation?.cloudFallback
+  // || 'off'` read undefined and answered 'off' on every call. Measured 2026-08-10: the
+  // owner's settings.json had said "gpu-busy" for a day and the escape it enables had
+  // never once been reachable. A switch they had already thrown, wired to nothing.
+  {
+    const settingsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-daemon-settings-'));
+    const engine = new DaemonEngine({ stateRoot: settingsRoot, workspace: process.cwd() });
+    const file = path.join(require('../src/core/path-config').createPathConfig({ appRoot: process.cwd() }).userData, 'settings.json');
+    let saved = {};
+    try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { saved = {}; }
+    const settings = engine.ownerSettings();
+    assert.ok(settings.conversation, 'the conversation block reaches the daemon at all');
+    assert.equal(settings.conversation.cloudFallback, saved.conversation?.cloudFallback,
+      'and it carries the owner’s own value rather than a second default invented here');
+    // The two that are deliberately overridden stay overridden. executionMode is the safe
+    // fallback under effectiveMode(), not a setting this layer is allowed to relay.
+    assert.equal(settings.routing.executionMode, 'plan', 'the pin the HTTP layer relies on is untouched');
+    assert.equal(settings.quality.gate, 'strict');
+    fs.rmSync(settingsRoot, { recursive: true, force: true });
+    mark('settings block reaches the router');
+  }
+
+  console.log('daemon selftest: PASS · WebSocket/SSE · JSONL session · one-time mobile pairing · stale-plan guard · reload · approval-skipping modes are loopback only · a finished run is not the current phase · the front desk writes the spec, an open question holds the run back, the answer builds it, and a waiting plan can be answered instead of guessed at · hands-off decides its own open questions and never over the LAN · the deliberation memory learns from what happened · the repair asks why, does not stop to ask permission, and remembers the answer · the conversation settings block reaches the router instead of being dropped');
   mark('pass printed');
 })().catch((error) => { console.error(error); process.exit(1); });
