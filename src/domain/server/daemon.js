@@ -161,11 +161,24 @@ function asList(value) {
  * Being told beats detecting: an explicit BIGKIJI_WORKSPACE, or a workspace handed in
  * by a caller such as a test, is used exactly as given even if it is the home directory.
  */
-function resolveWorkspace(requested, env = process.env, home = os.homedir(), dataRoot = DATA.dataRoot) {
+function resolveWorkspace(requested, env = process.env, home = os.homedir(), dataRoot = DATA.dataRoot, appRoot = APP_ROOT) {
   const explicit = requested || env.BIGKIJI_WORKSPACE;
   if (explicit) return { workspace: path.resolve(explicit), redirected: null };
   const cwd = path.resolve(process.cwd());
-  if (path.resolve(home) !== cwd) return { workspace: cwd, redirected: null };
+  // Two cwds mean "nobody chose", not "here".
+  //
+  // $HOME is the obvious one. The app's own directory is the other, and it is the one
+  // that actually happens: DaemonClient.ensure() always spawns with `cwd: appRoot`, so a
+  // daemon started without BIGKIJI_WORKSPACE has the BigKiji repository as its working
+  // directory and adopted it as the owner's workspace. Measured 2026-08-10, immediately
+  // after the fix that stopped the CLI from passing $HOME: reads went from "the whole
+  // home directory" to "the app's own source tree" — a different wrong answer.
+  //
+  // An owner who really is working on BigKiji still gets it: running the CLI from here
+  // makes cwd ≠ home, so daemon-client sends BIGKIJI_WORKSPACE and `explicit` wins above.
+  // This branch is only reached when nothing was requested at all.
+  const unchosen = path.resolve(home) === cwd || path.resolve(appRoot || '') === cwd;
+  if (!unchosen) return { workspace: cwd, redirected: null };
   let vault = '';
   try { vault = detectVault(env, {}, home); } catch (_) { vault = ''; }
   // BigKiji's own storage is not the owner's workspace, whatever markers it carries.

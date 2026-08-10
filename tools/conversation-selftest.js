@@ -631,6 +631,34 @@ function ollama(value) {
         'the data root is where BigKiji files things, not where the owner works');
       assert.equal(resolveWorkspace('', {}, realPlain, '').workspace, dataRoot,
         'and without that rule it is exactly what gets chosen — which is the defect');
+
+      // The app's own source tree is not a workspace either.
+      //
+      // DaemonClient.ensure() always spawns with `cwd: appRoot`, so once the CLI stopped
+      // passing BIGKIJI_WORKSPACE=$HOME the daemon simply adopted the BigKiji repository
+      // instead. Measured against the live daemon on 2026-08-10, right after that fix
+      // shipped: workspace came back as .../CompanyApp/BIGKIJI/app. One wrong answer
+      // replaced by another, which is why this is asserted rather than assumed.
+      const appRoot = path.join(realPlain, 'Documents', 'Admin', 'CompanyApp', 'BIGKIJI', 'app');
+      fs.mkdirSync(appRoot, { recursive: true });
+      process.chdir(appRoot);
+      const fromApp = resolveWorkspace('', {}, realPlain, dataRoot, appRoot);
+      assert.equal(fromApp.workspace, path.join(realPlain, 'Documents'),
+        'a daemon spawned into the app directory has not been told where to work');
+      assert.ok(fromApp.redirected, 'and moving somewhere else stays reportable');
+      // Being told still wins, so an owner working ON BigKiji is unaffected: running the
+      // CLI from here makes cwd ≠ home, daemon-client sends the variable, and it is
+      // honoured before any of this runs.
+      assert.equal(resolveWorkspace(appRoot, {}, realPlain, dataRoot, appRoot).workspace, appRoot);
+      assert.equal(resolveWorkspace('', { BIGKIJI_WORKSPACE: appRoot }, realPlain, dataRoot, appRoot).workspace, appRoot);
+      // Any other directory is a real choice and is left alone.
+      const elsewhere = path.join(realPlain, 'Documents', 'School');
+      fs.mkdirSync(elsewhere, { recursive: true });
+      process.chdir(elsewhere);
+      assert.equal(resolveWorkspace('', {}, realPlain, dataRoot, appRoot).workspace, elsewhere,
+        'standing in a department is choosing it');
+
+      process.chdir(realPlain);
       fs.rmSync(plain, { recursive: true, force: true });
     } finally {
       process.chdir(cwd);
