@@ -138,5 +138,50 @@ assert.strictEqual(describeWithoutFrontmatter('# AI Influencer\n\nKeep one face 
   'AI Influencer — Keep one face consistent across shots with PuLID.',
   'a skill with no frontmatter is still a skill');
 
+// A role title cannot decide which skills are attached.
+//
+// The coordinator matched on `${run.prompt} ${item.title}`, and item.title is one of five
+// fixed strings from ROLE_BLUEPRINT — the same words on every run, so no information about
+// this one. Measured 2026-08-10 on the owner's own request:
+//
+//   「UPCLASSのテキストの続編を…」 alone                    lesson-video, ollama-qwen
+//   "Architecture, system implementation and integration"  using-n8n-mcp-skills, figma-use
+//   the two concatenated, which is what shipped            using-n8n-mcp-skills, figma-use
+//
+// The owner's words did not reach the result. A request to list teaching materials was
+// handed ~900 tokens of n8n and Figma instructions because BigKiji's own role description
+// contains the word "Architecture".
+//
+// The identical bug was found for model tiers on 2026-08-03 and fixed in resolveModel —
+// routing-assignment-selftest still asserts it as "a role title cannot decide the tier".
+// The correction never reached this second caller. Asserted at the source rather than by
+// re-scanning the owner's live skills, which differ from machine to machine.
+{
+  const coordinator = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'core-execution-coordinator.js'), 'utf8');
+  // Anchored on the method definition, not on `_assignmentPrompt(` — the first match of
+  // that is the call site, and a slice taken from there reads someone else's code.
+  const at = coordinator.indexOf('  _assignmentPrompt(run, item) {');
+  assert.ok(at > 0, 'the method this asserts about still exists under that name');
+  const block = coordinator.slice(at, at + 2400);
+  assert.ok(!/skills\.match\(`\$\{run\.prompt\} \$\{item\.title\}`\)/.test(block),
+    'the role title is back in the match text, and it decides the answer on its own');
+  assert.ok(!/skills\.brief\(`\$\{run\.prompt\} \$\{item\.title\}`\)/.test(block),
+    'and the brief must be built from the same text the match was');
+  assert.match(block, /skills\.match\(run\.prompt\)/, 'the owner’s request is what is matched on');
+
+  // And the property itself, on a registry whose contents this test controls: a role
+  // title made of ordinary engineering words must attach nothing.
+  const titleRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-skill-title-'));
+  fs.mkdirSync(path.join(titleRoot, 'n8n-things'), { recursive: true });
+  fs.writeFileSync(path.join(titleRoot, 'n8n-things', 'SKILL.md'),
+    '---\nname: n8n-things\ndescription: Build and validate n8n workflow architecture and system integration\n---\nbody\n');
+  const titled = new SkillRegistry({ roots: [titleRoot] }); titled.scan();
+  assert.ok(titled.match('Architecture, system implementation and integration').length > 0,
+    'the fixture really does match the role title — otherwise the next assertion proves nothing');
+  assert.deepEqual(titled.match('UPCLASSのテキストの続編を作って欲しいです').map((s) => s.id), [],
+    'and a request that names none of it attaches none of it');
+  fs.rmSync(titleRoot, { recursive: true, force: true });
+}
+
 fs.rmSync(root, { recursive: true, force: true });
-console.log('skill registry selftest: PASS · CJK bigram matching · frontmatter over body · folded/literal scalars · no-frontmatter fallback · text-only brief · explicit sandbox');
+console.log('skill registry selftest: PASS · CJK bigram matching · frontmatter over body · folded/literal scalars · no-frontmatter fallback · text-only brief · explicit sandbox · a role title cannot decide which skills are attached');

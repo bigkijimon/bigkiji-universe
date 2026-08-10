@@ -624,10 +624,30 @@ class CoreExecutionCoordinator extends EventEmitter {
     // Which of the owner's skills reached this assignment. It was injected silently, so
     // when it fired on the wrong thing — measured: 「READMEを直して」 pulled in
     // token-saver and n8n-binary-and-data — nothing said so and nobody could tell.
+    // The owner's request, and only the owner's request.
+    //
+    // `item.title` is one of five fixed strings from ROLE_BLUEPRINT — the same words on
+    // every run — so it carries no information about *this* one and can only ever add the
+    // same noise. Measured 2026-08-10 on the request that started this work
+    // (「UPCLASSのテキストの続編を…」):
+    //
+    //   owner prompt alone                                   lesson-video, ollama-qwen
+    //   "Architecture, system implementation and integration" using-n8n-mcp-skills, figma-use
+    //   both concatenated                                     using-n8n-mcp-skills, figma-use
+    //
+    // The owner's words did not reach the result at all. A request to list teaching
+    // materials was handed ~900 tokens of n8n and Figma instructions because the word
+    // "Architecture" is in a role description BigKiji wrote about itself.
+    //
+    // This exact bug was found and fixed for model tiers on 2026-08-03 — see
+    // routing-assignment-selftest "a role title cannot decide the tier", where /architect/
+    // in the same string sent every leader assignment to the design tier. The fix reached
+    // resolveModel and not this line, which is the third time in this repository that a
+    // correction has landed on one of two identical call sites.
     try {
-      const matched = this.skills.match(`${run.prompt} ${item.title}`) || [];
+      const matched = this.skills.match(run.prompt) || [];
       item.skills = matched.map((skill) => skill.id);
-      skillBrief = this.skills.brief(`${run.prompt} ${item.title}`);
+      skillBrief = this.skills.brief(run.prompt);
     } catch (_) {}
     const plan = deliberate.brief(run.deliberation);
     // Static by construction — the path and the protocol, never the contents. See
