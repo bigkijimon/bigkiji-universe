@@ -638,5 +638,58 @@ function ollama(value) {
     }
   }
 
-  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not · a go-ahead starts the request it refers to, and starts nothing when it refers to nothing · home is redirected to the vault, and being told still wins');
+  // ---- a short question does not buy a paragraph -----------------------------
+  //
+  // From the owner's own session log, 2026-08-10: 「はい」 cost 4,927ms and 「sai」 — a
+  // three-character typo — cost 8,292ms. Nothing was slow. The prompt required "at least
+  // one concrete, useful observation" and "2-4 natural sentences" of every turn, so the
+  // model wrote two hundred tokens for an acknowledgement and the owner waited for all
+  // of them. 「考えすぎず答えて」 was the request; this is what it means in the request body.
+  {
+    const bodies = [];
+    const recorder = async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ response: JSON.stringify({ kind: 'CHAT', reply: 'はい。', confidence: .9 }) }) };
+    };
+    const engine = new ConversationEngine({ fetchImpl: recorder, model: 'qwen2.5:0.5b' });
+
+    await engine.turn({ text: 'はい', sessionId: 'small' });
+    const small = bodies.at(-1);
+    assert.match(small.prompt, /Answer in one sentence/, 'a two-character turn is told to answer in one sentence');
+    assert.ok(!/2-4 natural sentences/.test(small.prompt), 'and is not simultaneously told to write two to four');
+    assert.ok(!/at least one concrete/.test(small.prompt),
+      'the observation requirement is the cost — it must be gone, not merely counterweighted');
+    assert.equal(small.options.num_predict, 120, 'with a ceiling under it for a model that ignores the instruction');
+
+    await engine.turn({ text: 'このシステムが管理している課金トークンAIですが全部リミット解除されてるか確認して欲しいです', sessionId: 'big' });
+    const full = bodies.at(-1);
+    assert.match(full.prompt, /2-4 natural sentences/, 'a real question keeps the full instruction');
+    assert.match(full.prompt, /at least one concrete/);
+    assert.equal(full.options.num_predict, 650, 'and the full budget');
+
+    // The knobs that are NOT allowed to move. `think:false` is why a reasoning model is
+    // usable here at all — without it qwen3.5 spends the whole budget deliberating and
+    // returns an empty response — and `format:'json'` is the envelope every field is
+    // parsed out of. Shortening a reply must not quietly change either.
+    for (const body of [small, full]) {
+      assert.equal(body.think, false, 'think:false survives — removing it is how the empty replies came back');
+      assert.equal(body.format, 'json');
+      assert.equal(body.options.temperature, 0.55);
+      assert.equal(body.options.num_ctx, 4096);
+    }
+
+    // The boundary, stated in the owner's own inputs.
+    assert.ok(ConversationEngine.isSmall('はい'));
+    assert.ok(ConversationEngine.isSmall('sai'));
+    assert.ok(ConversationEngine.isSmall('テキストのデータある？'), '11 characters is a question, not an essay prompt');
+    assert.ok(!ConversationEngine.isSmall('CodexとClaudeCodeとGLMです'), '22 characters deserves a real answer');
+    // isAffirmative was the obvious candidate and is the wrong one: it anchors to the END
+    // of the line, so a real request that ends politely would have been answered in one
+    // sentence. Length cannot be fooled by how a sentence finishes.
+    assert.ok(!ConversationEngine.isSmall('UPCLASSのテキストを作って、お願いします'));
+    assert.ok(!ConversationEngine.isSmall(''), 'an empty turn is not a small turn — it is no turn');
+    assert.ok(!ConversationEngine.isSmall('   '));
+  }
+
+  console.log('conversation selftest: PASS · natural local turn · private draft · explicit adopt · sealed Gemini approval · streamed with measured TTFT · slow-but-alive survives · a reasoning model is not silent · silence still times out · a degraded turn keeps every field · a retired chat model is migrated out of a saved settings file · status questions are answered from measurements, never by a model · leaked JSON is stripped and real prose is not · a go-ahead starts the request it refers to, and starts nothing when it refers to nothing · home is redirected to the vault, and being told still wins · a two-character question is answered in one sentence');
 })().catch((error) => { console.error(error); process.exit(1); });

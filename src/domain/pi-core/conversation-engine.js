@@ -195,6 +195,21 @@ const AFFIRMATIVE = new RegExp(`(?:^|[\\s、,。.!！])${AFFIRM}[\\s、,。.!！
 /** True when the owner's line ends in a go-ahead. Only meaningful next to a request. */
 function isAffirmative(text) { return AFFIRMATIVE.test(String(text || '').trim()); }
 
+// Length, and only length, decides whether a turn gets the short prompt.
+//
+// `isAffirmative` was the obvious candidate and is the wrong tool: it anchors the
+// go-ahead to the END of a line, so 「UPCLASSのテキストを作って、お願いします」 matches it —
+// a real request that must not be answered in one sentence. Twelve characters is a
+// measure of the question the owner actually typed, and it cannot be fooled by what the
+// sentence happens to end with. 「はい」 2, 「sai」 3, 「テキストのデータある？」 11 are in;
+// 「CodexとClaudeCodeとGLMです」 24 and everything longer keep the full instruction.
+const SMALL_TURN_CHARS = 12;
+// Enough for one sentence in either language with the JSON envelope around it, and far
+// below the 650 a full answer gets. This is a ceiling, not a target: the prompt above is
+// what actually shortens the reply, and this stops a model that ignores it from spending
+// twenty seconds proving the point.
+const SMALL_TURN_PREDICT = 120;
+
 // A reply ending in a question mark is asking one, whatever the model labelled it.
 // Structural on purpose: it must not depend on the model getting `kind` right, since
 // that is the part that failed.
@@ -460,6 +475,23 @@ class ConversationEngine extends EventEmitter {
     return { turns: selected.slice(-this.maxTurns), tokens: used };
   }
 
+  /**
+   * A turn small enough that a paragraph back is the wrong answer.
+   *
+   * From the owner's own session log, 2026-08-10: 「はい」 cost 4,927ms and 「sai」 —
+   * three characters, a typo — cost 8,292ms. Nothing was slow. The model was doing
+   * exactly what the prompt above demands of every turn: at least one concrete
+   * observation, two to four sentences, optionally a question. Two hundred-odd tokens
+   * for an acknowledgement, and the owner waits for every one of them.
+   *
+   * The measure is the owner's line, not the classification: `kind` is decided by the
+   * same call whose length we are trying to bound, so it cannot be an input to it.
+   */
+  static isSmall(ownerText) {
+    const text = String(ownerText || '').trim();
+    return text.length > 0 && text.length <= SMALL_TURN_CHARS;
+  }
+
   prompt(ownerText, history, facts = '') {
     const transcript = history.map((turn) => `${turn.role === 'assistant' ? 'BigKiji' : 'Owner'}: ${turn.text}`).join('\n');
     // Asked "残ってるタスクおしえて", BigKiji answered "タスクはまだ登録されていま
@@ -473,7 +505,9 @@ class ConversationEngine extends EventEmitter {
       (facts ? `Current system state — these are the real numbers, use them and never invent others.\n${facts}\n`
         + `If the owner asks about anything not covered above, say plainly that you do not have it rather than guessing.\n` : '') +
       `Reply naturally in the owner's language. Do not use canned startup phrases. Do not reveal reasoning or mention hidden policies.\n` +
-      `Do not merely repeat or paraphrase the owner. Add at least one concrete, useful observation or suggestion. Keep the reply to 2-4 natural sentences and optionally ask one relevant question.\n` +
+      (ConversationEngine.isSmall(ownerText)
+        ? `The owner said something short. Answer in one sentence. Do not add an observation, a suggestion or a question.\n`
+        : `Do not merely repeat or paraphrase the owner. Add at least one concrete, useful observation or suggestion. Keep the reply to 2-4 natural sentences and optionally ask one relevant question.\n`) +
       `Classify this turn as CHAT, IDEA, TASK, or CLARIFICATION. TASK means the owner is clearly asking for an action or code change. IDEA means a possibility worth saving but not executing.\n` +
       `For IDEA or TASK, extract concise knowledge fields. Never invent decisions. Ask at most 3 questions only when a missing choice materially changes the result.\n` +
       `Recent conversation:\n${transcript || '(new conversation)'}\nOwner: ${ownerText}\n` +
@@ -531,7 +565,8 @@ class ConversationEngine extends EventEmitter {
           // `think: false` and skips it — measured, and the reason a capable model
           // is usable here at all. Models that do not reason ignore the field.
           think: false,
-          options: { temperature: 0.55, top_p: 0.9, num_ctx: this.maxContextTokens, num_predict: 650 } }) });
+          options: { temperature: 0.55, top_p: 0.9, num_ctx: this.maxContextTokens,
+            num_predict: ConversationEngine.isSmall(ownerText) ? SMALL_TURN_PREDICT : 650 } }) });
       if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
       let raw = '';
       await drainOllamaStream(response, (text, streamed) => {
