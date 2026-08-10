@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 const knowledge = require('./pi-knowledge-orchestrator');
 const { GLM_MODELS } = require('./model-router');
 const { readGpuLock, ollamaFrozen } = require('./gpu-lock');
+const { readiness } = require('./provider-readiness');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 // One residency window for every local model BigKiji loads. See conversation-engine.
 const { DEFAULT_KEEP_ALIVE: KEEP_ALIVE } = require('../pi-core/conversation-engine');
@@ -40,15 +41,79 @@ async function ollamaReady(timeoutMs = 850) {
 // It is still not "the front desk may use paid providers": nothing is reachable while the
 // GPU is free, the text is redacted before it leaves, and the provider is named in the
 // result so the owner can see which words went where. See `runGlm`.
-// `gpuHeld` and `localReady` exist so a caller — in practice a test — can state the
-// machine instead of probing it. Both default to measuring. Without them every assertion
-// about this function would depend on what the owner's GPU happened to be doing, which
-// this repository has now been bitten by three times.
-async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null } = {}) {
-  const local = localReady === null ? await ollamaReady() : !!localReady;
-  const stopped = gpuHeld === null ? (readGpuLock().held || ollamaFrozen()?.frozen === true) : !!gpuHeld;
-  return { ollama: local, glm: cloudFallback === 'gpu-busy' && !local && stopped,
+// `gpuHeld`, `localReady` and `glmReady` exist so a caller — in practice a test — can
+// state the machine instead of probing it. All three default to measuring. Without them
+// every assertion about this function would depend on what the owner's GPU happened to be
+// doing, which this repository has now been bitten by three times.
+async function detect({ cloudFallback = 'off', gpuHeld = null, localReady = null, glmReady = null } = {}) {
+  // One `ps` per call at most, and none at all when the caller states the machine.
+  let frozen = null;
+  const isFrozen = () => { if (frozen === null) frozen = ollamaFrozen()?.frozen === true; return frozen; };
+  // A SIGSTOPped server accepts the connection and answers nothing, so the 850 ms probe
+  // can only ever time out. Skipping it is 850 ms off the front of the exact turn that is
+  // already the slowest one the owner has — the one taken during a render.
+  const local = localReady === null ? (isFrozen() ? false : await ollamaReady()) : !!localReady;
+  const stopped = gpuHeld === null ? (readGpuLock().held || isFrozen()) : !!gpuHeld;
+  // Four conditions, and each one is a different question: did the owner allow this, is
+  // the local model unable to answer, is something else holding the card, and is there a
+  // key for the thing we are about to spawn.
+  const allowed = cloudFallback === 'gpu-busy';
+  const keyed = glmReady === null ? glmCredentialled() : !!glmReady;
+  return { ollama: local, glm: allowed && !local && stopped && keyed,
     claude: false, codex: false, gemini: false, kimi: false, openrouter: false };
+}
+
+/**
+ * Can a spawned `pi` actually reach zai — not "did the owner switch the escape on".
+ *
+ * These were the same question until 2026-08-10, when the owner reported that simple
+ * questions were very slow and the measurement said this: `~/.pi/agent/auth.json` is `{}`,
+ * the daemon's environment has GEMINI_API_KEY and GOOGLE_API_KEY and no ZAI_API_KEY, and
+ * no key is saved in settings. GLM has never been reachable on this machine. `detect()`
+ * offered it anyway — a setting is a permission, not a credential — so every front-desk
+ * turn during a render spawned a provider that could only fail.
+ *
+ * `secret` is deliberately empty. `readiness()` will report a key saved inside BigKiji as
+ * ready, and it would be, for anything that reads the settings store — but `runGlm` hands
+ * this to a child process, and a child sees the environment. The question here is
+ * strictly what pi will see, and pi documents `ZAI_API_KEY` for the `zai` provider
+ * (docs/providers.md). The key name is taken from provider-readiness so the two cannot
+ * drift apart.
+ */
+function glmCredentialled(env = process.env) {
+  return readiness('glm', { env, secret: () => '' }).ready;
+}
+
+/**
+ * Why this plan is three generic steps, in the owner's language. Only ever called when no
+ * model wrote the spec, so it always has something to say.
+ *
+ * Written for the screen, not for a log — so it names the job holding the card and the one
+ * thing the owner could do about it, and it never says "unavailable" without saying what
+ * is unavailable. `readGpuLock()` is a file read and `ollamaFrozen()` is memoised for two
+ * seconds inside gpu-lock, so this costs nothing on the turn it explains.
+ *
+ * The distinction below cost a test failure worth keeping: a model that was *there* and
+ * produced nothing usable is a different fact from no model at all, and "the cloud escape
+ * is off" is not an explanation for anything when the local model answered fine. Reporting
+ * both at once is how a true sentence becomes a misleading one.
+ */
+function draftNote(cloudFallback, availability = {}) {
+  if (availability.ollama || availability.glm) {
+    return '（下書きです：モデルは応答しましたが、整理として使える形になりませんでした）';
+  }
+  const parts = [];
+  const lock = readGpuLock();
+  if (ollamaFrozen()?.frozen === true) {
+    parts.push(lock.held
+      ? `ローカルモデルは停止中です（GPUを「${lock.holder || '生成ジョブ'}」が${lock.since}から使用中）`
+      : 'ローカルモデルは停止中です（GPUロックは誰も持っていません）');
+  } else {
+    parts.push('ローカルモデルが応答しませんでした');
+  }
+  if (cloudFallback !== 'gpu-busy') parts.push('クラウド退避は off です');
+  else if (!glmCredentialled()) parts.push('クラウド退避（GLM）は ZAI_API_KEY が未設定なので使えません');
+  return `（下書きです：${parts.join('。')}。整理はまだ誰も書いていません）`;
 }
 function availableOrder(availability) { return PRIORITY.filter((id) => availability[id]); }
 
@@ -139,11 +204,25 @@ function runGlm(prompt, { spawn = execFile, timeoutMs = GLM_TIMEOUT_MS, model = 
   const args = ['--print', '--model', `zai/${model}`, '--no-context-files', '--no-session',
     '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', inspected.text];
   return new Promise((resolve, reject) => {
-    spawn(process.env.PI_BIN || 'pi', args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+    const child = spawn(process.env.PI_BIN || 'pi', args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
       (error, stdout, stderr) => {
         if (error) return reject(new Error(`glm ${String(stderr || error.message).trim().slice(0, 160)}`));
         return resolve(String(stdout || ''));
       });
+    // The whole 60 seconds, every single time. Nothing is going to type at this.
+    //
+    // Measured 2026-08-10 on the owner's machine, while they were watching it happen:
+    // `pi --print --model zai/... < /dev/null` prints "No API key found for zai." and
+    // exits in 0.56 s. The same command through execFile — whose stdin is an open pipe —
+    // ran for 60010 ms and returned empty stdout and empty stderr, because pi wants to
+    // offer `/login` and waits for an answer that cannot arrive. Every simple question
+    // asked during a render therefore cost exactly one timeout and came back as the
+    // generic three-step spec. Their report: 「シンプルな質問にたいしての回答がとても遅いです」.
+    //
+    // local-lookup.js closes stdin for exactly this reason and says so in a comment. The
+    // reason did not reach the second place that spawns pi, which is the third time this
+    // repository has shipped a fix to one of two identical call sites.
+    try { child?.stdin?.end(); } catch (_) {}
   });
 }
 
@@ -235,7 +314,12 @@ class FastFacilitatorRouter {
     try { cloudFallback = String(this.cloudFallback?.() || 'off'); } catch (_) {}
     const availability = await this.detectImpl({ cloudFallback });
     const candidates = availableOrder(availability);
-    let parsed = null; let provider = 'deterministic-local'; let lastError = null; let modelWrote = false;
+    // With no candidate the loop below never runs, so `lastError` stays null and the
+    // deterministic spec goes out reading `degraded: false` — a plan nobody wrote,
+    // presented exactly like a plan a model thought about. The reason is known here and
+    // nowhere downstream, so it is recorded here.
+    let parsed = null; let provider = 'deterministic-local'; let modelWrote = false;
+    let lastError = candidates.length ? null : new Error('no front-desk model was available');
     for (const candidate of candidates) {
       const run = this.runners[candidate];
       // A candidate with no runner is a list and a table that have drifted apart. Skipping
@@ -282,9 +366,13 @@ class FastFacilitatorRouter {
     // `provider: local-cache` gave no hint that no model had ever seen it. Measured
     // 2026-08-05, on the first live turn through this path.
     const stored = modelWrote ? knowledge.rememberPlan(task, textSpec, final.promptSpec?.steps || [], final.promptSpec) : null;
+    // The same argument as `cloudNote`, for the opposite fact: not "which model saw this"
+    // but "no model did". Three generic steps under the owner's own sentence is a
+    // recognisable thing once you know to look for it, and until now nothing said to look.
+    const degradedNote = modelWrote ? '' : draftNote(cloudFallback, availability);
     onDelta?.(cloudNote ? `${cloudNote}\n${textSpec}` : textSpec);
     return { status: 'ready', provider, promptSpec: final.promptSpec, promptSpecText: textSpec, planHash: stored?.planHash || null,
-      remembered: !!stored, viaCloud, cloudNote, latencyMs: Date.now() - started, availability,
+      remembered: !!stored, viaCloud, cloudNote, degradedNote, latencyMs: Date.now() - started, availability,
       fallbackReason: lastError ? knowledge.cleanText(lastError.message, 160) : null };
   }
   /**
@@ -311,4 +399,4 @@ class FastFacilitatorRouter {
 
 module.exports = { normalizeQuestions, questionText, PRIORITY, PAID_EXECUTORS, BLOCKED_PAID, MODELS, detect, ollamaReady,
   availableOrder, FastFacilitatorRouter, fallbackSpec, facilitatorPrompt, specText, runOllama, runGlm, RUNNERS,
-  OLLAMA_TIMEOUT_MS, GLM_TIMEOUT_MS };
+  glmCredentialled, draftNote, OLLAMA_TIMEOUT_MS, GLM_TIMEOUT_MS };

@@ -164,7 +164,23 @@ class CircuitBreaker {
     // Already open, and throttled again on the trial request: the cooldown was
     // too short. Double it rather than asking again at the same cadence.
     const reopening = circuit.openUntil > 0;
-    if (!reopening && circuit.hits.length < this.threshold) {
+    // A spent quota counts once. A rate limit still has to prove itself.
+    //
+    // Three hits inside a two-minute window assumes failures are quick, and a quota
+    // failure is the slowest kind there is. Measured on the owner's machine 2026-08-10:
+    // the Gemini CLI answers "Quota exceeded … limit: 5" by retrying itself — 44 s, then
+    // 68 s, then 66 s — so one attempt occupies more than the whole window. Two tasks
+    // burned four minutes each against an exhausted free tier and `circuit-breaker.json`
+    // still read `{}` afterwards, because no three hits can ever land in 120 s. The
+    // window was counting a burst; this is not a burst.
+    //
+    // And the two reasons are different claims. "Too many requests just now" may be a
+    // moment. "You exceeded your current quota" is a statement about the account, and
+    // hearing it three times is not more true than hearing it once. `FIRST_COOLDOWN`
+    // already draws this distinction on the duration axis; this is the same distinction
+    // on the count axis.
+    const needed = reason === 'quota' ? 1 : this.threshold;
+    if (!reopening && circuit.hits.length < needed) {
       return { provider, state: 'closed', opened: false, openUntil: 0, reason };
     }
 

@@ -837,7 +837,15 @@ class DaemonEngine extends EventEmitter {
     // answer, because "which of my words left this machine" is not an implementation
     // detail. See fast-api-router.js `runGlm`.
     const spoken = questions.length ? `${result.reply}\n\n${questionText(questions)}` : result.reply;
-    const reply = facilitation?.viaCloud && facilitation.cloudNote ? `${facilitation.cloudNote}\n${spoken}` : spoken;
+    // And the same treatment for the opposite fact: the plan attached to this reply is
+    // three generic steps that no model wrote. Measured 2026-08-10 during one of the
+    // owner's renders — the run brief looked exactly like a considered plan.
+    //
+    // Suppressed when the conversation reply already carried the reason. A frozen turn
+    // opens with the holder and the time, and printing the same sentence twice is noise,
+    // which is its own way of not being read.
+    const draftNote = facilitation?.degradedNote && !result.gpuFrozen ? facilitation.degradedNote : '';
+    const reply = [facilitation?.viaCloud ? facilitation.cloudNote : '', draftNote, spoken].filter(Boolean).join('\n');
     // A question the conversation model asked in prose is still a question.
     //
     // Only the facilitator's questions were ever registered, so when the model asked one
@@ -1006,11 +1014,18 @@ class DaemonEngine extends EventEmitter {
       written.steps?.length ? `Steps:\n${asList(written.steps).map((step, i) => `  ${i + 1}. ${step}`).join('\n')}` : '',
       written.acceptance?.length ? `Acceptance:\n${asList(written.acceptance).map((item) => `  · ${item}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n');
-    const reply = detail || spec.promptSpecText || written.goal || text;
+    // A plan nobody wrote says so, on the line above itself.
+    //
+    // `degraded` already travelled on the wire and reached no one the owner could see;
+    // measured 2026-08-10, a request made during a render came back as the three generic
+    // steps with no indication that the front desk had had nothing to think with. Same
+    // treatment as `cloudNote`: a fact about how the answer was made belongs in front of
+    // the answer, not only in a field.
+    const reply = [spec.degradedNote, detail || spec.promptSpecText || written.goal || text].filter(Boolean).join('\n');
     this.sessions.append(session.id, { type: 'conversation', role: 'assistant', status: 'TASK', text: reply,
       turnId, provider: spec.provider, latencyMs: spec.latencyMs });
     const output = { accepted: true, kind: 'TASK', reply, sessionId: session.id, turnId, provider: spec.provider,
-      model: 'facilitator', latencyMs: Date.now() - started, degraded: !!spec.fallbackReason, draft: null, run,
+      model: 'facilitator', latencyMs: Date.now() - started, degraded: !!(spec.fallbackReason || spec.degradedNote), draft: null, run,
       questions: [], awaitingAnswer: false, requiresApproval: true };
     this.publish('conversation', { kind: 'turn_complete', ...output });
     this.publish('session', this.sessions.read(session.id));

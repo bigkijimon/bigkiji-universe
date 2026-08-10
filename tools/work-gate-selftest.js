@@ -376,6 +376,51 @@ const readyFacilitator = () => ({
     dispose(engine);
   });
 
+  // A plan nobody wrote reaches the screen labelled as a draft — once.
+  //
+  // 2026-08-10. During a render the front desk has no model, `fallbackSpec` supplies three
+  // generic steps under the owner's own sentence, and the run brief printed them exactly
+  // like a considered plan. The note that fixes that has to obey one more rule: a frozen
+  // conversation turn already opens with the holder and the time, and repeating it is how
+  // the line stops being read.
+  {
+    const draftingFacilitator = (degradedNote) => ({ ...readyFacilitator(),
+      async facilitate(text) { return { status: 'ready', provider: 'deterministic-local', planHash: null, degradedNote,
+        promptSpec: { goal: text, constraints: [], steps: ['Audit relevant code'], acceptance: [] } }; } });
+    const note = '（下書きです：ローカルモデルが応答しませんでした。整理はまだ誰も書いていません）';
+
+    await okAsync('a spec no model wrote says so on the line above itself', async () => {
+      const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'draft-said'), workspace: process.cwd(),
+        conversationEngine: alwaysTask(), facilitator: draftingFacilitator(note), gpuLock: machine() }));
+      const out = await engine.turn('ファイルを整理してください', { mode: 'plan' });
+      assert.match(out.reply, /下書きです/, `the owner has to be able to see it: ${out.reply}`);
+      assert.ok(out.reply.indexOf('下書き') < out.reply.indexOf('わかりました'), 'in front of the answer, not after it');
+      dispose(engine);
+    });
+
+    await okAsync('and does not say it twice when the frozen turn already did', async () => {
+      const frozenTurn = () => ({ model: 'stub-qwen',
+        turn: async ({ text }) => ({ ...(await alwaysTask().turn({ text })),
+          reply: '（GPUを「u09-v5」が21:32:48から使用中のため、ローカルモデルは停止しています）\nわかりました。',
+          degraded: true, gpuFrozen: true }) });
+      const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'draft-quiet'), workspace: process.cwd(),
+        conversationEngine: frozenTurn(), facilitator: draftingFacilitator(note),
+        gpuLock: machine({ frozen: true, holder: 'u09-v5', since: '21:32:48' }) }));
+      const out = await engine.turn('ファイルを整理してください', { mode: 'plan' });
+      assert.ok(!out.reply.includes('下書きです'), `the reason is already at the top: ${out.reply}`);
+      assert.match(out.reply, /使用中/, 'and the reason the owner does get is the fuller one');
+      dispose(engine);
+    });
+
+    await okAsync('a spec a model wrote carries no note at all', async () => {
+      const engine = noDispatch(new DaemonEngine({ stateRoot: path.join(root, 'draft-none'), workspace: process.cwd(),
+        conversationEngine: alwaysTask(), facilitator: readyFacilitator(), gpuLock: machine() }));
+      const out = await engine.turn('ファイルを整理してください', { mode: 'plan' });
+      assert.ok(!out.reply.includes('下書き'), `no apology on a normal turn: ${out.reply}`);
+      dispose(engine);
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Door 2 — the machine has to say when it is holding
   // -------------------------------------------------------------------------

@@ -222,6 +222,30 @@ ok('half-open admits exactly one caller, not everyone who asks', () => {
   time.advance(120000);
   assert.equal(breaker.allow('gemini'), true, 'a fresh cooldown earns a fresh trial');
 });
+ok('a spent quota counts once; a rate limit still has to prove itself', () => {
+  // The window assumed failures are quick. Measured on the owner's machine 2026-08-10:
+  // the Gemini CLI answers "Quota exceeded … limit: 5" by retrying itself — 44 s, then
+  // 68 s, then 66 s — so a single attempt outlasts the whole 120 s window. Two tasks
+  // failed on an exhausted free tier, four minutes apiece, and `circuit-breaker.json`
+  // still read `{}` afterwards: three hits cannot land inside two minutes when one hit
+  // takes three. Nothing was learned, so the next run would pick gemini again.
+  const time = clock();
+  const spent = breakerWith(time, {});   // the real defaults, which is the point
+  const first = spent.record('gemini', { ok: false, reason: 'quota' });
+  assert.equal(first.opened, true, 'once is enough — the account is not going to change its mind');
+  assert.equal(spent.isOpen('gemini'), true);
+
+  // And the distinction holds: a burst is still allowed to be a burst.
+  const hot = breakerWith(clock(), {});
+  assert.equal(hot.record('codex', { ok: false, reason: 'rate-limit' }).opened, false, 'one is a moment');
+  assert.equal(hot.record('codex', { ok: false, reason: 'rate-limit' }).opened, false, 'two is a bad minute');
+  assert.equal(hot.record('codex', { ok: false, reason: 'rate-limit' }).opened, true, 'three is a pattern');
+
+  // A crash still teaches this class nothing, whatever the count.
+  const noisy = breakerWith(clock(), {});
+  for (let i = 0; i < 5; i += 1) assert.equal(noisy.record('claude-code', { ok: false, reason: '' }), null);
+  assert.equal(noisy.isOpen('claude-code'), false, 'a provider that crashed is not a provider that is throttled');
+});
 ok('an exhausted quota waits longer than a rate limit', () => {
   const time = clock();
   const limited = breakerWith(time, { threshold: 1, cooldownMs: 60000 });

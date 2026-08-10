@@ -102,12 +102,49 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
       assert.equal(shut[paid], false, `${paid}: the default is shut, whatever the GPU is doing`);
     }
   }
-  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true })).glm, false,
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: false, localReady: true, glmReady: true })).glm, false,
     'a free GPU means local — the escape is not a preference for the cloud');
-  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: true })).glm, false,
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: true, glmReady: true })).glm, false,
     'and a lock held by a job that left Ollama answering is still no reason to leave the machine');
-  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: false })).glm, true,
-    'held card, local silent, and an owner who asked for it: this one turn may leave the machine');
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: false, glmReady: true })).glm, true,
+    'held card, local silent, a key on the machine, and an owner who asked for it: this one turn may leave');
+
+  // A setting is a permission. A credential is a different fact.
+  //
+  // These were the same test until 2026-08-10, when the owner reported that simple
+  // questions were very slow and the machine said why: `~/.pi/agent/auth.json` is `{}`,
+  // the daemon's environment carries GEMINI_API_KEY and GOOGLE_API_KEY and no
+  // ZAI_API_KEY, and settings hold no secret. The escape had been switched on and
+  // delivered as working, and GLM had never once been reachable. `detect()` offered it
+  // on every frozen turn and every one of those turns paid a spawn to find out.
+  assert.equal((await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: false, glmReady: false })).glm, false,
+    'no ZAI_API_KEY means no candidate — do not spawn a provider that can only fail');
+  assert.equal(router.glmCredentialled({}), false, 'an empty environment is not a configured provider');
+  assert.equal(router.glmCredentialled({ ZAI_API_KEY: 'zk-test' }), true,
+    'and the key pi documents for zai is the one that counts — it is the child that has to see it');
+
+  // 850 ms spent confirming that a SIGSTOPped process will not answer.
+  //
+  // The probe cannot succeed against a stopped server: it accepts the connection and
+  // returns nothing, so `ollamaReady()` can only run out its own clock. That was 850 ms
+  // on the front of the slowest turn the owner has — the one taken during a render.
+  // A source assertion, and named as one: the alternative is a test whose result depends
+  // on whether the owner happens to be rendering, which is the mistake this file already
+  // carries a comment about.
+  {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'pi-agent', 'fast-api-router.js'), 'utf8');
+    assert.match(source, /isFrozen\(\) \? false : await ollamaReady\(\)/,
+      'a stopped server is known to be unready without spending the probe on it');
+  }
+  // And nothing is probed at all when the caller states the machine.
+  {
+    let probes = 0;
+    const realFetch = global.fetch;
+    global.fetch = async (...args) => { probes += 1; return realFetch(...args); };
+    try { await router.detect({ cloudFallback: 'gpu-busy', gpuHeld: true, localReady: false, glmReady: false }); }
+    finally { global.fetch = realFetch; }
+    assert.equal(probes, 0, 'an injected machine state must not reach out to 11434');
+  }
 
   // The dispatch table. The loop used to call runOllama whatever the candidate was — a
   // provider name recorded against another model's output. Invisible while nothing but
@@ -167,6 +204,63 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
     assert.equal(seen.opts.timeout, router.GLM_TIMEOUT_MS, 'and it cannot hang the front desk');
   }
 
+  // The 60 seconds, and the reason there were 60 of them.
+  //
+  // Measured on the owner's machine 2026-08-10, while they watched it: the same command
+  // with `< /dev/null` prints "No API key found for zai." and exits in 0.56 s; through
+  // execFile, whose stdin is an open pipe, it ran 60010 ms and returned empty stdout and
+  // empty stderr. pi wants to offer `/login` and waits for an answer nobody can give. So
+  // every question asked during a render cost one full timeout before falling back to the
+  // three generic steps. local-lookup.js closes stdin and explains why in a comment; the
+  // reason had not reached the second place that spawns pi.
+  {
+    let closed = false;
+    await router.runGlm('anything', {
+      spawn: (bin, args, opts, done) => { done(null, '{}', ''); return { stdin: { end() { closed = true; } } }; },
+    });
+    assert.equal(closed, true, 'stdin is closed, or pi waits out the whole timeout with nothing to say');
+  }
+
+  // A plan nobody wrote must say so.
+  //
+  // `fallbackSpec` is three generic steps under the owner's own sentence. With no
+  // candidate at all the loop never ran, `fallbackReason` stayed null, and the daemon
+  // published `degraded: false` — indistinguishable on screen from a spec a model had
+  // thought about. The owner was looking at one of these when they said the answers were
+  // slow, and nothing on it said the front desk had had nothing to think with.
+  {
+    const mute = new router.FastFacilitatorRouter({ cloudFallback: () => 'gpu-busy',
+      detectImpl: async () => ({ ollama: false, glm: false }) });
+    const out = await mute.facilitate(`nothing available ${process.pid}`);
+    assert.equal(out.provider, 'deterministic-local');
+    assert.match(out.fallbackReason || '', /no front-desk model was available/,
+      'a loop that never ran is still a reason, and it was being recorded as no reason at all');
+    assert.ok(out.degradedNote, 'and the owner is told, in their own language, on the line above the plan');
+    assert.match(out.degradedNote, /下書き/, 'named as a draft rather than presented as a plan');
+  }
+  // A spec a model did write carries no such note.
+  {
+    const spec = JSON.stringify({ status: 'ready', promptSpec: { goal: 'g', constraints: [], steps: ['s'], acceptance: ['a'] } });
+    const wrote = new router.FastFacilitatorRouter({ runners: { ollama: async () => spec },
+      detectImpl: async () => ({ ollama: true, glm: false }) });
+    const out = await wrote.facilitate(`a real spec ${process.pid}`);
+    assert.equal(out.degradedNote, '', 'the note is for the empty answer, not decoration on every reply');
+  }
+  // The note names the job holding the card, because "unavailable" is not actionable.
+  //
+  // And the two cases stay apart. The first draft of this reported both at once, so a turn
+  // where the local model answered and produced unusable JSON told the owner that "the
+  // cloud escape is off" — true, irrelevant, and pointing at the wrong thing to fix. The
+  // test below is the one that caught it.
+  {
+    const held = router.draftNote('gpu-busy', { ollama: false, glm: false });
+    assert.match(held, /ローカルモデル/, 'what is down');
+    assert.ok(/ZAI_API_KEY/.test(held) || /クラウド退避/.test(held), 'and why the escape did not cover for it');
+    const answered = router.draftNote('off', { ollama: true, glm: false });
+    assert.doesNotMatch(answered, /クラウド退避/, 'a working local model is not a cloud problem');
+    assert.match(answered, /モデルは応答しました/, 'it is a model that answered and said nothing usable');
+  }
+
   // runOllama had no deadline at all. `ollamaReady()` probes with 850ms in front of it,
   // which hid the hang — but a render that starts between the probe and the call leaves
   // this awaiting a socket that a SIGSTOPped process accepted and will never answer.
@@ -177,8 +271,10 @@ assert.rejects(() => facilitator.answer('goal', ['which genre?'], '   '), /answe
     assert.match(source, /redactPayload/, 'and nothing reaches a cloud provider unredacted');
   }
 
-  console.log('fast router selftest: PASS · 16 added checks · think:false or the model spends the answer on thinking · '
+  console.log('fast router selftest: PASS · think:false or the model spends the answer on thinking · '
     + 'the deterministic fallback is never cached · a fieldless cache entry reads as a miss · spec in English, questions in the '
     + 'owner\'s language · proper nouns verbatim · answer() refuses an empty pair and cleans up after itself · the GPU-busy escape '
-    + 'is shut by default, never used while local works, and names itself in the reply · each candidate runs its own runner');
+    + 'is shut by default, never used while local works, and names itself in the reply · each candidate runs its own runner · '
+    + 'no ZAI_API_KEY means no candidate · a stopped server is not probed · stdin is closed or pi waits out the timeout · '
+    + 'a plan nobody wrote says so');
 })();
