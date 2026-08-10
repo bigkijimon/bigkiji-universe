@@ -102,13 +102,23 @@ console.log(`  ..  global + ${locals.length} project configs across ${workFolder
  * Whichever `knowledge` path the most configs allow is, by definition, the one a reference
  * kept there is reachable from.
  */
+// Found by looking for the reference, not by looking for a folder called `knowledge`.
+//
+// The basename was the tell until 2026-08-10, when the shared instruction layer moved to
+// ~/Documents/.bku and the departments started granting that instead. The vote found
+// nothing, REFERENCE became a bare filename, and this suite reported the reference as
+// missing when it was simply one directory further down. The property being asserted is
+// "every department's Pi can open the sandbox reference", so that is what is searched
+// for — a folder name is a proxy that goes stale, and this one did.
 function sharedKnowledgeDir() {
   const votes = new Map();
   for (const file of locals) {
     for (const entry of (readJson(file).filesystem || {}).allowRead || []) {
       const full = entry.replace(/^~/, HOME);
-      if (path.basename(full) !== 'knowledge') continue;
-      votes.set(full, (votes.get(full) || 0) + 1);
+      // Granted directly, or one level down — `.bku` is granted and holds `knowledge/`.
+      const holder = [full, path.join(full, 'knowledge')]
+        .find((dir) => { try { return fs.existsSync(path.join(dir, REFERENCE_NAME)); } catch (_) { return false; } });
+      if (holder) votes.set(holder, (votes.get(holder) || 0) + 1);
     }
   }
   return [...votes.entries()].sort((a, b) => b[1] - a[1])[0] || ['', 0];

@@ -65,6 +65,8 @@ const permitted = (roots, target) => roots.some((r) => inside(r, target));
 
 // What the app produces, and who is supposed to read it. "agent" means a pi agent or an
 // external coding agent is expected to open it; "daemon" means only the engine touches it.
+// `from` names the cwds a surface MUST be reachable from. Absent means all of them,
+// which is right for BigKiji's own files and wrong for the owner's.
 const SURFACES = [
   { path: path.join(REPO, 'app', 'docs', 'v3', 'run-ledger.md'), audience: 'agent',
     why: 'the English record of what runs did — the whole point is that an agent reads it' },
@@ -90,6 +92,24 @@ const SURFACES = [
   { path: path.join(DATA, 'Generated'), audience: 'daemon', why: 'model outputs and run scripts' },
   { path: path.join(DATA, 'state', 'remote.json'), audience: 'nobody',
     why: 'pairing token — must NOT be broadly readable' },
+
+  // The owner's actual work, which this audit did not look at.
+  //
+  // Every surface above belongs to BigKiji — its own docs, its own knowledge files, its
+  // own state. The audit passed on 2026-08-10 while the request that prompted all of this
+  // ran for an hour with `allowRead: [$HOME]` and `allowWrite:` a folder that had not
+  // existed since the CEOBigKiji tree was dismantled. It was green about itself while the
+  // owner's materials were unreachable, which is the most flattering kind of wrong.
+  { path: path.join(HOME, 'Documents/.bku/INDEX.md'), audience: 'agent', from: ['department Pi (School)'],
+    why: 'the entry point every department Pi is meant to read first' },
+  { path: path.join(HOME, 'Documents/.bku/knowledge'), audience: 'agent', from: ['department Pi (School)'],
+    why: 'the shared instruction layer — folder layout, BKU behaviour, the sandbox reference' },
+  { path: path.join(HOME, 'Documents/Admin/経営企画室/会社憲法.md'), audience: 'agent', from: ['department Pi (School)'],
+    why: 'the company rules every department is told to follow' },
+  { path: path.join(HOME, 'Documents/School/HSAcademyWeb/content'), audience: 'agent', from: ['department Pi (School)'],
+    why: 'the H&S teaching materials — the folder the owner asked to have listed' },
+  { path: path.join(HOME, 'Documents/School/UpclassApp'), audience: 'agent', from: ['department Pi (School)'],
+    why: 'UPCLASS — the other half of that request' },
 ];
 
 const CWDS = [
@@ -111,8 +131,16 @@ for (const { label, cwd } of CWDS) {
   for (const s of SURFACES) {
     const r = permitted(box.allowRead, s.path);
     const w = permitted(box.allowWrite, s.path);
+    // Who has to reach it, not just who may.
+    //
+    // Every surface used to be demanded from every cwd, which was fine while all of them
+    // belonged to BigKiji itself. It stops being fine the moment the owner's own materials
+    // are listed: a Pi started in the app repository cannot open the H&S teaching folder,
+    // and that is the boundary working, not a defect. Reporting it as FAIL would train
+    // whoever runs this to ignore the word.
+    const wanted = !s.from || s.from.includes(label);
     const mark = s.audience === 'agent'
-      ? (r ? 'ok  ' : 'FAIL')
+      ? (wanted ? (r ? 'ok  ' : 'FAIL') : (r ? '?!  ' : '--  '))
       : s.audience === 'nobody'
         ? (r ? 'WARN' : 'ok  ')
         : '..  ';
