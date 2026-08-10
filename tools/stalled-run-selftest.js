@@ -353,6 +353,37 @@ ok('a plan record learns how its work ended', () => {
     'and a run with no plan record is a normal case, not something to throw into a live run');
 });
 
+// What the owner may press when a plan is waiting for them.
+//
+// The prompt offered `1 approve / 2 reject / 3 later`. The owner asked for yes / no /
+// tell — Claude Code's shape, where the third one means "do not run it, and say what to
+// change" rather than "decide later". Asserted here rather than by driving a tty, because
+// what the keys MEAN is the part that must not drift; the tty behaviour is checked by
+// hand in a real pty and cannot run in this suite.
+ok('the approval prompt offers yes, no and tell — and still takes the digits', () => {
+  const { APPROVAL_CHOICES } = require('../src/domain/terminal/bigkiji-cli');
+  const byId = Object.fromEntries(APPROVAL_CHOICES.map((choice) => [choice.id, choice.keys]));
+  assert.deepEqual(Object.keys(byId), ['approve', 'reject', 'tell', 'later'],
+    'four outcomes, and `tell` is one of them rather than a special case of reject');
+  assert.ok(byId.approve.includes('y') && byId.reject.includes('n') && byId.tell.includes('t'),
+    'the letters the owner asked for');
+  assert.ok(byId.approve.includes('Y') && byId.reject.includes('N') && byId.tell.includes('T'),
+    'caps lock is not a decision');
+  // The digits were the only keys for as long as this prompt existed. Taking away what
+  // someone already types is a second thing to learn, not a simpler one.
+  assert.ok(byId.approve.includes('1') && byId.reject.includes('2') && byId.later.includes('3'),
+    'the digits still mean what they always meant');
+  // No key may mean two things — a prompt where one press is ambiguous is worse than
+  // one with fewer options.
+  const all = APPROVAL_CHOICES.flatMap((choice) => choice.keys);
+  assert.equal(new Set(all).size, all.length, `a key is bound twice: ${all.join(' ')}`);
+  // Enter, esc and ^C are consumed by askKey as "later" before choices are consulted;
+  // binding any of them here would make that unreachable and the run un-leavable.
+  for (const reserved of ['\r', '\n', '\x1b', '\x03']) {
+    assert.ok(!all.includes(reserved), 'the keys that mean "later" are askKey’s, not a choice’s');
+  }
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`stalled run selftest: ${failures} FAILED`); process.exit(1); }
-console.log('stalled run selftest: PASS · the gpu lock is read and named · a frozen model is reported as frozen, never as running · the footer shows degraded · checkpoints stop when nothing moves · slow work is still never killed · the stall sweep reaches DIAGNOSING · one active-run list · a stuck run cannot erase the event log · plan records learn their outcome');
+console.log('stalled run selftest: PASS · the approval prompt offers yes/no/tell · the gpu lock is read and named · a frozen model is reported as frozen, never as running · the footer shows degraded · checkpoints stop when nothing moves · slow work is still never killed · the stall sweep reaches DIAGNOSING · one active-run list · a stuck run cannot erase the event log · plan records learn their outcome');

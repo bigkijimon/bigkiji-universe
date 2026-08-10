@@ -51,6 +51,22 @@ function machineNote({ gpu = null, turnNote = '' } = {}) {
   return turnNote === FROZEN_TURN_NOTE ? '' : turnNote;
 }
 
+// What the owner may press when a plan is waiting for them.
+//
+// `y n t` because that is the shape they asked for, and `t` means what it means in Claude
+// Code: do not run it, and say what to change. The digits stay alongside — they were the
+// only keys for as long as this prompt has existed and fingers remember them, and taking
+// away what someone already types is a second thing to learn rather than a simpler one.
+//
+// Out here rather than inline so the contract can be asserted without a daemon, a tty or
+// a run: what these keys mean is the part that must not drift.
+const APPROVAL_CHOICES = Object.freeze([
+  Object.freeze({ id: 'approve', keys: Object.freeze(['y', 'Y', '1']) }),
+  Object.freeze({ id: 'reject', keys: Object.freeze(['n', 'N', '2']) }),
+  Object.freeze({ id: 'tell', keys: Object.freeze(['t', 'T']) }),
+  Object.freeze({ id: 'later', keys: Object.freeze(['l', 'L', '3']) }),
+]);
+
 const prefs = new CliPreferences();
 function setMode(value, persist = true) { activeMode = normalizeMode(value); A = themeFor(activeMode); if (persist) prefs.update({ mode: activeMode }); return activeMode; }
 
@@ -367,6 +383,8 @@ async function repl(client) {
   });
 
   let deciding = false;
+  // Set by  at the approval prompt; consumed by the next line the owner types.
+  let pendingTell = null;
   /**
    * Say that a run is waiting, and offer to start it right here.
    *
@@ -386,16 +404,29 @@ async function repl(client) {
     // Not while they are typing: the prompt reads raw keys, so grabbing the keyboard
     // mid-sentence would eat the line. A half-written line falls back to the note.
     const interactive = mode === 'ask' && process.stdin.isTTY && !deciding && !rl.line;
+    const mark = glyphs().note;
     emit(renderNote(interactive
-      ? `waiting for you.  1 approve  ${glyphs().note}  2 reject  ${glyphs().note}  3 later  (esc = later)`
+      ? `waiting for you.  y yes  ${mark}  n no  ${mark}  t tell me what to change  (esc = later)`
       : `waiting for you — /approve ${id} to start it, /reject to drop it, /runs to see them all`, view()));
     if (!interactive) return;
     deciding = true;
-    askKey([{ id: 'approve', keys: ['1', 'y', 'Y'] }, { id: 'reject', keys: ['2', 'n', 'N'] }, { id: 'later', keys: ['3'] }])
+    askKey(APPROVAL_CHOICES)
       .then(async (choice) => {
         if (choice === 'approve') await approveRun(run);
         else if (choice === 'reject') await rejectRun(run);
-        else emit(renderNote(`left waiting — /approve ${id} when you are ready`, view()));
+        // Nothing runs. The next line the owner types becomes the correction, and the
+        // plan is rewritten from it — Claude Code's "No, and tell Claude what to do
+        // differently", which is what the owner asked this key to mean.
+        //
+        // Deliberately NOT `rl.question()`. Calling it from inside an approval would put
+        // two owners on the input row while the sticky layout addresses it absolutely;
+        // askKey's own comment records why this file does not take that risk. The line
+        // handler already exists and already knows how to be interrupted, so the
+        // correction is picked up there instead of read here.
+        else if (choice === 'tell') {
+          pendingTell = { runId: run.id, id };
+          emit(renderNote(`not starting it. type what to change and press enter  ${mark}  empty line = leave it waiting`, view()));
+        } else emit(renderNote(`left waiting — /approve ${id} when you are ready`, view()));
       })
       .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true })))
       .finally(() => { deciding = false; paintFooter(true); refreshPrompt(); });
@@ -504,6 +535,27 @@ async function repl(client) {
     paintFooter(); refreshPrompt();
   }); client.connect();
   const handleTurn = async (text) => {
+    // The line after `t` at the approval prompt is a correction, not a new request.
+    //
+    // Taken here rather than read inside offerApproval, because this is the one place
+    // that already owns the input row. A blank line means the owner changed their mind,
+    // and the run is left exactly where it was — waiting, not dropped.
+    if (pendingTell) {
+      const { runId, id } = pendingTell; pendingTell = null;
+      if (sticky.active && text) emit(renderUserTurn(text, view()));
+      if (!text) { emit(renderNote(`left waiting — /approve ${id} when you are ready`, view())); paintFooter(true); refreshPrompt(); return; }
+      turnStartedAt = Date.now(); frameIndex = 0; abortedTurn = false; paintFooter(true);
+      try {
+        emit(renderToolCall('tell', `${lower(id)} ${glyphs().note} rewriting the plan`, view()));
+        const result = await client.answerRun(runId, text);
+        emit([...renderToolResult(result.spec || 'plan rewritten', { ...view(), indent: 2, maxLines: 10 }),
+          ...renderNote(`${lower(shortRunId(result.run?.id || ''))} replaces ${lower(shortRunId(result.answered || ''))} — it is waiting for you`, view())]);
+        live = await client.state();
+      } catch (error) {
+        emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 3, isError: true }));
+      } finally { turnStartedAt = 0; paintFooter(true); refreshPrompt(); }
+      return;
+    }
     if (sticky.active && text) emit(renderUserTurn(text, view()));
     if (text) { turnStartedAt = Date.now(); frameIndex = 0; abortedTurn = false; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
     try {
@@ -958,5 +1010,5 @@ if (require.main === module) {
   main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
 }
 
-module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote,
+module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES,
   FROZEN_TURN_NOTE, APP_ROOT };

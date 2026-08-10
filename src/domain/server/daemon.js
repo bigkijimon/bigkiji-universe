@@ -1131,8 +1131,22 @@ class DaemonEngine extends EventEmitter {
     const inspected = redactPayload(String(text || ''));
     if (inspected.blocked) throw new Error('SECURITY_CRITICAL_SECRET_IN_OWNER_DIRECTIVE');
     const said = inspected.text.trim(); if (!said) throw new Error('An answer is required');
-    const questions = Array.isArray(run.promptSpec?.questions) ? run.promptSpec.questions : asList(run.promptSpec?.questions);
-    if (!questions.length) throw new Error('This plan has no unanswered question');
+    const asked_ = Array.isArray(run.promptSpec?.questions) ? run.promptSpec.questions : asList(run.promptSpec?.questions);
+    // An unsolicited correction is the same operation as an answer.
+    //
+    // This threw when the plan was not asking anything, which was right while the only
+    // way in was `/answer`. The approval prompt now offers `t` — "don't run it, tell me
+    // what to change" — and a plan that needs changing is usually one that was confident
+    // enough not to ask. Everything below already does exactly what a correction needs:
+    // stop the old run, rewrite the spec from the owner's words, submit the replacement,
+    // keep the session link.
+    //
+    // The synthesised question is not a formality. `facilitator.answer()` is stage two,
+    // documented to ask nothing further and to produce a decision-complete spec — which
+    // is precisely what `tell` means — and it refuses an empty pair (asserted in
+    // fast-router-selftest). Relaxing that guard instead would have removed the check
+    // that stops an empty answer from rewriting a plan into nothing.
+    const questions = asked_.length ? asked_ : [{ ask: 'What should change about this plan?', options: [] }];
     const sessionId = this.runSessions.get(run.id);
     if (sessionId) this.sessions.append(sessionId, { type: 'directive', action: 'answer', text: said });
     const asked = run.promptSpec?.goal || run.promptPreview || '';

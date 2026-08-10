@@ -339,9 +339,27 @@ const WebSocket = require('ws');
     assert.equal(answered.answered, waiting.id);
     assert.deepStrictEqual(answered.run.promptSpec.questions, []);
     assert.equal(answered.run.promptSpec.goal, 'Create a single-file HTML5 3D game using Three.js.');
-    await assert.rejects(() => spec.answerRun({ runId: answered.run.id, text: 'shooter' }), /no unanswered question/,
-      'a plan with nothing to answer says so instead of rewriting itself');
+    // A plan with nothing to answer is rewritten too — that is `tell`.
+    //
+    // This asserted the opposite until 2026-08-10, and it was right at the time: the only
+    // way in was `/answer`, so answering a plan that had asked nothing was a mistake worth
+    // naming. The approval prompt now offers `t` — "do not run it, tell me what to change"
+    // — and a plan that needs changing is usually one that was confident enough not to
+    // ask. The refusal would have made the new key fail on exactly the runs it is for.
+    const corrected = await spec.answerRun({ runId: answered.run.id, text: 'make it a puzzle instead, and keep it to one file' });
+    assert.notEqual(corrected.run.id, answered.run.id, 'an unsolicited correction rebuilds the plan');
+    assert.equal(corrected.answered, answered.run.id, 'and names the plan it replaces');
+    // Terminal, by the coordinator's own list rather than by a status name guessed here —
+    // `abort()` lands on FAILED, and asserting the word would pin a spelling instead of
+    // the property. What matters is that the corrected plan cannot still be approved.
+    const { TERMINAL_RUN } = require('../src/domain/pi-agent/core-execution-coordinator');
+    assert.ok(TERMINAL_RUN.includes(spec.coordinator.get(answered.run.id)?.status),
+      'the plan being corrected is stopped, not left waiting beside its replacement');
+    assert.deepStrictEqual(corrected.run.promptSpec.questions, [], 'the replacement is decision-complete — tell does not start another interrogation');
+    // The empty guard is what the synthesised question protects. Relaxing the old check
+    // instead of standing a question up would have let a blank line rewrite a plan.
     await assert.rejects(() => spec.answerRun({ runId: waiting.id, text: '   ' }), /answer is required/);
+    await assert.rejects(() => spec.answerRun({ runId: 'run-does-not-exist', text: 'x' }), /Unknown run/);
     spec.shutdown();
   }
 
