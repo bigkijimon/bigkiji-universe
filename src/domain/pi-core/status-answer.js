@@ -253,5 +253,56 @@ function statusReport(facts = {}, { text = '', now = Date.now() } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { isStatusQuestion, statusReport, since, ASKS, MAX_LENGTH,
+// The clock — the third thing a model can only make up.
+//
+// Measured 2026-08-10 22:54. The owner asked 「いま何時ごろか、ひとことで」 and got
+// 「22時40分手前。GPU信号機ログから推測。」 — fourteen minutes wrong, and the model said out
+// loud that it was inferring the time from GPU signal logs, because it has no clock and
+// was reaching for the nearest thing that looked like one. Ten seconds and a paid provider
+// for a worse answer than `Date`.
+//
+// Same argument as the two above: the true answer is already on the machine, so a model
+// can only degrade it.
+//
+// Narrow on purpose. 何時 is a prefix of 何時間, and 「何時間かかりますか」 is a question about
+// duration that must still reach the model — hence the negative lookahead. 「時間」 alone is
+// never enough: 「時間がかかりすぎ」 is a complaint about speed, not a request for the time.
+const CLOCK_ASKS = [
+  /(?:いま|今|現在)[^。\n]{0,4}(?:何時(?!間)|なんじ)/,
+  /^(?:何時(?!間)|なんじ)(?:ごろ|頃|くらい|ぐらい)?[^。\n]{0,8}[?？]?$/,
+  /(?:現在|いま|今)の(?:時刻|日時)/,
+  /\bwhat(?:'s|s| is)?\s+(?:the\s+)?time\b/i,
+  /\bwhat\s+time\s+is\s+it\b/i,
+  /\bcurrent\s+(?:time|date)\b/i,
+];
+const CLOCK_MAX_LENGTH = 40;
+
+/** True when the owner is asking what time it is, rather than how long something takes. */
+function isClockQuestion(text) {
+  const value = String(text || '').trim();
+  if (!value || value.length > CLOCK_MAX_LENGTH) return false;
+  return CLOCK_ASKS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * The time, from this machine's clock.
+ *
+ * @param {Date} [now]
+ * @param {{text?: string}} [options] the owner's question, used only to pick a language
+ * @returns {string}
+ */
+function clockReport(now = new Date(), { text = '' } = {}) {
+  const japanese = JAPANESE.test(String(text || ''));
+  const pad = (value) => String(value).padStart(2, '0');
+  const hh = pad(now.getHours()); const mm = pad(now.getMinutes());
+  if (!japanese) {
+    const day = now.toLocaleDateString('en-CA');
+    return `${hh}:${mm} on ${day}.`;
+  }
+  const week = ['日', '月', '火', '水', '木', '金', '土'][now.getDay()];
+  return `${hh}時${mm}分です（${now.getMonth() + 1}月${now.getDate()}日 ${week}）。`;
+}
+
+module.exports = { isClockQuestion, clockReport, CLOCK_ASKS, CLOCK_MAX_LENGTH,
+  isStatusQuestion, statusReport, since, ASKS, MAX_LENGTH,
   isProviderQuestion, providerReport, PROVIDER_ASKS, PROVIDER_MAX_LENGTH };

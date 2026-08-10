@@ -34,7 +34,7 @@ process.env.BIGKIJI_KNOWLEDGE_ROOT = path.join(root, 'knowledge');
 const { DaemonEngine } = require('../src/domain/server/daemon');
 const { CircuitBreaker } = require('../src/domain/pi-agent/circuit-breaker');
 const gpu = require('../src/domain/pi-agent/gpu-lock');
-const { isProviderQuestion, providerReport, isStatusQuestion } = require('../src/domain/pi-core/status-answer');
+const { isProviderQuestion, providerReport, isStatusQuestion, isClockQuestion, clockReport } = require('../src/domain/pi-core/status-answer');
 const { actionTier } = require('../src/domain/pi-core/conversation-engine');
 const { buildFooter } = require('../src/cli/tui/footer');
 
@@ -254,6 +254,30 @@ const readyFacilitator = () => ({
       'and real work about limits is still real work');
   });
 
+  // The clock, for the same reason as the other two.
+  //
+  // Measured 2026-08-10 22:54: 「いま何時ごろか、ひとことで」 came back 「22時40分手前。
+  // GPU信号機ログから推測。」 — fourteen minutes wrong, ten seconds, and a paid provider,
+  // because the model has no clock and reached for the nearest thing resembling one.
+  ok('what time it is comes from the machine, and how long it takes does not', () => {
+    assert.ok(isClockQuestion('いま何時ごろか、ひとことで'), 'the owner’s own line');
+    for (const asked of ['今何時？', 'いま何時', '現在の時刻は', '今の日時', 'what time is it', 'current time', 'なんじ？']) {
+      assert.ok(isClockQuestion(asked), `"${asked}" is a question about the clock`);
+    }
+    // 何時 is a prefix of 何時間, and a question about duration has to reach the model —
+    // it is about the work, which is exactly the thing the machine cannot answer alone.
+    for (const asked of ['何時間かかりますか', 'この作業、何時間くらい？', '時間がかかりすぎ',
+      '時間を短縮して', 'いつ終わる？', 'how long will it take', '時間割を作って', '9時に予約を入れて']) {
+      assert.ok(!isClockQuestion(asked), `"${asked}" is not a request for the time`);
+    }
+    // The answer is the machine's clock, in the language it was asked in.
+    const at = new Date('2026-08-11T00:59:00');
+    assert.match(clockReport(at, { text: 'いま何時？' }), /00時59分/);
+    assert.match(clockReport(at, { text: 'what time is it' }), /00:59/);
+    assert.ok(!/推測|infer|probably|GPU/i.test(clockReport(at, { text: 'いま何時？' })),
+      'a measurement never hedges — that hedge is what a model produced instead');
+  });
+
   await okAsync('the answer comes from the breaker, with no model in the path', async () => {
     const stateRoot = path.join(root, 'providers');
     const engine = new DaemonEngine({ stateRoot, workspace: process.cwd(),
@@ -461,7 +485,7 @@ const readyFacilitator = () => ({
   console.log('work gate selftest: PASS · kanji and kana are one request · a work verb with a request ending starts work · '
     + 'the status answer still wins · a model-promoted TASK always waits for one approval · an explicit request keeps its mode · '
     + 'answering a question does not walk a gated request past the gate · a go-ahead always makes a plan · '
-    + 'which AI can be asked is measured from the breaker · a stopped local model is not offered · '
+    + 'which AI can be asked is measured from the breaker · the clock comes from the machine · a stopped local model is not offered · '
     + 'a freeze nobody will lift says so · a resident agent is not busy · an open question reads as asking');
   fs.rmSync(root, { recursive: true, force: true });
 })().catch((error) => { console.error(error); process.exit(1); });

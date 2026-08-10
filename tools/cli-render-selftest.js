@@ -708,6 +708,48 @@ ok('the footer is five rows in the owner-specified order', () => {
   // And it is gone from here rather than drawn in both places.
   assert.ok(!flat.some((line) => line.includes('phase vector')), 'the phase vector is in the panel, not the footer');
 });
+// A terminal older than the code says so, in the row that does not scroll.
+//
+// The owner asked three times in one evening why a change they had just approved was not
+// on screen. Each time their terminal had been open since before it, and nothing anywhere
+// said so — a long-lived process with no way to notice it had been overtaken.
+ok('a stale terminal says so, and says it at every width', () => {
+  const state = { runs: [] };
+  const row = (cols, staleCode) => stripAnsi(buildFooter({ cols, mode: 'ask', state, staleCode }).lines.filter(Boolean).at(-1));
+  assert.doesNotMatch(row(100, false), /restart/, 'and stays quiet when the code has not moved');
+  assert.match(row(100, true), /restart/);
+  assert.match(row(100, true), /older than the code/, 'it says why, not just "restart"');
+  // It outranks everything else on the row: it is the only segment that explains why the
+  // rest of the screen might be lying. Down to the narrowest terminal the footer supports.
+  for (const cols of [46, 50, 63, 80, 100, 140]) {
+    assert.match(row(cols, true), /restart/, `dropped at ${cols} columns, which is where a split pane lives`);
+    assert.ok(T.stringWidth(row(cols, true)) <= cols, `overflowed ${cols}: ${row(cols, true)}`);
+  }
+  // Even with a waiting run competing for the same row.
+  const waiting = { runs: [{ id: 'r', status: 'AWAITING_APPROVAL', assignments: [{ role: 'leader', provider: 'glm', status: 'awaiting_approval' }] }] };
+  const busy = stripAnsi(buildFooter({ cols: 63, mode: 'ask', state: waiting, staleCode: true }).lines.filter(Boolean).at(-1));
+  assert.match(busy, /restart/, 'the one thing that fixes everything else does not get crowded out');
+});
+
+// The check itself: what this process loaded, against what is on disk now.
+ok('staleness is measured from require.cache, not from a build stamp', () => {
+  const cli = require('../src/domain/terminal/bigkiji-cli');
+  const files = cli.loadedSources();
+  assert.ok(files.length > 0, 'the process knows which files it loaded');
+  assert.ok(files.every((file) => file.includes(`${require('path').sep}src${require('path').sep}`)),
+    'only this application, never node_modules');
+  // Unchanged is unchanged.
+  const seen = new Map(files.map((file) => [file, require('fs').statSync(file).mtimeMs]));
+  assert.equal(cli.sourcesChanged(seen), false);
+  // One file written after the fact is enough — build-info.json could never see this,
+  // because it is stamped when a build is made and not when a file is edited.
+  const stale = new Map(seen); stale.set(files[0], 0);
+  assert.equal(cli.sourcesChanged(stale), true);
+  // A file that has been deleted is not evidence that this process is behind.
+  const gone = new Map([['/nowhere/at/all/src/gone.js', Date.now()]]);
+  assert.equal(cli.sourcesChanged(gone), false);
+});
+
 ok('the footer never overflows, even with a long Japanese comment', () => {
   for (const cols of [60, 80, 100, 140]) {
     const { lines } = buildFooter({ cols, mode: 'plan', state: {},

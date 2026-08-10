@@ -108,7 +108,7 @@ function spread(left, right, width, leftPlain = plain(left), rightPlain = plain(
 function buildFooter(options = {}) {
   const { cols = 80, mode = 'plan', state = {}, phase = state?.phase, comment = '', elapsedMs = null,
     status = '', busy = false, frameIndex = 0, frameSet = loadingFrames(),
-    degraded = false, degradedNote = '', awaitingAnswer = false } = options;
+    degraded = false, degradedNote = '', awaitingAnswer = false, staleCode = false } = options;
   const C = themeFor(mode);
   const width = Math.max(46, Math.min(Math.trunc(Number(cols) || 80), 220));
   const inner = Math.max(30, width - MARGIN.length * 2);
@@ -274,7 +274,17 @@ function buildFooter(options = {}) {
   const shellSeg = { plain: `shell: ${lower(shellLabel())}`, colored: `${C.muted}shell:${C.reset} ${C.dim}${lower(shellLabel())}${C.reset}` };
   const agentSeg = { plain: `agent: ${agent.text}`, colored: `${C.muted}agent:${C.reset} ${agent.colored}` };
   const workSeg = work ? { plain: `work: ${work}`, colored: `${C.muted}work:${C.reset} ${C.info}${work}${C.reset}` } : null;
-  const candidates = workSeg
+  // This terminal is older than the code on disk, and it is the last thing to be dropped.
+  //
+  // The owner asked three times in one evening why a change they had just approved was not
+  // on screen. Each time the answer was that their terminal had been open since before it,
+  // and nothing anywhere said so — the CLI is a long-lived process and the only signal was
+  // me telling them. It outranks every other segment here because it is the only one that
+  // explains why the rest of the screen might be lying.
+  const staleSeg = staleCode
+    ? { plain: 'restart — this terminal is older than the code', colored: `${C.error}restart${C.reset} ${C.muted}— this terminal is older than the code${C.reset}` }
+    : null;
+  const ladder = workSeg
     ? [
       [modeSeg, shellSeg, agentSeg, workSeg],
       [modeSeg, agentSeg, workSeg],
@@ -286,9 +296,14 @@ function buildFooter(options = {}) {
       [modeSeg, agentSeg],
       [agentSeg],
     ];
+  // Prepended to every rung, then a rung that is nothing else at all: at any width the
+  // owner keeps the sentence that tells them what to do about all of this.
+  const candidates = staleSeg
+    ? [...ladder.map((rung) => [staleSeg, ...rung]), [staleSeg]]
+    : ladder;
   const join = (segments, key) => segments.filter(Boolean).map((segment) => segment[key]).join('    ');
   const chosen = candidates.find((segments) => stringWidth(join(segments, 'plain')) <= inner);
-  lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([workSeg || agentSeg], 'plain'), inner)));
+  lines.push(MARGIN + (chosen ? join(chosen, 'colored') : clip(join([staleSeg || workSeg || agentSeg], 'plain'), inner)));
 
   // art rows, then the status row, then the rule — so the input is one past the rule.
   // This was `art.length + 2` while the phase vector sat between the status row and the

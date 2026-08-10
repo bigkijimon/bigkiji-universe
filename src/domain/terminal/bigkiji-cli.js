@@ -86,6 +86,33 @@ const APPROVAL_CHOICES = Object.freeze([
   Object.freeze({ id: 'later', keys: Object.freeze(['l', 'L', '3']) }),
 ]);
 
+/**
+ * The files this process is actually running, and when they were last written.
+ *
+ * `require.cache` is the exact answer — not a guess at which modules matter, not a glob
+ * over the tree, but the list of files Node loaded into this process. Compared against
+ * itself later, it answers one question: is the code I am running still the code on disk?
+ *
+ * The owner asked three times in one evening why a change they had just approved was not
+ * on screen, and the answer each time was that their terminal had been open since before
+ * it. Nothing said so. `build-info.json` cannot say so either — it is stamped when a build
+ * is made (last on 2026-08-09), so it is blind to every edit since.
+ *
+ * Measured: 11 files, 32–71µs per sweep. Cheap enough for the four-second poll that
+ * already exists.
+ */
+function loadedSources(cache = require.cache) {
+  return Object.keys(cache).filter((file) => file.includes(`${path.sep}src${path.sep}`) && !file.includes('node_modules'));
+}
+
+/** True when any file this process loaded has been written since it loaded it. */
+function sourcesChanged(seen) {
+  for (const [file, at] of seen) {
+    try { if (fs.statSync(file).mtimeMs > at) return true; } catch (_) { /* deleted counts as unchanged */ }
+  }
+  return false;
+}
+
 const prefs = new CliPreferences();
 function setMode(value, persist = true) { activeMode = normalizeMode(value); A = themeFor(activeMode); if (persist) prefs.update({ mode: activeMode }); return activeMode; }
 
@@ -256,6 +283,7 @@ async function repl(client) {
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
   let degradedTurn = false; let degradedWhy = ''; // sticky until a turn the model actually serves
   let awaitingAnswer = false; // the front desk is holding a run until the owner answers
+  let staleCode = false; // a file this process is running has changed on disk since it started
   let abortedTurn = false; // one abort per turn; the second Ctrl-C leaves
   let turnAbort = null; // lets Ctrl-C stop waiting on the answer, not just ask the daemon to stop
   const promptRow = () => process.stdout.write(`\x1b[${Math.min(sticky.rows, sticky.footerTop + inputOffset)};1H\x1b[2K`);
@@ -276,7 +304,7 @@ async function repl(client) {
     sticky.setFooterHeight(footerHeightFor(frameSet, runningAgents(live).length));
     const { lines, inputIndex } = buildFooter({ cols: sticky.cols, mode, state: live, phase: phaseInfo, comment,
       busy: turnStartedAt > 0, elapsedMs: turnStartedAt ? Date.now() - turnStartedAt : null, frameIndex, frameSet,
-      degraded: degradedTurn, degradedNote: machineNote({ gpu: live?.gpu, turnNote: degradedWhy }), awaitingAnswer });
+      degraded: degradedTurn, degradedNote: machineNote({ gpu: live?.gpu, turnNote: degradedWhy }), awaitingAnswer, staleCode });
     inputOffset = inputIndex;
     const signature = lines.join(' ');
     if (!force && signature === painted) return;
@@ -526,9 +554,17 @@ async function repl(client) {
     : null;
   ticker?.unref?.();
   // Fleet/agent status is push-first (SSE) with a slow poll as the safety net.
+  // What this process loaded, and when. Read once, here, so the comparison later is
+  // against the moment this terminal started rather than against anything else.
+  const loadedAt = new Map(loadedSources().map((file) => {
+    try { return [file, fs.statSync(file).mtimeMs]; } catch (_) { return [file, 0]; }
+  }));
   // The header carries fleet counts and the workspace as well as the gauge, so the slow
   // poll repaints it too — otherwise `6/6 ready` would be whatever it was at startup.
   const statePoll = setInterval(() => {
+    // Sticky once true: code does not become fresh again, and a warning that flickers is
+    // a warning nobody reads.
+    if (!staleCode && sourcesChanged(loadedAt)) { staleCode = true; paintFooter(true); }
     client.state().then((next) => { live = next; paintFooter(); paintHeader(); }).catch(() => {});
   }, 4000); statePoll.unref?.();
   /**
@@ -1089,5 +1125,5 @@ if (require.main === module) {
   main().catch((error) => { console.error(`${A.error}✗ ${error.message}${A.reset}`); process.exit(1); });
 }
 
-module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES, PICK_LETTERS, pickable, answerFromPicks,
+module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES, PICK_LETTERS, pickable, answerFromPicks, loadedSources, sourcesChanged,
   FROZEN_TURN_NOTE, APP_ROOT };

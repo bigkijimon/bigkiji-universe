@@ -41,7 +41,7 @@ const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { localLookup } = require('../pi-core/local-lookup');
 const { PROVIDER_SECRET } = require('../pi-core/security/security-policy');
 const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion, actionTier, isInspection } = require('../pi-core/conversation-engine');
-const { isStatusQuestion, statusReport, isProviderQuestion, providerReport } = require('../pi-core/status-answer');
+const { isStatusQuestion, statusReport, isProviderQuestion, isClockQuestion, clockReport, providerReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
 const stt = require('./speech-to-text');
@@ -745,6 +745,16 @@ class DaemonEngine extends EventEmitter {
     // it. The breaker already holds the exact number of seconds left.
     if (isProviderQuestion(clean)) {
       return this._measuredTurn(session, providerReport(this.providerFacts(), { text: clean }), 'providers');
+    }
+    // The clock — the third thing a model has no access to and will invent anyway.
+    //
+    // Measured 2026-08-10 22:54: 「いま何時ごろか、ひとことで」 came back 「22時40分手前。
+    // GPU信号機ログから推測。」 — fourteen minutes wrong, ten seconds spent, and a paid
+    // provider used, because the GPU was frozen and the question went out through the
+    // cloud escape. The model said out loud that it was inferring the time from log files,
+    // which is what a model does when asked for something it cannot see.
+    if (isClockQuestion(clean)) {
+      return this._measuredTurn(session, clockReport(new Date(), { text: clean }), 'clock');
     }
     // The owner answering the question the front desk asked last turn.
     //
