@@ -10,7 +10,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { CoreExecutionCoordinator, FALLBACKS } = require('../src/domain/pi-agent/core-execution-coordinator');
+const { CoreExecutionCoordinator, FALLBACKS, leaderProvider } = require('../src/domain/pi-agent/core-execution-coordinator');
 const { ModelCapabilityRegistry } = require('../src/domain/pi-agent/model-capability-registry');
 const { CircuitBreaker } = require('../src/domain/pi-agent/circuit-breaker');
 const { resolveModel, CLAUDE_MODELS, ROLE_TIER } = require('../src/domain/pi-agent/model-router');
@@ -247,6 +247,91 @@ ok('both dispatch paths use the readiness gate', () => {
     'the app coordinator defaulted to () => true, so it assigned work to providers that could not start');
 });
 
+// --- R-8: "Session leader" is a control, not a caption ------------------------
+//
+// The settings window has offered Auto / Claude Code / Codex / Gemini / GLM since it was
+// written, and picking one changed nothing that ran: `run.leader` was set from it and
+// then read only by eight knowledge events and one line of HUD text, while the provider
+// that did the work came from ROLE_BLUEPRINT's own `claude-code` every time. Traced
+// 2026-08-10 and fixed at the owner's request.
+ok('the leader the owner picked is the leader that runs', () => {
+  const planned = [];
+  const coordinator = new CoreExecutionCoordinator({ taskRunner: runner(planned), registry: registry(), available: () => true });
+  const run = { id: 'run-lead', prompt: 'fix the null check in the daemon', cwd: '/tmp', revision: 1,
+    maxAgents: 3, assignments: [], roleContext: { sessionLeader: 'codex' } };
+  coordinator._planExecution(run);
+  const leader = run.assignments.find((item) => item.role === 'leader');
+  assert.ok(leader, 'a run always has a leader');
+  assert.equal(leader.provider, 'codex', 'the setting reached the assignment');
+  assert.equal(run.leader, 'codex', 'and the record agrees with the assignment');
+
+  // Only the leader moves. Choosing who leads is not choosing who debugs — and the
+  // other roles cannot be named outright here, because they go through the learned
+  // score like they always have. So the claim is stated as a comparison: same run, two
+  // settings, one differing role.
+  const other = new CoreExecutionCoordinator({ taskRunner: runner([]), registry: registry(), available: () => true });
+  const glmRun = { ...run, id: 'run-lead-glm', assignments: [], roleContext: { sessionLeader: 'glm' } };
+  other._planExecution(glmRun);
+  assert.equal(glmRun.assignments.find((item) => item.role === 'leader').provider, 'glm');
+  const nonLeader = (list) => list.filter((item) => item.role !== 'leader').map((item) => `${item.role}:${item.provider}`);
+  assert.deepEqual(nonLeader(glmRun.assignments), nonLeader(run.assignments),
+    'changing the session leader must not reshuffle the specialists');
+});
+
+ok('auto is the owner declining to decide, and stays that way', () => {
+  assert.equal(leaderProvider({ sessionLeader: 'auto' }), '', 'auto pins nothing — the learner keeps its job');
+  assert.equal(leaderProvider({}), '');
+  assert.equal(leaderProvider(), '');
+  assert.equal(leaderProvider({ sessionLeader: 'nonsense' }), '');
+  assert.equal(leaderProvider({ sessionLeader: 'codex' }), 'codex');
+  assert.equal(leaderProvider({ sessionLeader: 'glm' }), 'glm');
+  // The local provider is not a leader. The role writes, and qwen has no tool layer —
+  // the same shape the roster records for GLM doing debugging with --no-tools.
+  assert.equal(leaderProvider({ sessionLeader: 'qwen' }), '',
+    'a writing role cannot be given the provider that cannot open a file');
+});
+
+ok('on auto the measured best still wins, and the record names it', () => {
+  // The point of leaving it on Auto. A run planned with no named leader must not be
+  // pinned to a hardcoded provider, and whoever ends up leading is who the knowledge
+  // events and the HUD card report — they used to report the setting instead.
+  const coordinator = new CoreExecutionCoordinator({ taskRunner: runner([]), registry: registry(), available: () => true });
+  const run = { id: 'run-auto', prompt: 'fix the null check in the daemon', cwd: '/tmp', revision: 1,
+    maxAgents: 3, assignments: [], leader: 'auto', roleContext: { sessionLeader: 'auto' } };
+  coordinator._planExecution(run);
+  const leader = run.assignments.find((item) => item.role === 'leader');
+  assert.equal(run.leader, leader.provider, 'the run records who led, not who was asked for');
+  assert.notEqual(run.leader, 'auto', 'and "auto" is never left in the record as if it were a provider');
+});
+
+ok('choosing a leader that is exhausted still gets a run, not a wall', () => {
+  // Being able to choose is not the same as a run dying because that choice is out of
+  // quota. The pick is the head of the chain, and the chain still works underneath it.
+  const breaker = new CircuitBreaker({ threshold: 1, cooldownMs: 600000 });
+  breaker.record('codex', { ok: false, reason: 'quota' });
+  const coordinator = new CoreExecutionCoordinator({ taskRunner: runner([]), registry: registry(), breaker, available: () => true });
+  const run = { id: 'run-lead-out', prompt: 'fix the null check in the daemon', cwd: '/tmp', revision: 1,
+    maxAgents: 3, assignments: [], roleContext: { sessionLeader: 'codex' } };
+  coordinator._planExecution(run);
+  const leader = run.assignments.find((item) => item.role === 'leader');
+  assert.notEqual(leader.provider, 'codex', 'the breaker is open, so the chain steps past the chosen leader');
+  assert.ok(FALLBACKS.codex.includes(leader.provider), 'and lands somewhere on codex own fallback chain');
+});
+
+// The saved value the console can produce has to be one this function accepts, or the
+// owner picks a leader and gets Claude Code anyway — the bug this section exists to fix.
+ok('every leader the settings store will save is a leader this code honours', () => {
+  const { SettingsStore } = require('../src/core/settings-store');
+  const store = new SettingsStore({ userData: fs.mkdtempSync(path.join(root, 's-')) });
+  for (const wanted of ['claude-code', 'codex', 'gemini', 'glm']) {
+    const saved = store.update({ routing: { sessionLeader: wanted } }).routing.sessionLeader;
+    assert.equal(saved, wanted, `${wanted} survives the validator`);
+    assert.equal(leaderProvider({ sessionLeader: saved }), wanted, `${wanted} reaches the assignment`);
+  }
+  assert.equal(store.update({ routing: { sessionLeader: 'qwen' } }).routing.sessionLeader, 'auto',
+    'and the one that cannot lead is refused at the door rather than silently downgraded later');
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`routing assignment selftest: ${failures} FAILED`); process.exit(1); }
-console.log('routing assignment selftest: PASS · tier follows the request not the title · every chain ends local · a stand-in hands the role back · readiness excludes · no hardcoded provider');
+console.log('routing assignment selftest: PASS · tier follows the request not the title · every chain ends local · a stand-in hands the role back · readiness excludes · no hardcoded provider · the session leader the owner picks is the one that runs');

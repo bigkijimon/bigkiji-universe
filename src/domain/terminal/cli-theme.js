@@ -108,6 +108,22 @@ function normalizeMode(value) {
 // both still wait — the difference is how the CLI asks — and only 'auto' releases.
 const TRANSPORT = Object.freeze({ 'auto-edit': 'auto', ask: 'ask', plan: 'plan', demo: 'demo' });
 function transportMode(mode) { return TRANSPORT[normalizeMode(mode)] || 'plan'; }
+
+// The shift+tab order, in one place, ascending by how much the fleet may do unasked.
+//
+// It was a literal `['ask', 'auto-edit', 'plan']` inside the monitor view's key handler
+// and nowhere else, so the REPL — the surface the owner actually types into — had no
+// shift+tab at all while renderer.js advertised one. Two surfaces cycling different
+// orders is worse than one surface cycling none, hence a single exported function.
+//
+// Ascending autonomy matters more than the old order did: repeated presses read as
+// loosening the leash, and the only jump backwards is the wrap from `demo` (nothing
+// stops to ask) to `ask` (everything does).
+const MODE_CYCLE = Object.freeze(['ask', 'plan', 'auto-edit', 'demo']);
+function nextMode(current) {
+  const index = MODE_CYCLE.indexOf(normalizeMode(current));
+  return MODE_CYCLE[(index + 1) % MODE_CYCLE.length];
+}
 function themeFor(mode) { return { ...PALETTE, ...MODE_COLORS[normalizeMode(mode)] }; }
 function paint(text, color = PALETTE.ink) { return `${color}${String(text)}${RESET}`; }
 function stripAnsi(value) { return String(value || '').replace(/\x1b\[[0-9;]*m/g, ''); }
@@ -116,4 +132,4 @@ function rainbow(width, mode = 'plan') {
   return Array.from({ length: Math.max(1, width) }, (_, index) => `${colors[index % colors.length]}━`).join('') + RESET;
 }
 
-module.exports = { NO_COLOR, PROVIDER_COLORS, providerColor, PALETTE, DARK_PALETTE, LIGHT_PALETTE, schemeName, MODE_COLORS, normalizeMode, transportMode, themeFor, paint, stripAnsi, rainbow };
+module.exports = { NO_COLOR, PROVIDER_COLORS, providerColor, PALETTE, DARK_PALETTE, LIGHT_PALETTE, schemeName, MODE_COLORS, normalizeMode, transportMode, MODE_CYCLE, nextMode, themeFor, paint, stripAnsi, rainbow };

@@ -27,6 +27,7 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
@@ -246,6 +247,42 @@ assert.ok(/openConsole: \(\) => ipcRenderer\.send\('open-console'\)/.test(preloa
 
   const app = stripComments(code[`${APP}/src/App.jsx`]);
   assert.ok(/setView\('terminal'\)/.test(app) && /setView\('chat'\)/.test(app), 'both views are reachable');
+
+  // ---- shift+tab cycles the execution mode ----------------------------------
+  //
+  // The owner pressed it and nothing happened, in this window and in the REPL, because
+  // neither had ever bound it (2026-08-10). Here the browser is the obstacle: Tab is
+  // focus navigation, so without preventDefault the key never reaches the handler at all.
+  const { EXECUTION_MODE_CYCLE, nextExecutionMode } = await import(`../${APP}/src/lib/keymap.mjs`);
+  assert.equal(KEYMAP.cycleMode.key, 'tab');
+  assert.ok(KEYMAP.cycleMode.shift, 'it is shift+tab, not tab');
+  assert.ok(!KEYMAP.cycleMode.meta, 'and not an accelerator — no ⌘ in it');
+  assert.ok(matches({ key: 'Tab', shiftKey: true }, KEYMAP.cycleMode), 'the matcher accepts the real event shape');
+  assert.ok(!matches({ key: 'Tab' }, KEYMAP.cycleMode), 'a bare Tab still moves focus between fields');
+  assert.ok(!matches({ key: '1', metaKey: true, shiftKey: true }, KEYMAP.viewChat),
+    '⇧⌘1 is not ⌘1 — shift is checked in both directions');
+  assert.ok(/matches\(event, KEYMAP\.cycleMode\)[\s\S]{0,220}event\.preventDefault\(\)/.test(app),
+    'the handler must preventDefault or the browser moves focus and the mode never changes');
+  assert.ok(/executionMode: nextExecutionMode\(/.test(app), 'and it writes the next mode through the settings store');
+  assert.ok(/getState\(\)\.settings/.test(app),
+    'read the mode at press time — this effect has an empty dep list, so a captured value is the one from mount');
+
+  // Two spellings of one list, held together by this assertion rather than by a comment.
+  // settings.json says `auto`; the terminal says `auto-edit`; transportMode is the bridge.
+  const { MODE_CYCLE, transportMode } = createRequire(import.meta.url)('../src/domain/terminal/cli-theme.js');
+  assert.deepEqual([...EXECUTION_MODE_CYCLE], MODE_CYCLE.map(transportMode),
+    'the console and the terminal must cycle the same modes in the same order');
+  assert.equal(nextExecutionMode('ask'), 'plan');
+  assert.equal(nextExecutionMode('demo'), 'ask', 'the wrap lands on the tightest mode, not the loosest');
+  assert.equal(nextExecutionMode('manual'), 'ask',
+    'a mode retired from the list still advances rather than sticking');
+
+  // A select the keystroke can reach. Cycling to a value the dropdown cannot show would
+  // leave the owner looking at a blank control wondering what mode they are in.
+  const composer = stripComments(code[`${APP}/src/components/Composer.jsx`]);
+  for (const mode of EXECUTION_MODE_CYCLE) {
+    assert.ok(composer.includes(`value="${mode}"`), `the composer's mode select offers ${mode}`);
+  }
   const terminal = stripComments(code[`${APP}/src/components/TerminalView.jsx`]);
   assert.ok(/api\.ptyInput/.test(terminal) && /onPtyData/.test(terminal), 'the terminal is wired to the real pty');
   assert.ok(/openMain\(\)/.test(app), 'the 3D scene is one button away rather than underneath');

@@ -182,7 +182,7 @@
         const canApprove = run.status === 'AWAITING_APPROVAL'; const canCancel = ['AWAITING_APPROVAL', 'DISPATCHING', 'EXECUTING', 'REPAIRING'].includes(run.status);
         const progress = ({ PLANNING:8, AWAITING_APPROVAL:18, DISPATCHING:28, EXECUTING:58, REPAIRING:72, VERIFYING:88, COMPLETED:100, FAILED:100 })[run.status] || 0;
         card.innerHTML = `<div class="task-head"><span class="task-name">${escapeHtml(run.promptPreview || run.id)}</span><span class="task-state">${escapeHtml(run.status)}</span><button class="task-dismiss" data-run-dismiss aria-label="Dismiss session">×</button></div>
-          <div class="task-meta">${escapeHtml(run.leader || 'auto leader')} · ${run.assignments?.length || 0} Pi-selected models · repair ${run.repairCycle || 0}/${run.maxRepairCycles || 0}</div>
+          <div class="task-meta">${escapeHtml(run.leader ? `Lead-Pi · ${run.leader}` : 'auto leader')} · ${run.assignments?.length || 0} Pi-selected models · repair ${run.repairCycle || 0}/${run.maxRepairCycles || 0}</div>
           <div class="task-progress"><i style="width:${progress}%"></i></div><div class="assignment-chips">${(run.assignments || []).map((item) => `<span data-state="${escapeHtml(item.status)}"><i></i>${escapeHtml(item.provider)} · ${escapeHtml(item.status)}</span>`).join('')}</div>
           <div class="task-actions">${canApprove ? '<button data-run-act="approve">Start selected models</button>' : ''}${canCancel ? '<button class="quiet" data-run-act="abort">Cancel</button>' : ''}</div>`;
         card.querySelectorAll('[data-run-act]').forEach((button) => button.onclick = async () => {

@@ -271,7 +271,13 @@ class SettingsStore {
       ? next.routing.paidAllowlist.map(String).filter((id) => PAID.includes(id)) : [];
     next.routing.paidAllowlist = requested.length ? [...new Set(requested)] : [...PAID];
     next.routing.localDefault = 'qwen';
-    next.routing.executionMode = ['plan', 'auto', 'manual'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
+    // The five the rest of the system already knows. This list held three, and the two
+    // it was missing were the two the console could not reach: writing `ask` or `demo`
+    // came straight back as `plan`, silently, so shift+tab in the console window could
+    // only ever cycle between two distinct behaviours. daemon.js MODES and the
+    // coordinator's own guard have carried all five for as long as they have existed —
+    // this was the single stale copy. `manual` stays because saved files hold it.
+    next.routing.executionMode = ['plan', 'ask', 'auto', 'manual', 'demo'].includes(next.routing.executionMode) ? next.routing.executionMode : 'plan';
     next.routing.maxAgents = clamp(next.routing.maxAgents, 1, 5, 3);
     // maxAgents is how many roles one run may use; maxParallel is how many jobs run
     // at once across every run. They are different questions and had one answer.
@@ -279,7 +285,15 @@ class SettingsStore {
     next.routing.deliberationLenses = clamp(next.routing.deliberationLenses, 0, 3, 2);
     next.routing.activationMode = 'on-demand';
     next.routing.allSpecialists = false;
-    next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm', 'qwen'].includes(next.routing.sessionLeader)
+    // `qwen` is gone from this list, and it is the only removal.
+    //
+    // The leader role writes (`ROLE_BLUEPRINT`, write: true) and the local provider has
+    // no tool layer, so a qwen leader is the shape the roster already records as a
+    // failure: GLM owned debugging while running `--no-tools` and did "diagnostics,
+    // tests and failure analysis" from the prompt text alone. `FALLBACKS.qwen` is also
+    // empty by design, so this one choice had no way down. It was never in the settings
+    // window's own option list either — only this validator believed in it.
+    next.routing.sessionLeader = ['auto', 'claude-code', 'codex', 'gemini', 'glm'].includes(next.routing.sessionLeader)
       ? next.routing.sessionLeader : 'auto';
     next.conversation = next.conversation || clone(DEFAULTS.conversation);
     // Changing the default was not enough: a settings.json written before 2026-08-03

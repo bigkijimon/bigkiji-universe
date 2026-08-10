@@ -69,6 +69,34 @@ const FALLBACKS = Object.freeze(Object.fromEntries(PROVIDER_PRIORITY.map((provid
 ])));
 const PAID_PROVIDERS = new Set(['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 
+/**
+ * The leader the owner named, or '' for "let the fleet decide".
+ *
+ * The settings window has offered a "Session leader" since it was written, and picking
+ * one changed nothing that ran. `run.leader` was set from it and then used only as a
+ * label: eight `knowledge.recordEvent(..., provider: run.leader)` calls and one line of
+ * HUD text. The provider that actually did the work was chosen by
+ * `registry.choose(role, startable)` — learned scores over every startable provider —
+ * so the roster's own `claude-code` was no more binding than the owner's choice was.
+ * Traced 2026-08-10; the owner asked for the choice to mean something.
+ *
+ * Empty means auto, and auto keeps the learner. That is the honest split: a setting left
+ * on Auto is the owner declining to decide, and overriding measured performance with a
+ * hardcoded name in that case would be worse routing, not more obedient routing. A named
+ * leader is a human overruling the heuristic, and it wins — see `_pick`'s `honourOrder`.
+ *
+ * `qwen` is not a leader at any setting. The role writes (ROLE_BLUEPRINT, write: true)
+ * and the local provider has no tool layer, which is the failure the roster records for
+ * GLM owning debugging while running `--no-tools`.
+ *
+ * @param {{sessionLeader?: string}} routing
+ * @returns {string} a provider id from PROVIDER_PRIORITY, or '' for auto
+ */
+function leaderProvider(routing = {}) {
+  const wanted = String(routing?.sessionLeader || '');
+  return PROVIDER_PRIORITY.includes(wanted) && wanted !== LOCAL_PROVIDER ? wanted : '';
+}
+
 // The owner's working budget for one run, and how often it reports once it is past.
 // Thirty minutes is a checkpoint, not a kill: see _reportProgress.
 const RUN_BUDGET_MS = 30 * 60 * 1000;
@@ -236,7 +264,7 @@ class CoreExecutionCoordinator extends EventEmitter {
       id: runId(text), prompt: text, planHash, promptSpec, previewGame,
       cwd: previewGame && this.preview?.root ? this.preview.root : (cwd || this.taskRunner.cwd),
       mode: ['plan', 'ask', 'auto', 'manual', 'demo'].includes(mode) ? mode : (routing.executionMode || 'plan'),
-      status: 'PLANNING', leader: routing.sessionLeader === 'auto' || !routing.sessionLeader ? 'claude-code' : routing.sessionLeader,
+      status: 'PLANNING', leader: leaderProvider(routing) || 'auto',
       assignments: [], repairCycle: 0, maxRepairCycles: Number(settings.quality?.maxRepairCycles || 3),
       revision: 1, requestedMode: ['plan', 'ask', 'auto', 'manual'].includes(mode) ? mode : (routing.executionMode || 'plan'),
       directiveKeys: [],
@@ -325,9 +353,21 @@ class CoreExecutionCoordinator extends EventEmitter {
     const blueprint = ROLE_BLUEPRINT.filter((item) => kept.has(item.role)).map((item) => {
       // Provider first, then tier. Doing it in this order means a fallback to GLM
       // cannot carry a Claude model id along with it.
-      const provider = this._pick(item.role, [item.provider, ...(FALLBACKS[item.provider] || [])]);
+      //
+      // The line that makes "Session leader" mean something. A named leader becomes the
+      // head of the chain AND is honoured over the learned score; Auto leaves both
+      // alone. Every other role keeps the provider the roster assigns it.
+      const pinned = item.role === 'leader' ? leaderProvider(run.roleContext) : '';
+      const home = pinned || item.provider;
+      const provider = this._pick(item.role, [home, ...(FALLBACKS[home] || [])], { honourOrder: !!pinned });
       return { ...item, provider, model: resolveModel(provider, run.prompt, item.role, { write: item.write }) };
     });
+    // Who actually leads, now that it is known. Until this line `run.leader` was the
+    // owner's request — 'auto' most of the time — and it is what eight knowledge events
+    // and the HUD card report as the run's provider. Recording the intent instead of the
+    // outcome is how a run led by GLM went into the record as led by whatever the
+    // settings said.
+    run.leader = blueprint.find((item) => item.role === 'leader')?.provider || run.leader;
     run.planHash = (run.explicitPlanHash && run.revision === 1) ? run.explicitPlanHash
       : knowledge.hash(JSON.stringify({ prompt: run.prompt, revision: run.revision, deliberation: run.deliberation?.steps || [],
         assignments: blueprint.map(({ role, provider, model, write, title }) => ({ role, provider, model, write, title })) }));
@@ -383,14 +423,24 @@ class CoreExecutionCoordinator extends EventEmitter {
   // work was assigned to the provider that had just proved it could not run. When
   // nothing is startable the answer is the local model — no key, no quota, no
   // network — which is the owner's stated last resort.
-  _pick(role, candidates) {
+  /**
+   * @param {string} role
+   * @param {string[]} candidates  first is the preferred one; the rest are its chain
+   * @param {{honourOrder?: boolean}} options  `honourOrder` takes the first candidate
+   *   that can actually start instead of the highest-scoring one. Set only when a human
+   *   named the provider: the registry's job is to break ties nobody else has broken,
+   *   and an owner picking "Session leader: Codex" has broken it. The exclusions above
+   *   still apply, so a named provider that is off the allowlist, unauthenticated or in
+   *   cooldown is skipped exactly as it would be otherwise — obeyed does not mean pinned.
+   */
+  _pick(role, candidates, { honourOrder = false } = {}) {
     // The owner's paid allowlist is read here and nowhere else. It was a dead
     // setting: forced to a constant on every save, and never consulted by the code
     // that assigns work, so taking an exhausted provider out of rotation was impossible.
     const allowed = this.paidAllowlist();
     const permitted = candidates.filter((provider) => !PAID_PROVIDERS.has(provider) || allowed.has(provider));
     const startable = permitted.filter((provider) => this.isAvailable(provider) && this.breaker.allow(provider));
-    if (startable.length) return this.registry.choose(role, startable) || startable[0];
+    if (startable.length) return honourOrder ? startable[0] : (this.registry.choose(role, startable) || startable[0]);
     if (this.isAvailable(LOCAL_PROVIDER)) return LOCAL_PROVIDER;
     return permitted[0] || candidates[0];
   }
@@ -1274,5 +1324,5 @@ class CoreExecutionCoordinator extends EventEmitter {
   _emit(run, kind) { this.emit('run', { kind, ...publicRun(run) }); }
 }
 
-module.exports = { CoreExecutionCoordinator, ROLE_BLUEPRINT, FALLBACKS, selectRoles,
+module.exports = { CoreExecutionCoordinator, ROLE_BLUEPRINT, FALLBACKS, selectRoles, leaderProvider,
   ACTIVE_RUN, TERMINAL_RUN, STALL_CHECKPOINTS, STALL_TTL_MS, RUN_BUDGET_MS, CHECKPOINT_MS };

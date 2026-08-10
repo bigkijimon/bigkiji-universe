@@ -63,15 +63,20 @@ export default function Composer({ inputRef, onSend }) {
           <span className="sel" title="Local conversation model">
             <b>{settings?.conversation?.model || '—'}</b>
           </span>
-          <span className="sel" title="Execution mode — what happens when work is planned">
+          {/* Four, in the shift+tab order, ascending by what the fleet may do unasked.
+              `manual` is gone from the list but not from the validator: a settings.json
+              written before today can still hold it, and it means the same thing `auto`
+              does. `demo` is last because it is the only one that neither asks nor waits. */}
+          <span className="sel" title="Execution mode — what happens when work is planned (⇧⇥)">
             <select
               aria-label="Execution mode"
               value={settings?.routing?.executionMode || 'plan'}
               onChange={(event) => api.settingsUpdate({ routing: { executionMode: event.target.value } })}
             >
+              <option value="ask">Ask</option>
               <option value="plan">Plan</option>
               <option value="auto">Auto-plan</option>
-              <option value="manual">Manual</option>
+              <option value="demo">Demo · hands-off</option>
             </select>
           </span>
           <span className="sel optional" title="Independent proposals taken before work starts">

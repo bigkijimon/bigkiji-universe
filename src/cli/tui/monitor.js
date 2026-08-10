@@ -2,7 +2,7 @@
 
 const { TUIRenderer } = require('./renderer');
 const { CliPreferences } = require('../../domain/terminal/cli-preferences');
-const { normalizeMode } = require('../../domain/terminal/cli-theme');
+const { nextMode } = require('../../domain/terminal/cli-theme');
 const { phrase, isRoutineToolNoise } = require('./transcript');
 
 class TUIMonitor {
@@ -72,9 +72,8 @@ class TUIMonitor {
     }
     if (key === 'h') this.client.emit('hud-request');
     if (key === '\x1b[Z') {
-      const modes = ['ask', 'auto-edit', 'plan']; const current = normalizeMode(this.preferences.get().mode);
-      const next = modes[(modes.indexOf(current) + 1) % modes.length];
-      this.state.preferences = this.preferences.update({ mode: next }); this.renderer.draw(this.state, this.relay);
+      this.state.preferences = this.preferences.update({ mode: nextMode(this.preferences.get().mode) });
+      this.renderer.draw(this.state, this.relay);
     }
   }
   stop() {

@@ -11,7 +11,7 @@ import { useStore } from './lib/useStore.js';
 import { setState, getState } from './lib/store.js';
 import { api, refreshSessions } from './lib/ipc.js';
 
-import { KEYMAP, matches } from './lib/keymap.mjs';
+import { KEYMAP, matches, nextExecutionMode } from './lib/keymap.mjs';
 
 // The working surface.
 //
@@ -116,6 +116,16 @@ export default function App() {
       else if (matches(event, KEYMAP.viewTerminal)) { event.preventDefault(); setView('terminal'); }
       else if (matches(event, KEYMAP.focusComposer)) { event.preventDefault(); setView('chat'); }
       else if (matches(event, KEYMAP.toggleSidebar)) { event.preventDefault(); toggleSidebar(); }
+      else if (matches(event, KEYMAP.cycleMode)) {
+        // preventDefault is the whole feature here: without it the browser moves focus
+        // backwards and the mode never changes, which is what the owner reported.
+        // getState() rather than a captured value — this effect has an empty dep list,
+        // so a closed-over `settings` would be the one from mount, forever.
+        event.preventDefault();
+        const current = getState().settings?.routing?.executionMode || 'plan';
+        api.settingsUpdate({ routing: { executionMode: nextExecutionMode(current) } })
+          .catch(() => { /* the select stays where it was; nothing to say about it */ });
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);

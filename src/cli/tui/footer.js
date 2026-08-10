@@ -250,7 +250,12 @@ function buildFooter(options = {}) {
   // The mode gets the violet the rest of this palette did not have. Claude Code puts
   // its mode in violet for the same reason: it is the one value on the row that
   // changes what the next Enter will DO, and it read as ordinary text.
-  const modeSeg = { plain: `mode: ${lower(mode)}`, colored: `${C.muted}mode:${C.reset} ${C.violet}${C.bold}${lower(mode)}${C.reset}` };
+  // `⇧⇥` rides with the value, not in a help row. The REPL bound shift+tab on
+  // 2026-08-10 and had never advertised it anywhere the owner types; a hint that lives
+  // two screens away from the thing it changes is a hint nobody reads. Two columns is
+  // what it costs, and it drops out of the row at the same width the mode itself does.
+  const modeSeg = { plain: `mode: ${lower(mode)} ⇧⇥`,
+    colored: `${C.muted}mode:${C.reset} ${C.violet}${C.bold}${lower(mode)}${C.reset} ${C.dim}⇧⇥${C.reset}` };
   const shellSeg = { plain: `shell: ${lower(shellLabel())}`, colored: `${C.muted}shell:${C.reset} ${C.dim}${lower(shellLabel())}${C.reset}` };
   const agentSeg = { plain: `agent: ${agent.text}`, colored: `${C.muted}agent:${C.reset} ${agent.colored}` };
   const workSeg = work ? { plain: `work: ${work}`, colored: `${C.muted}work:${C.reset} ${C.info}${work}${C.reset}` } : null;

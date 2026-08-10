@@ -17,7 +17,7 @@ const {
   renderUserTurn, shortRunId, shortenPath, truncateToWidth,
 } = require('../../cli/tui/transcript');
 const { CliPreferences } = require('./cli-preferences');
-const { themeFor, normalizeMode, transportMode } = require('./cli-theme');
+const { themeFor, nextMode, normalizeMode, transportMode } = require('./cli-theme');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
 const APP_VERSION = require('../../../package.json').version;
@@ -257,6 +257,33 @@ async function repl(client) {
   // is ever allowed to run past the right edge.
   const view = () => ({ width: sticky.active ? sticky.cols : screenWidth(), theme: A, mark: glyphs() });
   const emit = (lines) => { const list = Array.isArray(lines) ? lines : [lines]; if (list.length) say(list.join('\n')); };
+  /**
+   * The one place the mode changes, because the mode is painted in three.
+   *
+   * `setMode()` swaps the module-level palette, but the prompt string was baked into
+   * createInterface() above and never read it again: `/mode auto-edit` moved the word in
+   * the footer and left the `>` wearing the colour of the mode you had just left. The
+   * colour is the half you take in without reading, so it was the half that lied — and
+   * both `/mode` and `/setting mode` have had that bug for as long as they have existed.
+   *
+   * restoreHeader() repaints the hint lines in the new accent *without* changing the
+   * header's height. Height is the dangerous part: `get top()` is derived from it, and a
+   * different top means a full re-layout, which is the path that used to throw the
+   * transcript away.
+   */
+  const applyMode = (next) => {
+    const before = mode;
+    mode = setMode(next);
+    rl.setPrompt(`${A.prompt}>${A.reset} `);
+    // `demo` is the only mode whose name does not say what it does: the coordinator
+    // skips the approval gate for it and the daemon skips the clarifying questions.
+    // Said once, on the way in — a word alone is not a warning.
+    if (mode === 'demo' && before !== 'demo') emit(renderNote('demo — 承認も確認もされません', view()));
+    const head = sticky.restoreHeader();
+    if (head) process.stdout.write(head);
+    paintFooter(true);
+    return mode;
+  };
   // The same run reaches the transcript from up to three places — the awaited
   // response, the daemon's `run` event, and the status update that follows — so
   // one submitted plan printed two or three identical blocks in a row. Each
@@ -467,18 +494,17 @@ async function repl(client) {
       else if (text === '/setting' || text === '/settings' || text.startsWith('/setting ') || text.startsWith('/settings ')) {
         const [, key, requested] = text.split(/\s+/); const value = prefs.get();
         if (key) {
-          if (key === 'mode') mode = setMode(requested);
+          if (key === 'mode') applyMode(requested);
           else if (key === 'contrast' && ['standard', 'high'].includes(requested)) prefs.update({ contrast: requested });
           else if (key === 'cat' && ['low', 'periodic'].includes(requested)) prefs.update({ catCommentary: requested });
           else if (key === 'accent' && ['follow', 'fixed-orange'].includes(requested)) prefs.update({ modeAccent: requested });
-          else throw new Error('usage: /setting mode ask|auto-edit|plan | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
-          A = themeFor(mode);
+          else throw new Error('usage: /setting mode ask|auto-edit|plan|demo | contrast standard|high | cat low|periodic | accent follow|fixed-orange');
         }
         const current = prefs.get();
         emit([...renderToolCall('settings', `theme warm-brown · mode ${mode}`, view()),
           ...renderToolResult(`mode accent: ${current.modeAccent}\ncontrast: ${current.contrast}\ncat commentary: ${current.catCommentary}`, { ...view(), maxLines: 6 })]);
       }
-      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual'].includes(next)) throw new Error('mode must be ask, auto-edit, or plan'); mode = setMode(next); emit(renderToolCall('mode', mode, view())); }
+      else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual', 'demo'].includes(next)) throw new Error('mode must be ask, auto-edit, plan, or demo'); applyMode(next); emit(renderToolCall('mode', mode, view())); }
       else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; emit([...renderToolCall('resume', lower(session.id), view()), ...renderToolResult(session.promptSummary, { ...view(), maxLines: 2 })]); } }
       else if (text === '/reload') { const result = await client.reload(); emit([...renderToolCall('reload', `${result.cleared ?? '—'} hooks`, view())]); }
       else if (text === '/ideas') {
@@ -702,7 +728,40 @@ async function repl(client) {
       pastedBatch = true; process.nextTick(endPaste);
     }
   };
-  if (process.stdin.isTTY) { process.stdout.write('\x1b[?2004h'); process.stdin.prependListener('data', watchPaste); }
+  /**
+   * shift+tab cycles the mode — the keystroke every agent CLI has, and the one this
+   * REPL never bound.
+   *
+   * `renderer.js` has printed “shift+tab mode” in the monitor view's hint row for as
+   * long as it has existed, and `monitor.js` handled it; the REPL — the surface the
+   * owner actually types into — had no keypress listener at all. Measured 2026-08-10:
+   * zero `keypress` listeners anywhere in src/. The advertisement shipped without the
+   * feature.
+   *
+   * readline already parses ESC[Z into `{name:'tab', shift:true}` and does not put the
+   * escape sequence on the line, so this is a listener and nothing else. Three states
+   * must not see it: a paste that happens to contain those bytes (the mode would move
+   * because of what the owner copied), `askKey()` holding the tty for an approval, and
+   * a non-tty run where readline emits no keypress events at all.
+   *
+   * The paste guard is `muted`, not `pasting`. `pasting` is only set when the bracketed
+   * markers arrive in *different* reads; a paste that lands whole in one chunk — the
+   * usual case — takes watchPaste's other branch and leaves it false. Measured in a real
+   * pty on 2026-08-10: pasting `hello ESC[Z world` moved the mode from demo to ask, with
+   * `pasting` false the entire time. `mute()` is called for both branches before readline
+   * sees the chunk, and `endPaste` lifts it on the next tick — after readline has finished
+   * processing that same chunk synchronously — so it covers exactly the right window.
+   */
+  const onModeKey = (_chunk, key) => {
+    if (!key || key.name !== 'tab' || !key.shift || key.ctrl || key.meta) return;
+    if (muted || pasting || deciding) return;
+    applyMode(nextMode(mode));
+  };
+  if (process.stdin.isTTY) {
+    process.stdout.write('\x1b[?2004h');
+    process.stdin.prependListener('data', watchPaste);
+    process.stdin.on('keypress', onModeKey);
+  }
   rl.on('line', (line) => { pending.push(line); if (!pasting) schedule(); });
   // Ctrl-C stops the work, not the conversation.
   //
@@ -732,7 +791,7 @@ async function repl(client) {
   });
   rl.on('close', () => {
     clearTimeout(quietTimer); clearTimeout(pasteTimer);
-    if (process.stdin.isTTY) { process.stdin.off('data', watchPaste); rl.output = process.stdout; process.stdout.write('\x1b[?2004l'); }
+    if (process.stdin.isTTY) { process.stdin.off('data', watchPaste); process.stdin.off('keypress', onModeKey); rl.output = process.stdout; process.stdout.write('\x1b[?2004l'); }
     if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect();
     process.exit(interrupted ? 130 : 0);
   });
