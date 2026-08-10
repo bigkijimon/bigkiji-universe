@@ -11,7 +11,7 @@ const { resolveModel } = require('./model-router');
 const { CircuitBreaker } = require('./circuit-breaker');
 const { reviewResult } = require('./critique');
 const { costOf, contextUse } = require('./pricing');
-const { isolate, collectDiff, release } = require('./worktree');
+const { isolate, collectDiff, release, sweepAbandoned, repoRoot } = require('./worktree');
 const { RunLedger } = require('./run-ledger');
 const deliberate = require('./deliberation');
 const { FailureMemory, signatureOf } = require('./failure-memory');
@@ -237,6 +237,37 @@ class CoreExecutionCoordinator extends EventEmitter {
 
   snapshot() { return [...this.runs.values()].map(publicRun); }
   get(id) { const run = this.runs.get(id); return run ? publicRun(run) : null; }
+
+  /**
+   * Reconcile the worktree directory against the runs that exist. Called once, at startup.
+   *
+   * `forgetRun()` is the only thing that releases a worktree and it needs the run to be in
+   * `this.runs` — an in-memory Map. So a restart makes every waiting run's directory
+   * unattributable: nothing knows what it was, and nothing dares delete it. Measured on
+   * the owner's machine 2026-08-10 after five restarts in one evening: 87 directories,
+   * 2.2 GB, and not one of them ever written to.
+   *
+   * `listAbandoned()` has been able to name them since it was written — its own comment
+   * says "so a later run can offer to clean them up" — and nothing had ever called it.
+   *
+   * Work is never deleted. A directory a provider actually wrote in is kept and returned,
+   * the same judgement forgetRun() makes and for the same reason: it is the only copy.
+   *
+   * @returns {{removed: string[], kept: string[]}}
+   */
+  sweepWorktrees() {
+    const repo = repoRoot(this.taskRunner?.cwd || process.cwd());
+    if (!repo) return { removed: [], kept: [] };
+    // Anything this process is still responsible for is off limits, so the sweep is safe
+    // to call at any time rather than only before the first run.
+    const live = new Set();
+    for (const run of this.runs.values()) {
+      for (const assignment of run.assignments || []) {
+        if (assignment.workspace?.isolated) live.add(path.basename(assignment.workspace.path));
+      }
+    }
+    try { return sweepAbandoned(repo, { live }); } catch (_) { return { removed: [], kept: [] }; }
+  }
 
   submit({ prompt, planHash = null, promptSpec = null, cwd, mode } = {}) {
     const text = knowledge.cleanText(prompt || promptSpec?.goal, 20000);

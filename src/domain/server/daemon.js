@@ -483,6 +483,32 @@ class DaemonEngine extends EventEmitter {
     // provider-readiness.js, which also explains why a provider is not ready.
     available: (provider) => readiness(provider, { secret: (id) => this.secrets.get(id) || '' }).ready });
     this.refreshAvailability();
+    // Take stock of the worktrees left by whatever ran before this process.
+    //
+    // Every release path needs the run to be in the coordinator's in-memory Map, so a
+    // restart orphans the directory of anything that was waiting. Measured on the owner's
+    // machine 2026-08-10, after five restarts in one evening: 87 directories, 2.2 GB, and
+    // not one of them ever written to. Nothing reconciled the directory against reality
+    // because the only record of what a worktree was died with the process that made it.
+    //
+    // Deferred, and never fatal: this is housekeeping, and a daemon that will not start
+    // because it could not tidy up is a worse daemon. Directories a provider actually
+    // wrote in are kept and named rather than removed — that work is the only copy.
+    setImmediate(() => {
+      try {
+        const swept = this.coordinator.sweepWorktrees();
+        if (swept.removed.length) {
+          this.publish('commentary', { source: 'PiAgent Engine', status: 'CLEANED',
+            text: `${swept.removed.length} abandoned worktree${swept.removed.length === 1 ? '' : 's'} released` });
+        }
+        if (swept.kept.length) {
+          this.publish('commentary', { source: 'PiAgent Engine', status: 'KEPT',
+            text: `${swept.kept.length} abandoned worktree${swept.kept.length === 1 ? '' : 's'} hold work and were left: ${swept.kept.map((dir) => path.basename(dir)).join(', ').slice(0, 200)}` });
+        }
+      } catch (error) {
+        this.publish('commentary', { source: 'PiAgent Engine', status: 'WARN', text: `Worktree sweep failed: ${String(error.message).slice(0, 160)}` });
+      }
+    });
     setImmediate(() => { try { writeSystemMemory({ appRoot: this.appRoot }); } catch (error) {
       this.publish('commentary', { source: 'PiAgent Engine', status: 'WARN', text: `System memory indexing failed: ${String(error.message).slice(0, 160)}` });
     } });

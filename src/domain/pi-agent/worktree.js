@@ -145,8 +145,111 @@ function isolate({ cwd, runId = 'run', role = 'task', root = null, policyFile = 
       reason: `${policyFile} is not committed, so an isolated copy would run under the permissive default` };
   }
 
+  // What this directory is, written where it outlives the process that made it.
+  //
+  // `baseline` is the whole of the cleanup decision — the tree the provider started from,
+  // so a later diff can tell its work from the owner's carried-in changes — and it lived
+  // only on the run object, in the daemon's memory. `forgetRun()` is the sole caller of
+  // release(), and it needs the run to still be in `this.runs`. Restart the daemon and
+  // every waiting run's worktree becomes unattributable: nothing knows what it was, so
+  // nothing dares remove it. Measured 2026-08-10 after five restarts in one evening: 87
+  // directories, 2.2 GB, and not one of them ever written to.
+  //
+  // Beside the worktree, never inside it. `collectDiff()` runs `git add --all` before
+  // diffing, so a marker in the tree would be staged, counted as work, and keep the
+  // directory alive forever — which is the 35 GB failure above wearing a different hat.
+  try {
+    fs.writeFileSync(markerPath(parent, path.basename(target)),
+      JSON.stringify({ runId: String(runId || ''), role: String(role || ''), baseline, repo, createdAt: new Date().toISOString() }));
+  } catch (_) { /* the sweep falls back to filesystem evidence without it */ }
+
   return { path: target, isolated: true, repo, reason: '', carried, baseline,
     untracked: untrackedFiles(repo).length };
+}
+
+/** Where a worktree's marker lives: beside the directory, never inside it. */
+function markerPath(parent, name) { return path.join(parent, `${name}.json`); }
+
+/**
+ * Has anything been written in here since it was made?
+ *
+ * The fallback for a worktree with no marker — every one that existed before markers did.
+ * Filesystem evidence rather than git's, deliberately: `collectDiff()` without a baseline
+ * compares against HEAD, which counts the owner's carried-in work as the provider's, and
+ * that is precisely the misreading that kept 1,446 directories alive. A provider that ran
+ * wrote something; a run that was never approved did not.
+ *
+ * Five seconds of grace covers the writes git makes while creating the copy. Measured
+ * against the 87 real leaked worktrees on 2026-08-10: all 87 read as untouched at this
+ * threshold, and the number does not change at 30s — there is no cliff here to fall off.
+ *
+ * (The word for what git does to make that copy is avoided on purpose: worktree-selftest
+ * greps this file for it, and a guard against the most expensive mistake available here
+ * is not worth loosening to fit a comment.)
+ */
+function touchedSince(dir, graceMs = 5000) {
+  let born = 0;
+  try { const st = fs.statSync(dir); born = st.birthtimeMs || st.mtimeMs; } catch (_) { return true; }
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch (_) { continue; }
+    for (const entry of entries) {
+      // .git in a worktree is a file pointing at the parent repo, and git rewrites it for
+      // its own bookkeeping. It says nothing about whether a provider did any work.
+      if (entry.name === '.git') continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) { stack.push(full); continue; }
+      try { if (fs.statSync(full).mtimeMs > born + graceMs) return true; } catch (_) {}
+    }
+  }
+  return false;
+}
+
+/**
+ * Reconcile the worktree directory against the runs that actually exist.
+ *
+ * `listAbandoned()` has been able to name these since it was written, and nothing ever
+ * called it — the comment above it says "so a later run can offer to clean them up", and
+ * no later run did. This is that caller.
+ *
+ * Work is never deleted. A directory with provider work in it is kept and reported, which
+ * is the same judgement `forgetRun()` makes and for the same reason: that work is the only
+ * copy of itself.
+ *
+ * `parent` defaults exactly as `isolate()`'s does, override included. Without that, this
+ * swept the production directory while running under `npm test`: daemon-selftest builds a
+ * real DaemonEngine with `workspace: process.cwd()`, so the sweep in its constructor ran
+ * against the owner's own repository and deleted 87 real directories. They were all
+ * provably untouched, so nothing was lost — but a suite that reaches into the owner's
+ * working space is a defect whether or not it got away with it this time, and
+ * BIGKIJI_WORKTREE_ROOT is the mechanism that already exists to stop it.
+ *
+ * @param {string} repo
+ * @param {{parent?: string, live?: Set<string>}} options `live` holds the directory names
+ *   of worktrees belonging to runs this process still owns — they are never touched.
+ * @returns {{removed: string[], kept: string[]}}
+ */
+function sweepAbandoned(repo, { parent = process.env.BIGKIJI_WORKTREE_ROOT || path.join(repo, WORKTREE_DIR), live = new Set() } = {}) {
+  const removed = []; const kept = [];
+  for (const dir of listAbandoned(repo, { parent })) {
+    const name = path.basename(dir);
+    if (live.has(name)) continue;
+    let marker = null;
+    try { marker = JSON.parse(fs.readFileSync(markerPath(parent, name), 'utf8')); } catch (_) { marker = null; }
+    // With a baseline, ask git what the provider changed. Without one, ask the filesystem
+    // whether anyone wrote at all — never git, which would compare against HEAD and read
+    // the owner's own uncommitted work as the provider's.
+    const worked = marker?.baseline
+      ? (collectDiff({ path: dir, isolated: true, repo, baseline: marker.baseline }).files || 0) > 0
+      : touchedSince(dir);
+    if (worked) { kept.push(dir); continue; }
+    release({ path: dir, isolated: true, repo });
+    try { fs.rmSync(markerPath(parent, name), { force: true }); } catch (_) {}
+    removed.push(dir);
+  }
+  return { removed, kept };
 }
 
 /** What the provider actually changed, as numbers plus a bounded patch. */
@@ -239,4 +342,4 @@ function firstLine(text) {
   return String(text || '').split('\n')[0].slice(0, 200);
 }
 
-module.exports = { isolate, collectDiff, release, listAbandoned, repoRoot, POLICY_FILE, WORKTREE_DIR, MAX_PATCH_CHARS, MAX_LISTED_FILES };
+module.exports = { isolate, collectDiff, release, listAbandoned, sweepAbandoned, touchedSince, repoRoot, POLICY_FILE, WORKTREE_DIR, MAX_PATCH_CHARS, MAX_LISTED_FILES };

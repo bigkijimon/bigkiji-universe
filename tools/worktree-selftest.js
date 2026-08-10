@@ -132,6 +132,51 @@ ok('empty work is cleaned up; work with something in it is kept and named', () =
   assert.deepStrictEqual(worktree.listAbandoned(dir, { parent }), []);
 });
 
+// The other half of the 35 GB one: nobody was calling listAbandoned.
+//
+// `forgetRun()` is the only thing that releases a worktree and it needs the run to be in
+// the coordinator's in-memory Map. Restart the daemon and every waiting run's directory
+// becomes unattributable — the baseline that decides whether it holds work died with the
+// process. Measured on the owner's machine 2026-08-10 after five restarts in one evening:
+// 87 directories, 2.2 GB, not one ever written to, and listAbandoned — whose own comment
+// says "so a later run can offer to clean them up" — had never been called by anything.
+ok('a sweep releases what nobody wrote in, and keeps what somebody did', () => {
+  const dir = repo('sweep'); const parent = path.join(dir, 'wt-sweep');
+
+  const untouched = worktree.isolate({ cwd: dir, runId: 'run-a', role: 'leader', root: parent });
+  const worked = worktree.isolate({ cwd: dir, runId: 'run-b', role: 'ui', root: parent });
+  fs.writeFileSync(path.join(worked.path, 'app.js'), 'the provider wrote this\n');
+  const live = worktree.isolate({ cwd: dir, runId: 'run-c', role: 'leader', root: parent });
+
+  // A run this process still owns is never touched, so the sweep is safe at any time.
+  const swept = worktree.sweepAbandoned(dir, { parent, live: new Set([path.basename(live.path)]) });
+  assert.ok(fs.existsSync(live.path), 'a live run keeps its directory');
+  assert.ok(!fs.existsSync(untouched.path), 'nobody wrote in it, so it goes');
+  assert.ok(fs.existsSync(worked.path), 'somebody did, so it stays — that work is the only copy');
+  assert.deepStrictEqual(swept.removed, [canonical(untouched.path)]);
+  assert.deepStrictEqual(swept.kept, [canonical(worked.path)], 'and what was kept is named, not silently left');
+
+  // The marker is the thing that survives the process, and it must never be inside the
+  // tree: collectDiff() stages everything before diffing, so a marker in there would be
+  // counted as work and keep the directory alive for ever — the 35 GB failure again.
+  assert.ok(fs.existsSync(path.join(parent, `${path.basename(worked.path)}.json`)), 'the marker sits beside the worktree');
+  assert.ok(!fs.existsSync(path.join(worked.path, path.basename(worked.path) + '.json')));
+  const inside = fs.readdirSync(worked.path).filter((name) => name.endsWith('.json'));
+  assert.deepStrictEqual(inside, [], `nothing this module writes may land in the tree: ${inside.join(', ')}`);
+  assert.ok(!fs.existsSync(path.join(parent, `${path.basename(untouched.path)}.json`)), 'and a released worktree takes its marker with it');
+
+  // Without a marker — every worktree that existed before markers did — the decision
+  // falls to the filesystem, never to git. `collectDiff` with no baseline compares against
+  // HEAD and reads the owner's carried-in work as the provider's, which is exactly how
+  // 1,446 directories were kept.
+  const legacy = worktree.isolate({ cwd: dir, runId: 'run-d', role: 'leader', root: parent });
+  fs.rmSync(path.join(parent, `${path.basename(legacy.path)}.json`), { force: true });
+  assert.equal(worktree.touchedSince(legacy.path), false, 'a fresh copy nobody wrote in reads as untouched');
+  const sweptLegacy = worktree.sweepAbandoned(dir, { parent });
+  assert.ok(!fs.existsSync(legacy.path), 'so a marker-less leftover is released too');
+  assert.ok(sweptLegacy.removed.includes(canonical(legacy.path)));
+});
+
 // The 35 GB one.
 //
 // Measured on the owner's machine 2026-08-09: 1,446 worktrees, 35 GB, not one of them
@@ -183,6 +228,20 @@ ok('a test suite can move its worktrees out of the production directory', () => 
     assert.ok(w.isolated);
     assert.ok(canonical(w.path).startsWith(canonical(elsewhere)), `BIGKIJI_WORKTREE_ROOT must win: ${w.path}`);
     assert.ok(!fs.existsSync(path.join(dir, '.bigkiji', 'worktrees')), 'and the repo under test stays clean');
+
+    // The sweep has to relocate with it, or the suite deletes out of the production
+    // directory instead of its own. It did exactly that on 2026-08-10, the first time it
+    // ran: daemon-selftest's real DaemonEngine swept the owner's repository and removed 87
+    // directories. All 87 were provably untouched so nothing was lost, and it is still a
+    // suite reaching into the owner's working space.
+    const production = path.join(dir, '.bigkiji', 'worktrees');
+    fs.mkdirSync(production, { recursive: true });
+    const decoy = path.join(production, 'run-9-leader');
+    fs.mkdirSync(decoy, { recursive: true });
+    const swept = worktree.sweepAbandoned(dir);
+    assert.ok(fs.existsSync(decoy), 'the sweep must not touch the production directory while the override is set');
+    assert.ok(!swept.removed.some((removed) => canonical(removed).startsWith(canonical(production))));
+    fs.rmSync(production, { recursive: true, force: true });
     worktree.release(w);
   } finally { delete process.env.BIGKIJI_WORKTREE_ROOT; }
 });
@@ -254,4 +313,4 @@ ok('this module cannot merge, commit or push', () => {
 
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`worktree selftest: ${failures} FAILED`); process.exit(1); }
-console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · refuses to isolate under a weaker policy · isolated before the plan is sealed · cannot merge, commit or push');
+console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · a restart no longer orphans them · refuses to isolate under a weaker policy · isolated before the plan is sealed · cannot merge, commit or push');
