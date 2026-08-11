@@ -143,15 +143,28 @@ ok('no project config can switch the sandbox off', () => {
 ok('project configs only ever add permissions', () => {
   // deny arrays merge as a union, so a deny written locally silently applies to every
   // other department's work too. Local files add allowRead/allowWrite and nothing else.
-  const allowed = new Set(['filesystem', '$comment']);
+  // A `$comment`-prefixed key is documentation and the loader knows nothing about it, so
+  // the rule is about the keys that carry rules. It was written as an exact `$comment`,
+  // and on 2026-08-11 School's config gained `$comment_allowRead` — a note explaining the
+  // one path it had just added, sitting beside the array it explains. That is the
+  // convention working, and this test called it a deny list. Widened to the prefix, and
+  // narrowed at the same time: anything that could be read as a rule is still refused by
+  // name, so `denyRead` cannot arrive dressed as a comment.
+  const documentation = (key) => key.startsWith('$comment');
+  const allowed = new Set(['filesystem']);
   for (const file of locals) {
     const config = readJson(file);
     for (const key of Object.keys(config)) {
-      assert.ok(allowed.has(key), `${file}: "${key}" is not an additive grant`);
+      assert.ok(allowed.has(key) || documentation(key), `${file}: "${key}" is not an additive grant`);
     }
     for (const key of Object.keys(config.filesystem || {})) {
-      assert.ok(/^allow(Read|Write)$/.test(key) || key === '$comment',
+      assert.ok(/^allow(Read|Write)$/.test(key) || documentation(key),
         `${file}: filesystem.${key} — deny lists merge as a union and would apply company-wide`);
+      // Documentation is a string. An array or an object under a `$comment_` name is
+      // something pretending to be a note, and the loader is not the only reader here.
+      if (documentation(key)) {
+        assert.equal(typeof config.filesystem[key], 'string', `${file}: filesystem.${key} is not a note`);
+      }
     }
   }
 });

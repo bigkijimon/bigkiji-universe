@@ -177,6 +177,39 @@ ok('a sweep releases what nobody wrote in, and keeps what somebody did', () => {
   assert.ok(sweptLegacy.removed.includes(canonical(legacy.path)));
 });
 
+// A note about a copy that is not there.
+//
+// release() is the ordinary path — forgetRun() calls straight through to it — and it
+// removed the directory and left the marker. Measured on the owner's machine 2026-08-12:
+// two worktrees and eighteen markers for directories gone since 01:04, which made
+// `ls .bigkiji/worktrees | wc -l` answer 22 to the question "how many copies are there".
+ok('a released worktree takes its note with it, and a stray note is swept', () => {
+  const dir = repo('markers'); const parent = path.join(dir, 'wt-markers');
+  const one = worktree.isolate({ cwd: dir, runId: 'run-x', role: 'leader', root: parent });
+  const marker = path.join(parent, `${path.basename(one.path)}.json`);
+  assert.ok(fs.existsSync(marker), 'isolate writes the note beside the copy');
+  worktree.release(one);
+  assert.ok(!fs.existsSync(one.path), 'release removes the copy');
+  assert.ok(!fs.existsSync(marker), 'and the note with it — not only on the sweep path');
+
+  // Kept work keeps its baseline, or the next sweep cannot tell that work from the owner's.
+  const held = worktree.isolate({ cwd: dir, runId: 'run-y', role: 'ui', root: parent });
+  const heldMarker = path.join(parent, `${path.basename(held.path)}.json`);
+  fs.writeFileSync(path.join(held.path, 'app.js'), 'the provider wrote this\n');
+  worktree.release(held, { keep: true });
+  assert.ok(fs.existsSync(heldMarker), 'a kept worktree keeps the baseline that explains it');
+
+  // The notes already stranded on disk: no directory, invisible to listAbandoned, and
+  // nothing had ever removed one.
+  const stray = path.join(parent, 'run-gone-1754-leader.json');
+  fs.writeFileSync(stray, JSON.stringify({ runId: 'run-gone', role: 'leader', baseline: 'deadbeef' }));
+  const swept = worktree.sweepAbandoned(dir, { parent });
+  assert.ok(!fs.existsSync(stray), 'a note whose directory is gone is litter');
+  assert.deepStrictEqual(swept.orphaned, ['run-gone-1754-leader.json'], 'and what was swept is named');
+  assert.ok(fs.existsSync(heldMarker), 'while a note with its directory still there is untouched');
+  assert.ok(fs.existsSync(held.path), 'and so is the work it describes');
+});
+
 // The 35 GB one.
 //
 // Measured on the owner's machine 2026-08-09: 1,446 worktrees, 35 GB, not one of them
@@ -313,4 +346,4 @@ ok('this module cannot merge, commit or push', () => {
 
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.error(`worktree selftest: ${failures} FAILED`); process.exit(1); }
-console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · a restart no longer orphans them · refuses to isolate under a weaker policy · isolated before the plan is sealed · cannot merge, commit or push');
+console.log('worktree selftest: PASS · parallel writers no longer race · owner tree untouched · uncommitted work carried and untracked counted · not-a-repo is reported not faked · empty cleaned, used kept and named · a restart no longer orphans them · refuses to isolate under a weaker policy · isolated before the plan is sealed · cannot merge, commit or push · a released copy takes its note with it and a stray note is swept');

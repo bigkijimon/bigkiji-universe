@@ -229,10 +229,11 @@ function touchedSince(dir, graceMs = 5000) {
  * @param {string} repo
  * @param {{parent?: string, live?: Set<string>}} options `live` holds the directory names
  *   of worktrees belonging to runs this process still owns — they are never touched.
- * @returns {{removed: string[], kept: string[]}}
+ * @returns {{removed: string[], kept: string[], orphaned: string[]}} `orphaned` names the
+ *   markers whose directory was already gone.
  */
 function sweepAbandoned(repo, { parent = process.env.BIGKIJI_WORKTREE_ROOT || path.join(repo, WORKTREE_DIR), live = new Set() } = {}) {
-  const removed = []; const kept = [];
+  const removed = []; const kept = []; const orphaned = [];
   for (const dir of listAbandoned(repo, { parent })) {
     const name = path.basename(dir);
     if (live.has(name)) continue;
@@ -245,11 +246,23 @@ function sweepAbandoned(repo, { parent = process.env.BIGKIJI_WORKTREE_ROOT || pa
       ? (collectDiff({ path: dir, isolated: true, repo, baseline: marker.baseline }).files || 0) > 0
       : touchedSince(dir);
     if (worked) { kept.push(dir); continue; }
-    release({ path: dir, isolated: true, repo });
-    try { fs.rmSync(markerPath(parent, name), { force: true }); } catch (_) {}
+    release({ path: dir, isolated: true, repo });   // takes the marker with it
     removed.push(dir);
   }
-  return { removed, kept };
+  // The other direction: a note about a directory that is not there.
+  //
+  // `listAbandoned` walks git's own worktree list, so a marker whose directory has already
+  // gone is invisible to the loop above and would sit here for ever. Reconciling means
+  // both directions or it is not reconciling. Only markers are considered, and only when
+  // the directory they name is absent — nothing here can remove work.
+  let notes = [];
+  try { notes = fs.readdirSync(parent).filter((name) => name.endsWith('.json')); } catch (_) { notes = []; }
+  for (const note of notes) {
+    const name = note.slice(0, -'.json'.length);
+    if (live.has(name) || fs.existsSync(path.join(parent, name))) continue;
+    try { fs.rmSync(path.join(parent, note), { force: true }); orphaned.push(note); } catch (_) {}
+  }
+  return { removed, kept, orphaned };
 }
 
 /** What the provider actually changed, as numbers plus a bounded patch. */
@@ -295,13 +308,31 @@ function collectDiff(workspace) {
 // only copy and the owner has not looked at it yet.
 function release(workspace, { keep = false } = {}) {
   if (!workspace || !workspace.isolated || !workspace.repo) return { removed: false, kept: false };
+  // Kept work keeps its marker: the baseline inside it is the only way a later sweep can
+  // tell that work from the owner's own, and throwing it away is how a kept directory
+  // becomes an unattributable one.
   if (keep) return { removed: false, kept: true, path: workspace.path };
+  // The note goes with the copy it describes.
+  //
+  // Only `sweepAbandoned` deleted it, and the sweep is the rare path — the ordinary one
+  // is `forgetRun()`, which calls straight through to here. Measured on the owner's
+  // machine 2026-08-12: two worktrees on disk and **eighteen** marker files describing
+  // directories that had been gone since 01:04. Harmless in bytes, and not harmless at
+  // all in what it does to counting: `ls .bigkiji/worktrees | wc -l` said 22 when the
+  // answer was 2, which is exactly the kind of number a cleanup decision gets made on.
+  // Here rather than at the two call sites, because a fix that reaches one caller of two
+  // is this codebase's most repeated defect.
+  const dropMarker = () => {
+    try { fs.rmSync(markerPath(path.dirname(workspace.path), path.basename(workspace.path)), { force: true }); } catch (_) {}
+  };
   try {
     git(['worktree', 'remove', '--force', workspace.path], workspace.repo);
+    dropMarker();
     return { removed: true, kept: false };
   } catch (_) {
     try { fs.rmSync(workspace.path, { recursive: true, force: true }); } catch (__) {}
     try { git(['worktree', 'prune'], workspace.repo); } catch (__) {}
+    dropMarker();
     return { removed: true, kept: false };
   }
 }
