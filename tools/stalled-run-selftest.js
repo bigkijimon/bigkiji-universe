@@ -363,10 +363,26 @@ ok('a plan record learns how its work ended', () => {
 ok('the approval prompt offers yes, no and tell — and still takes the digits', () => {
   const { APPROVAL_CHOICES } = require('../src/domain/terminal/bigkiji-cli');
   const byId = Object.fromEntries(APPROVAL_CHOICES.map((choice) => [choice.id, choice.keys]));
-  assert.deepEqual(Object.keys(byId), ['approve', 'reject', 'tell', 'later'],
-    'four outcomes, and `tell` is one of them rather than a special case of reject');
+  assert.deepEqual(Object.keys(byId), ['approve', 'auto', 'reject', 'tell', 'later'],
+    'five outcomes: `tell` is not a special case of reject, and `auto` is not a special case of approve');
   assert.ok(byId.approve.includes('y') && byId.reject.includes('n') && byId.tell.includes('t'),
     'the letters the owner asked for');
+  // `a` is Claude Code's "Yes, and auto-accept edits". It approves this plan AND widens
+  // what the fleet may do without asking, which is why it is its own outcome and why the
+  // CLI announces the mode change when it is pressed.
+  assert.ok(byId.auto.includes('a') && byId.auto.includes('A'), 'and the one that means "stop asking"');
+  const cli = require('fs').readFileSync(require.resolve('../src/domain/terminal/bigkiji-cli'), 'utf8');
+  assert.match(cli, /choice === 'auto'[\s\S]{0,400}applyMode\('auto-edit'\)/,
+    'auto has to change the mode, or "stop asking" stops nothing');
+  assert.match(cli, /choice === 'auto'[\s\S]{0,600}await approveRun\(run\)/, 'and still start this one');
+  assert.match(cli, /const interactive = mode !== 'demo'/,
+    'plan is the mode the migration hands everybody; a gate that only takes a key in ask is a gate nobody answers');
+  // The key that answers the gate is also on the input line, because rl.pause() stops
+  // readline reading more and not from handling the byte that already arrived. Measured
+  // in a pty 2026-08-11: `n` left `n` at the prompt, and the leftover made `!rl.line`
+  // false — so one approval by key disarmed the prompt for every plan after it.
+  assert.match(cli, /rl\.line = ''; rl\.cursor = 0;\s*\n\s*rl\.resume\(\);/,
+    'askKey has to clear the line it consumed, or answering one gate silently disables the next');
   assert.ok(byId.approve.includes('Y') && byId.reject.includes('N') && byId.tell.includes('T'),
     'caps lock is not a decision');
   // The digits were the only keys for as long as this prompt existed. Taking away what

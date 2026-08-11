@@ -1014,13 +1014,14 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
     promptSpec: { goal: '3djsのゲームを作ってください。', constraints: ['genre_definition'],
       questions: ['What genre or scope do you envision?'] },
   }, { width: 100 })).join('\n');
-  assert.match(lines, /unanswered: What genre or scope/, 'the question still reaches the screen');
+  assert.match(lines, /unanswered\n\s+· ⚠ What genre or scope/,
+    'the question still reaches the screen, now under a heading of its own');
   const handsOff = plainLines(T.renderEvent('run', {
     id: 'run-9', status: 'AWAITING_APPROVAL', assignments: [],
     promptSpec: { goal: 'Build a browser shooter.', constraints: [], questions: [],
       decidedWithoutOwner: [{ ask: 'どのジャンルにしますか？' }] },
   }, { width: 100 })).join('\n');
-  assert.match(handsOff, /decided for you: どのジャンルにしますか？/,
+  assert.match(handsOff, /· decided for you: どのジャンルにしますか？/,
     'what hands-off settled without asking has to be visible on the plan');
   // A remedy applied invisibly is indistinguishable from luck.
   const remembered = plainLines(T.renderEvent('run', {
@@ -1039,4 +1040,84 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 3;
 }
 
-console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it · a whole file in one headline cannot bury the report`);
+// The plan itself.
+//
+// `promptSpec.steps` and `promptSpec.acceptance` are written by the front desk on every
+// single request, travel to the CLI inside the run, and were dropped by this renderer —
+// so an approval gate showed a goal, a list of models, and nothing whatsoever about
+// what approving would DO. Measured on the owner's screen 2026-08-10, with eleven runs
+// waiting behind it.
+{
+  const run = {
+    id: 'run-msng51mj-9c', status: 'AWAITING_APPROVAL', stage: 'plan',
+    promptPreview: 'upclassの管理者画面を再構築したいです',
+    promptSpec: {
+      goal: 'Rebuild the Upclass admin dashboard as a single shell',
+      constraints: ['Presentation layer only'],
+      steps: ['Audit src/app/admin', 'Extract the shared shell', 'Run npm test'],
+      acceptance: ['The admin pages render from one shell', 'npm test passes'],
+      questions: [],
+    },
+    assignments: [{ role: 'leader', provider: 'claude-code', model: 'opus', write: true, title: 'Rebuild' }],
+    disclosures: [{ provider: 'claude-code', files: [{ path: '/Users/yuma/x/admin/page.tsx' }] }],
+  };
+  const gate = plainLines(T.renderEvent('run', run, { width: 96 })).join('\n');
+  assert.match(gate, /steps\n\s+1\. Audit src\/app\/admin/, 'the gate prints the steps, numbered');
+  assert.match(gate, /2\. Extract the shared shell/);
+  assert.match(gate, /done when\n\s+· The admin pages render from one shell/, 'and how it will be judged');
+  assert.match(gate, /request: upclassの管理者画面を再構築したいです/, 'and why it exists, in the owner’s own words');
+  assert.match(gate, /goal: Rebuild the Upclass admin/);
+  assert.match(gate, /reads: ~\/…\/admin\/page\.tsx/, 'the disclosure still prints at the gate');
+
+  // `/runs` lists everything waiting. Eleven twenty-line plans is a wall, so the list
+  // says how big the plan is and the gate is where it opens.
+  const brief = plainLines(T.renderEvent('run', run, { width: 96, plan: 'brief' })).join('\n');
+  assert.match(brief, /goal: Rebuild the Upclass admin/, 'the list still says what it is for');
+  assert.match(brief, /3 steps/, 'and how much work it is');
+  assert.ok(!/Audit src\/app\/admin/.test(brief), 'but not every step of every waiting run');
+  assert.ok(!/request: upclass/.test(brief), 'nor the request the goal already summarises');
+  assert.ok(!/reads: /.test(brief), 'nor four file paths per run');
+
+  // A plan with no steps must not grow an empty heading.
+  const bare = plainLines(T.renderEvent('run', {
+    id: 'run-4', status: 'AWAITING_APPROVAL', assignments: [],
+    promptSpec: { goal: 'Ship it', constraints: [], steps: [], acceptance: [], questions: [] },
+  }, { width: 96 })).join('\n');
+  assert.ok(!/steps/.test(bare), 'a heading with nothing under it is worse than no heading');
+  assert.ok(!/done when/.test(bare));
+  assert.match(bare, /goal: Ship it/);
+
+  // Width, at both ends of the range this CLI runs in.
+  for (const width of [24, 40, 80, 200]) {
+    const painted = T.renderEvent('run', run, { width });
+    for (const line of painted) {
+      assert.ok(T.stringWidth(line) <= width, `plan line must fit ${width} columns: ${JSON.stringify(line)}`);
+    }
+  }
+  checks += 5;
+}
+
+// Markdown, drawn as structure.
+//
+// Every model in the fleet writes it and the transcript printed the characters — `##`,
+// `- `, `**` — as punctuation in the middle of the sentence.
+{
+  const md = ['## what changed', '', 'The **shell** is one file now.', '', '- one', '- two',
+    '', '```js', 'const x = 1;', '```'].join('\n');
+  const lines = plainLines(T.renderAssistantText(md, { width: 60 }));
+  const joined = lines.join('\n');
+  assert.ok(!/[#*`]/.test(joined), `the markers themselves must not reach the screen: ${joined}`);
+  assert.match(lines[0], /^● what changed$/, 'the heading opens the turn, under the same bullet as ever');
+  assert.match(joined, /The shell is one file now\./, 'bold is a colour, not four asterisks');
+  assert.match(joined, /· one\n\s+· two/, 'a list is a list');
+  assert.match(joined, /const x = 1;/, 'and the code survives the fence');
+  for (const line of T.renderAssistantText(md, { width: 34 })) {
+    assert.ok(T.stringWidth(line) <= 34, `markdown must respect the width: ${JSON.stringify(line)}`);
+  }
+  // Plain prose takes the plain path — same output as before this existed.
+  const plain = plainLines(T.renderAssistantText('はい、そうです。', { width: 60 }));
+  assert.deepStrictEqual(plain, ['● はい、そうです。'], 'a sentence with no structure is drawn exactly as it was');
+  checks += 3;
+}
+
+console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it · a whole file in one headline cannot bury the report · the plan prints its steps and how it will be judged, full at the gate and folded in the list · markdown draws as structure`);

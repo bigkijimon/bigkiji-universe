@@ -313,12 +313,15 @@ const WebSocket = require('ws');
     assert.equal(second.run.promptSpec.steps.length, 2);
     assert.deepStrictEqual(second.run.promptSpec.questions, [], 'the answered question must not travel on as unanswered');
     assert.equal(second.provider, 'ollama', 'the spec turn is served by the front desk, not by a second conversation turn');
-    // The run brief already prints goal and constraints under the run line. Sending
-    // the whole spec in the reply as well put the same paragraph on screen twice.
-    assert.match(second.reply, /Steps:/, 'the reply carries the half the brief does not');
-    assert.match(second.reply, /Acceptance:/);
-    assert.ok(!/^Goal:/m.test(second.reply), 'and must not repeat the goal the brief is already showing');
-    assert.ok(!/^Constraints:/m.test(second.reply), 'nor the constraints');
+    // The run block prints the plan — steps, acceptance, constraints and all. This
+    // reply says the answer was understood and how big the plan is; printing the steps
+    // here too is the duplication the 2026-08-05 split was written to avoid.
+    assert.ok(!/scene, camera, renderer/.test(second.reply),
+      'the steps belong to the plan block now, and must not be printed twice');
+    assert.ok(!/runs in a browser with no build step/.test(second.reply), 'nor the acceptance checks');
+    assert.match(second.reply, /2 steps · 1 acceptance checks/, 'but the reply still says how big the plan is');
+    assert.match(second.reply, /Create a single-file HTML5 3D game/, 'and what it understood');
+    assert.ok(!/^Constraints:/m.test(second.reply), 'the constraints stay in the block that shows them');
     assert.equal(spec.facilitatorPending, null, 'the pending question is cleared once answered');
 
     // An open question is not a licence to reinterpret anything typed later. Past the

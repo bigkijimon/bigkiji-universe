@@ -1126,16 +1126,19 @@ class DaemonEngine extends EventEmitter {
     // retry. Kept rather than consumed for that reason; a second go-ahead makes a second
     // plan, which is visible and needs approval, not a second action.
     this.lastRequest = { sessionId: session.id, text: written.goal || text, at: Date.now(), questions: [] };
-    // The run brief prints the goal and the constraints under the run line, so sending
-    // the whole spec here as well put the same paragraph on screen twice — measured on
-    // the owner's machine 2026-08-05, a 20-page textbook spec appeared in the brief and
-    // again immediately below it. Split rather than deduplicated at render time: the
-    // brief says what is being built, this says how it will be done and judged, and
-    // `/runs` still shows the goal long after this reply has scrolled away.
-    const detail = [
-      written.steps?.length ? `Steps:\n${asList(written.steps).map((step, i) => `  ${i + 1}. ${step}`).join('\n')}` : '',
-      written.acceptance?.length ? `Acceptance:\n${asList(written.acceptance).map((item) => `  · ${item}`).join('\n')}` : '',
-    ].filter(Boolean).join('\n\n');
+    // What this reply carries is decided by what the run block already shows.
+    //
+    // 2026-08-05 the whole spec went out here and appeared twice on screen, so it was
+    // split: the brief took the goal and the constraints, this took the steps and the
+    // acceptance. On 2026-08-11 the brief grew into the plan itself — steps, acceptance
+    // and all (transcript.js `runBrief`) — which put this half back into the duplicate
+    // it was moved out of. The split still stands; the line just moved. What is left
+    // here is the sentence that says the answer was understood, and the size of what it
+    // produced, so a surface that never draws a run block is not left with nothing.
+    const detail = [written.goal || '',
+      [written.steps?.length ? `${asList(written.steps).length} steps` : '',
+        written.acceptance?.length ? `${asList(written.acceptance).length} acceptance checks` : '']
+        .filter(Boolean).join(' · ')].filter(Boolean).join('\n');
     // A plan nobody wrote says so, on the line above itself.
     //
     // `degraded` already travelled on the wire and reached no one the owner could see;

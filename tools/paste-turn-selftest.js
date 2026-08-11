@@ -113,8 +113,8 @@ const TURN_SHAPE = Object.freeze({
   const cli = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'terminal', 'bigkiji-cli.js'), 'utf8');
   assert.ok(!/rl\.on\('line', async/.test(cli),
     'an async line handler readline never awaits is nine parallel turns on a nine-line paste');
-  assert.match(cli, /rl\.on\('line', \(line\) => \{ pending\.push\(line\)/,
-    'lines must be collected first and sent as one turn');
+  assert.match(cli, /rl\.on\('line', \(line\) => \{\n\s+if \(picking\) return;\n\s+pending\.push\(line\);/,
+    'lines must be collected first and sent as one turn — and never at all while the resume picker owns the keyboard');
   assert.match(cli, /\\x1b\[\?2004h/, 'bracketed paste has to be requested so the boundary is exact where the terminal supports it');
   assert.match(cli, /\\x1b\[\?2004l/, 'and switched back off on exit, or the owner’s shell inherits it');
   assert.match(cli, /chain = chain\.then/, 'turns run one at a time on the CLI side too');

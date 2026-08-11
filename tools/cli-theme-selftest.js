@@ -74,5 +74,99 @@ new CliPreferences({ root: chosenRoot }).update({ mode: 'plan' });
 assert.equal(new CliPreferences({ root: chosenRoot }).get().mode, 'plan', 'an owner who chose plan keeps plan');
 assert.equal(new CliPreferences({ root: chosenRoot }).get().mode, 'plan', 'and keeps it on every later start');
 
+// The up arrow, across restarts.
+//
+// readline keeps a history in memory and drops it on exit, so every restart of this CLI
+// began with an empty up arrow — and it is restarted often. The file is a sibling of
+// config.json rather than a key inside it: 200 lines of the owner's typing has no
+// business being parsed on every settings read.
+{
+  const historyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-cli-history-'));
+  const store = new CliPreferences({ root: historyRoot });
+  assert.deepEqual(store.history(), [], 'no file yet is an empty history, not a crash');
+  store.saveHistory(['/runs', 'いまの進捗は？', '/runs', '', '  ']);
+  assert.deepEqual(new CliPreferences({ root: historyRoot }).history(), ['/runs', 'いまの進捗は？'],
+    'newest first, no blanks, and the same line is not kept twice');
+  // A key pasted into the prompt must not be written to disk because it was typed here.
+  //
+  // `blocked` is NOT the test and this is the trap: it is only true for a private key,
+  // so an API token comes back unblocked and would have been written out verbatim.
+  const { keepInHistory } = require('../src/domain/terminal/bigkiji-cli');
+  const { redactPayload } = require('../src/domain/pi-core/security/payload-redactor');
+  const secret = `use sk-ant-api03-${'x'.repeat(95)} for this`;
+  assert.equal(redactPayload(secret).blocked, false, 'an api key is redacted and not blocked — that is why blocked is the wrong test');
+  assert.equal(keepInHistory(secret), false, 'and it still must not be kept');
+  assert.equal(keepInHistory('AKIAIOSFODNN7EXAMPLE を消して'), false, 'nor an aws key');
+  assert.equal(keepInHistory('umamon@proton.me に送って'), true,
+    'an address the owner types on purpose is not a credential, and the session log beside this holds it anyway');
+  store.saveHistory([secret, '/status'], keepInHistory);
+  assert.deepEqual(new CliPreferences({ root: historyRoot }).history(), ['/status'], 'a secret never reaches the history file');
+  const mode = fs.statSync(store.historyFile()).mode & 0o777;
+  assert.equal(mode, 0o600, `the history is the owner's typing and nobody else's: ${mode.toString(8)}`);
+  fs.rmSync(historyRoot, { recursive: true, force: true });
+}
+
+// One table, four consumers.
+//
+// The hint row advertised eight commands, the dispatcher answered to nineteen, and
+// nothing checked that they agreed. Measured 2026-08-11 10:55 in the owner's session
+// file: `/reaume` went to a model as a conversation turn and cost eight seconds and a
+// generation to be told it meant `/resume`.
+{
+  const cli = require('../src/domain/terminal/bigkiji-cli');
+  const source = fs.readFileSync(require.resolve('../src/domain/terminal/bigkiji-cli'), 'utf8');
+  // Every command the dispatcher answers to is in the table. This is the drift that
+  // produced the typo in the first place, so it is the one asserted mechanically.
+  const dispatched = new Set([...source.matchAll(/text === '(\/[a-z]+)'|text\.startsWith\('(\/[a-z]+) /g)]
+    .map((match) => match[1] || match[2]));
+  for (const name of dispatched) {
+    assert.ok(cli.COMMAND_NAMES.includes(name), `${name} is answered by the REPL and is in no list the owner can see`);
+  }
+  assert.ok(dispatched.size >= 15, `the scan has to find the dispatcher, not two of it: ${dispatched.size}`);
+  assert.deepEqual(cli.completeCommand('/ap')[0], ['/approve'], 'tab completes a prefix');
+  assert.deepEqual(cli.completeCommand('/re')[0].sort(), ['/reject', '/reload', '/resume'], 'and offers every match');
+  assert.deepEqual(cli.completeCommand('/idea plan x')[0], [], 'past the command word there is nothing here to complete');
+  assert.deepEqual(cli.completeCommand('こんにちは')[0], [], 'and a sentence is not a command');
+  assert.equal(cli.unknownCommand('/reaume').meant, '/resume', 'the typo the owner actually made');
+  assert.equal(cli.unknownCommand('/resume'), null, 'a real command is not a typo');
+  assert.equal(cli.unknownCommand('/quit'), null, 'nor is an alias');
+  assert.equal(cli.unknownCommand('/gpu off'), null, 'nor a command with an argument');
+  // The false positive that would cost the owner a sentence: a path is not a command.
+  assert.equal(cli.unknownCommand('/Users/yuma/Documents/x.md を読んで'), null);
+  assert.equal(cli.unknownCommand('/users/yuma/x'), null);
+  assert.equal(cli.unknownCommand('進捗どうですか'), null);
+  assert.equal(cli.unknownCommand('/zzzzzzzz').meant, '', 'and nothing near it is not a suggestion');
+}
+
+// The resume list, which could select what it was not showing.
+//
+// Twelve rows were printed and the cursor walked all of them — 103 sessions on the
+// owner's machine — so pressing ↑ once from the top selected something off screen.
+{
+  const cli = require('../src/domain/terminal/bigkiji-cli');
+  const now = Date.parse('2026-08-11T12:00:00Z');
+  const sessions = Array.from({ length: 40 }, (_, index) => ({
+    id: `session-${index}`, updatedAt: new Date(now - index * 3600_000).toISOString(),
+    status: index % 2 ? 'CHAT' : 'EXPIRED', promptSummary: `request number ${index}`,
+  }));
+  const rows = cli.sessionRows(sessions, { index: 20, top: 14, width: 80, now });
+  assert.equal(rows.length, cli.SESSION_WINDOW, 'the window is a window');
+  assert.equal(rows.filter((row) => row.chosen).length, 1, 'and the selected row is inside it');
+  assert.match(rows.find((row) => row.chosen).text, /^› /, 'marked where the eye is looking');
+  assert.match(rows[0].text, /14h 00m ago/, 'how long ago, in the vocabulary the footer already uses');
+  assert.match(rows[0].text, /request number 14/);
+  for (const row of cli.sessionRows(sessions, { index: 0, top: 0, width: 34, now })) {
+    assert.ok(row.text.length <= 34, `a narrow pane must not wrap the list: ${row.text}`);
+  }
+  assert.match(cli.sessionRows([{ updatedAt: new Date(now).toISOString(), promptSummary: '' }], { now })[0].text,
+    /\(no first line\)/, 'a session with nothing in it says so rather than printing a blank row');
+  // readline has to be stood down while the picker owns the keyboard, or ↑ pulls the
+  // last input line back into the prompt and the Enter that resumes also submits it.
+  const source = fs.readFileSync(require.resolve('../src/domain/terminal/bigkiji-cli'), 'utf8');
+  assert.match(source, /rl\?\.pause\(\)/, 'the picker must pause readline the way askKey does');
+  assert.match(source, /rl\?\.resume\(\)/, 'and give it back');
+  assert.match(source, /selectSession\(client, \{ rl/, 'and it has to be handed the interface to pause');
+}
+
 for (const dir of [root, legacyRoot, chosenRoot]) fs.rmSync(dir, { recursive: true, force: true });
-console.log('cli theme selftest: PASS · warm brown/orange palette · mode accents · persistent preferences · three transport modes · one shift+tab cycle that comes home in four · ask migration runs once and never fights the owner');
+console.log('cli theme selftest: PASS · warm brown/orange palette · mode accents · persistent preferences · three transport modes · one shift+tab cycle that comes home in four · ask migration runs once and never fights the owner · history survives a restart and never keeps a secret · one command table the dispatcher, the hints, tab and the did-you-mean all read · a resume list that cannot select what it is not showing');

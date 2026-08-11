@@ -24,11 +24,18 @@
 // Everything here is pure: strings in, strings out. No I/O, no timers, no
 // terminal state — so it can be asserted line by line in a self test.
 
-const { NO_COLOR, themeFor, stripAnsi } = require('../../domain/terminal/cli-theme');
+const { NO_COLOR, themeFor } = require('../../domain/terminal/cli-theme');
 const { formatCost, formatContext } = require('../../domain/pi-agent/pricing');
+// Width, folding and glyphs live in text.js so cli-markdown.js can measure the same
+// Japanese this file does. Re-exported at the bottom: every caller that has ever
+// imported them from here still can.
+const {
+  DASH, charWidth, stringWidth, sliceToWidth, truncateToWidth, padToWidth, wrapToWidth,
+  UNICODE_GLYPHS, ASCII_GLYPHS, glyphs, foldLines, foldMarker,
+} = require('./text');
+const { renderMarkdown, looksLikeMarkdown } = require('./cli-markdown');
 
 const SGR_STRIKE = NO_COLOR ? '' : '\x1b[9m';
-const DASH = '—';
 
 // The owner asked (2026-08-03) for every character BigKiji paints to be
 // lowercase. Two helpers, because the two cases differ:
@@ -43,151 +50,6 @@ const DASH = '—';
 // file contents keep their case, because folding those would change meaning.
 const lower = (value) => String(value ?? '').toLowerCase();
 const phrase = (value) => String(value ?? '').replace(/_+/g, ' ').toLowerCase();
-
-// ---------------------------------------------------------------------------
-// Display width
-// ---------------------------------------------------------------------------
-
-// East Asian Wide / Fullwidth blocks. The owner writes Japanese, so measuring
-// with String#length would silently overflow every line by up to 2x.
-const WIDE_RANGES = [
-  [0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
-  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3],
-  [0xf900, 0xfaff], [0xfe10, 0xfe19], [0xfe30, 0xfe6f], [0xff00, 0xff60],
-  [0xffe0, 0xffe6], [0x1f300, 0x1f64f], [0x1f900, 0x1f9ff], [0x20000, 0x3fffd],
-];
-const ZERO_RANGES = [[0x0300, 0x036f], [0x200b, 0x200f], [0xfe00, 0xfe0f], [0xfeff, 0xfeff]];
-const inRanges = (code, ranges) => ranges.some(([low, high]) => code >= low && code <= high);
-
-function charWidth(codePoint) {
-  if (codePoint === 0x00) return 0;
-  if (inRanges(codePoint, ZERO_RANGES)) return 0;
-  if (inRanges(codePoint, WIDE_RANGES)) return 2;
-  return 1;
-}
-
-/** Display width of `text` in terminal cells, ignoring any ANSI it carries. */
-function stringWidth(text) {
-  const plain = stripAnsi(text === 0 ? '0' : text);
-  let width = 0;
-  for (const char of plain) width += charWidth(char.codePointAt(0));
-  return width;
-}
-
-/** Take at most `width` display columns from the head of `text` (plain result). */
-function sliceToWidth(text, width) {
-  const plain = stripAnsi(text === 0 ? '0' : text);
-  if (width <= 0) return '';
-  let out = ''; let used = 0;
-  for (const char of plain) {
-    const size = charWidth(char.codePointAt(0));
-    if (used + size > width) break;
-    out += char; used += size;
-  }
-  return out;
-}
-
-/** Ellipsise a single line at `width` columns. Returns plain text. */
-function truncateToWidth(text, width, ellipsis = '…') {
-  const plain = stripAnsi(text === 0 ? '0' : text);
-  if (width <= 0) return '';
-  if (stringWidth(plain) <= width) return plain;
-  const mark = stringWidth(ellipsis) <= width ? ellipsis : '';
-  return sliceToWidth(plain, width - stringWidth(mark)) + mark;
-}
-
-/** Pad a plain string out to `width` display columns. */
-function padToWidth(text, width) {
-  const clipped = truncateToWidth(text, width);
-  return clipped + ' '.repeat(Math.max(0, width - stringWidth(clipped)));
-}
-
-/**
- * Greedy word wrap that is safe for CJK: words wider than the line are broken
- * at the column rather than allowed to overflow.
- * @returns {string[]} plain lines, none wider than `width`
- */
-function wrapToWidth(text, width) {
-  const limit = Math.max(1, Math.trunc(width) || 1);
-  const source = stripAnsi(text).replace(/\t/g, '  ');
-  const out = [];
-  for (const rawLine of source.split('\n')) {
-    let line = ''; let lineWidth = 0; let emitted = 0;
-    const flush = () => { out.push(line); emitted += 1; line = ''; lineWidth = 0; };
-    for (const word of rawLine.split(' ')) {
-      // A token wider than the whole line is hard-split at the column. This is
-      // also the path every unspaced Japanese sentence takes, which is correct:
-      // Japanese breaks anywhere, and it must never overflow the terminal.
-      if (stringWidth(word) > limit) {
-        if (lineWidth) flush();
-        let rest = word;
-        while (stringWidth(rest) > limit) {
-          let head = sliceToWidth(rest, limit);
-          if (!head) head = [...rest][0] || ''; // limit narrower than one wide char
-          if (!head) break;
-          out.push(head); emitted += 1;
-          rest = rest.slice(head.length);
-        }
-        line = rest; lineWidth = stringWidth(rest);
-        continue;
-      }
-      const need = stringWidth(word) + (lineWidth ? 1 : 0);
-      if (lineWidth + need > limit) flush();
-      line += (lineWidth ? ' ' : '') + word;
-      lineWidth += need;
-    }
-    if (lineWidth || emitted === 0) flush();
-  }
-  return out.length ? out : [''];
-}
-
-// ---------------------------------------------------------------------------
-// Glyphs
-// ---------------------------------------------------------------------------
-
-const UNICODE_GLYPHS = Object.freeze({
-  turn: '●', result: '⎿', user: '>', note: '·',
-  // The critique thread. One cell wide, East Asian Width neutral, and distinct
-  // from the result elbow — a reply to a result is not a result.
-  reply: '⤷',
-  // Something the owner has to see before deciding: a question the plan asked and
-  // nobody answered, or a step that cannot be undone.
-  warn: '⚠',
-  done: '☑', active: '▸', pending: '☐', ellipsis: '…', rule: '─',
-});
-// TERM=dumb rarely has the box-drawing elbow or the ballot boxes.
-const ASCII_GLYPHS = Object.freeze({
-  turn: '*', result: '\\', user: '>', note: '.',
-  reply: '->',
-  warn: '!',
-  done: '[x]', active: '>', pending: '[ ]', ellipsis: '...', rule: '-',
-});
-
-function glyphs({ ascii = process.env.TERM === 'dumb' || process.env.BIGKIJI_CLI_ASCII === '1' } = {}) {
-  return ascii ? ASCII_GLYPHS : UNICODE_GLYPHS;
-}
-
-// ---------------------------------------------------------------------------
-// Folding
-// ---------------------------------------------------------------------------
-
-/**
- * Keep the first `maxLines` source lines and report how many were really
- * withheld. The count is the true remainder — never an estimate.
- * @returns {{lines: string[], hidden: number}}
- */
-function foldLines(lines, maxLines) {
-  const all = Array.isArray(lines) ? lines : String(lines ?? '').split('\n');
-  const limit = Math.trunc(Number(maxLines) || 0);
-  if (limit <= 0 || all.length <= limit) return { lines: all.slice(), hidden: 0 };
-  return { lines: all.slice(0, limit), hidden: all.length - limit };
-}
-
-/** The marker a fold leaves behind, e.g. `… +15 lines`. */
-function foldMarker(hidden, mark = UNICODE_GLYPHS.ellipsis) {
-  if (!hidden) return '';
-  return `${mark} +${hidden} ${hidden === 1 ? 'line' : 'lines'}`;
-}
 
 // ---------------------------------------------------------------------------
 // The gutter
@@ -364,14 +226,49 @@ function renderUserTurn(text, options = {}) {
   });
 }
 
-/** `● what BigKiji said` */
+/**
+ * `● what BigKiji said`
+ *
+ * Every model in this fleet writes markdown, and this printed the characters: `##`,
+ * `- ` and `**` reached the owner's screen as punctuation. A reply with structure is
+ * now drawn with structure — the same treatment Claude Code gives it — and a reply
+ * with none takes the plain path it always did, because a one-line answer has nothing
+ * to parse and routing it through a parser would produce the identical line.
+ */
 function renderAssistantText(text, options = {}) {
   const { width = 80, theme = themeFor('plan'), mark = glyphs(), maxLines = 0 } = options;
-  return gutterLines(String(text ?? ''), {
+  const body = String(text ?? '');
+  if (looksLikeMarkdown(body)) {
+    // The gutter column, so the block hangs under the bullet exactly as gutterLines
+    // would have hung it. `lead` is literal spaces, so slicing by code unit and by
+    // display cell are the same thing here.
+    const column = stringWidth(mark.turn) + 1;
+    const lines = renderMarkdown(body, { width, theme, mark, column, maxLines, tone: theme.ink });
+    if (lines.length) {
+      lines[0] = `${theme.accent}${mark.turn}${theme.reset} ${lines[0].slice(column)}`;
+    }
+    return lines;
+  }
+  return gutterLines(body, {
     width, glyph: mark.turn, indent: 0, gap: 1, maxLines,
     tone: theme.ink, glyphTone: theme.accent, reset: theme.reset,
     markerTone: theme.dim, ellipsis: mark.ellipsis,
   });
+}
+
+/**
+ * A markdown block under the result elbow — the transcript's own grammar, with the
+ * body drawn as structure rather than as a paragraph of punctuation.
+ * @returns {string[]}
+ */
+function markdownResult(text, options = {}) {
+  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 2, gap = 2,
+    maxLines = 0, tone = theme.ink } = options;
+  const column = indent + stringWidth(mark.result) + gap;
+  const lines = renderMarkdown(text, { width, theme, mark, column, maxLines, tone });
+  if (!lines.length) return [];
+  lines[0] = `${' '.repeat(indent)}${theme.brown}${mark.result}${theme.reset}${' '.repeat(gap)}${lines[0].slice(column)}`;
+  return lines;
 }
 
 /** A muted aside — timestamps, phases, counts. Never bold, never accented. */
@@ -530,47 +427,82 @@ function runAssignments(run = {}) {
 }
 
 /**
- * What the plan is for, and what it still wants answered.
+ * The plan: why it exists, what it will do, and how it will be judged.
  *
- * Every line here already travelled to the CLI inside the run object and was thrown
- * away by the renderer. The one that matters most is the last: `promptSpec.questions`
- * is the plan asking the owner something, and on 2026-08-04 a run sat for eleven hours
- * with an unanswered question in it that never reached a screen.
+ * Every line here already travelled to the CLI inside the run object. Two of them were
+ * being thrown away by this renderer — `promptSpec.steps` and `promptSpec.acceptance`,
+ * which is to say *the plan* — so an approval gate showed a goal, a list of models and
+ * a prompt to type `/approve`, and nothing at all about what approving would do. The
+ * front desk has written both fields on every request since it existed.
+ *
+ * The section headings are English because the content under them is: the spec is
+ * written in English on purpose (fast-api-router.js), and identifiers, paths and
+ * numbers travel through it verbatim. Translating the owner's plan on the way to the
+ * screen would be inventing a second version of it. The keys they press are Japanese,
+ * where it matters.
+ *
+ * `plan: 'brief'` is for `/runs`, which lists everything that is waiting — eleven of
+ * them on 2026-08-11. A twenty-line plan each is a wall nobody reads, so the list gets
+ * the goal, the size of the plan and anything unanswered, and the gate gets all of it.
+ *
+ * @param {object} run
+ * @param {object} [options] `plan: 'full' | 'brief'`, plus the usual width/theme/mark
  * @returns {string[]}
  */
 function runBrief(run = {}, options = {}) {
-  const { mark = glyphs() } = options;
+  const { mark = glyphs(), plan = 'full' } = options;
   const spec = run.promptSpec || {};
   const flat = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  // Flattened before it is rendered, and that is load-bearing: a single-line value
+  // cannot open a code fence or a heading inside the block that quotes it.
   const list = (value) => (Array.isArray(value) ? value.map(flat).filter(Boolean) : []);
-  const rows = [];
-  if (flat(spec.goal)) rows.push(`goal: ${flat(spec.goal)}`);
+  const steps = list(spec.steps);
+  const acceptance = list(spec.acceptance);
   const constraints = list(spec.constraints);
-  if (constraints.length) rows.push(`constraints: ${constraints.join(' / ')}`);
+  const questions = list(spec.questions);
+  const full = plan !== 'brief';
+  const out = [];
+
+  // why — the request in the owner's own words, then what the fleet made of it.
+  // `promptPreview` is all the CLI is given: publicRun() strips `prompt` before the
+  // run leaves the coordinator, so this is the whole of what can be shown.
+  const why = [];
+  const asked = flat(run.promptPreview);
+  if (full && asked) why.push(`- request: ${asked}`);
+  if (flat(spec.goal)) why.push(`- goal: ${flat(spec.goal)}`);
   // What this plan already knows not to do. The failure memory is consulted before
   // anything is planned, and a remedy applied invisibly is indistinguishable from luck
   // — the owner has to be able to see that the wall was remembered rather than hit.
   const wall = run.knownFailure;
   if (wall && wall.fix) {
-    rows.push(`avoiding a known failure (seen ${wall.occurrences}${DASH === '—' ? '×' : 'x'}): ${flat(wall.fix)}`);
+    why.push(`- avoiding a known failure (seen ${wall.occurrences}${DASH === '—' ? '×' : 'x'}): ${flat(wall.fix)}`);
   }
   // Decided by the fleet, not by the owner. Hands-off mode answers its own open
   // questions so nothing stops mid-run; this is where those answers are declared, so
   // the owner reviewing the finished thing can see what was settled for them.
-  const decided = Array.isArray(spec.decidedWithoutOwner) ? spec.decidedWithoutOwner : [];
-  for (const item of decided) {
+  for (const item of (Array.isArray(spec.decidedWithoutOwner) ? spec.decidedWithoutOwner : [])) {
     const ask = flat(typeof item === 'string' ? item : item?.ask);
-    if (ask) rows.push(`decided for you: ${ask}`);
+    if (ask) why.push(`- decided for you: ${ask}`);
   }
-  const questions = list(spec.questions);
-  for (const question of questions) rows.push(`${mark.warn} unanswered: ${question}`);
-  // A question with no way to answer it is what produced the eleven-hour wait. The
+  if (why.length) out.push('## why', ...why);
+
+  if (full && steps.length) out.push('## steps', ...steps.map((step, index) => `${index + 1}. ${step}`));
+  else if (steps.length) out.push('## steps', `- ${steps.length} step${steps.length === 1 ? '' : 's'} — all of them show at the approval prompt`);
+  if (full && acceptance.length) out.push('## done when', ...acceptance.map((item) => `- ${item}`));
+  if (full && constraints.length) out.push('## constraints', ...constraints.map((item) => `- ${item}`));
+
+  // A question with no way to answer it is what produced an eleven-hour wait. The
   // CLI offered approve, reject and later; none of those is an answer, so approving
   // sent the plan back to asking the same thing. `/answer` rewrites the spec from
-  // the reply and re-plans on it.
-  if (questions.length) rows.push(`/answer ${run.id || '<id>'} <your answer> — rewrites the plan from it`);
-  if (!rows.length) return [];
-  return renderToolResult(rows.join('\n'), { ...options, indent: 2, maxLines: 8 });
+  // the reply and re-plans on it. Last, so it sits against the keys below it.
+  if (questions.length) {
+    out.push('## unanswered', ...questions.map((question) => `- ${mark.warn} ${question}`),
+      `\`/answer ${run.id || '<id>'} <your answer>\` — rewrites the plan from it`);
+  }
+  if (!out.length) return [];
+  // 30 lines is a tall plan and a short terminal is 24 rows; past that the fold marker
+  // says how much is not shown rather than pretending the plan ended.
+  return markdownResult(out.join('\n'), { ...options, indent: 2, gap: 2, maxLines: full ? 30 : 8 });
 }
 
 const READS_SHOWN = 4;
@@ -662,7 +594,7 @@ function runReads(run = {}, options = {}) {
  * @returns {string[]}
  */
 function renderEvent(event, data = {}, options = {}) {
-  const { width = 80, theme = themeFor('plan'), mark = glyphs(), resultLines = 4 } = options;
+  const { width = 80, theme = themeFor('plan'), mark = glyphs(), resultLines = 4, plan = 'full' } = options;
   const base = { width, theme, mark };
   const text = String(data?.text || '').trim();
 
@@ -710,7 +642,10 @@ function renderEvent(event, data = {}, options = {}) {
       // actually changed — measured on a live run 2026-08-04, four identical blocks in
       // as many seconds. Once it is executing, the step feed is the thing worth reading.
       const deciding = data.status === 'AWAITING_APPROVAL' || data.status === 'SECURITY_BLOCKED';
-      return [...head, ...(deciding ? runBrief(data, base) : []), ...list, ...(deciding ? runReads(data, base) : []),
+      // The file list is part of reading a plan, not part of listing what is waiting:
+      // four paths per run times eleven waiting runs is the same wall the brief avoids.
+      const reads = deciding && plan !== 'brief' ? runReads(data, base) : [];
+      return [...head, ...(deciding ? runBrief(data, { ...base, plan }) : []), ...list, ...reads,
         ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
     }
     // One tool call by one delegated agent, as it happens.
@@ -980,6 +915,7 @@ module.exports = {
   DASH, UNICODE_GLYPHS, ASCII_GLYPHS, glyphs, lower, phrase,
   charWidth, stringWidth, sliceToWidth, truncateToWidth, padToWidth, wrapToWidth,
   foldLines, foldMarker, gutterLines, metric, count, clockOf,
+  renderMarkdown, looksLikeMarkdown, markdownResult,
   shortenPath, summarizeToolInput, renderToolCall, renderToolResult,
   renderUserTurn, renderAssistantText, renderNote,
   parseUnifiedDiff, formatDiff, formatTaskList, looksLikeDiff,

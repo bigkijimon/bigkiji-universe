@@ -10,13 +10,14 @@ const { spawn } = require('child_process');
 const { DaemonClient } = require('../server/daemon-client');
 const { TUIMonitor } = require('../../cli/tui/monitor');
 const { StickyScreen, modelPanel } = require('../../cli/tui/renderer');
-const { buildFooter, footerHeightFor, runningAgents } = require('../../cli/tui/footer');
+const { buildFooter, footerHeightFor, runningAgents, formatElapsed } = require('../../cli/tui/footer');
 const { loadingFrames, frameAt } = require('../../cli/tui/loading-frames');
 const {
-  glyphs, lower, phrase, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
+  DASH, glyphs, lower, phrase, renderAssistantText, renderEvent, renderNote, renderStatus, renderToolCall, renderToolResult,
   renderUserTurn, shortRunId, shortenPath, truncateToWidth,
 } = require('../../cli/tui/transcript');
-const { CliPreferences } = require('./cli-preferences');
+const { CliPreferences, HISTORY_LIMIT } = require('./cli-preferences');
+const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { themeFor, nextMode, normalizeMode, transportMode } = require('./cli-theme');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -68,6 +69,13 @@ function machineNote({ gpu = null, turnNote = '' } = {}) {
 // options at five.
 const PICK_LETTERS = Object.freeze(['a', 'b', 'c', 'd', 'e']);
 
+// How many past sessions the resume picker shows at once. Twelve fits a short terminal
+// with the header, the two markers and the prompt still on screen.
+const SESSION_WINDOW = 12;
+// How much of a resumed conversation is replayed. Enough to remember where you were,
+// not so much that the thing you resume into is a wall of your own old text.
+const RESUME_TURNS = 6;
+
 /** True when every question can be answered by pressing one key. */
 function pickable(questions) {
   return Array.isArray(questions) && questions.length > 0
@@ -79,8 +87,13 @@ function answerFromPicks(picks) {
   return picks.map((letter, index) => `${index + 1}${letter}`).join(' ');
 }
 
+// `a` is Claude Code's "Yes, and auto-accept edits", which is the same sentence this
+// fleet spells `auto-edit`: approve this plan, and stop stopping. It is the one key
+// here that changes what happens after the run it is pressed on, so it says so on
+// screen when it is used — see offerApproval.
 const APPROVAL_CHOICES = Object.freeze([
   Object.freeze({ id: 'approve', keys: Object.freeze(['y', 'Y', '1']) }),
+  Object.freeze({ id: 'auto', keys: Object.freeze(['a', 'A']) }),
   Object.freeze({ id: 'reject', keys: Object.freeze(['n', 'N', '2']) }),
   Object.freeze({ id: 'tell', keys: Object.freeze(['t', 'T']) }),
   Object.freeze({ id: 'later', keys: Object.freeze(['l', 'L', '3']) }),
@@ -103,6 +116,21 @@ const APPROVAL_CHOICES = Object.freeze([
  */
 function loadedSources(cache = require.cache) {
   return Object.keys(cache).filter((file) => file.includes(`${path.sep}src${path.sep}`) && !file.includes('node_modules'));
+}
+
+/**
+ * True when a typed line is safe to keep in the history file.
+ *
+ * `redactPayload().blocked` is not the test: it is only true for a private key, so a
+ * pasted API token comes back unblocked and would have been written to disk verbatim.
+ * The findings are the test. Emails and phone numbers are excluded from the rule rather
+ * than from the file — the owner types those on purpose here (LINE, students, the
+ * classroom), the session log beside it already holds every turn in full, and dropping
+ * them would quietly make ordinary lines unrepeatable.
+ */
+function keepInHistory(line, redact = redactPayload) {
+  const { findings } = redact(String(line || ''));
+  return !findings.some((finding) => finding.type !== 'email' && finding.type !== 'phone');
 }
 
 /** True when any file this process loaded has been written since it loaded it. */
@@ -167,14 +195,93 @@ function header(state = {}, width = screenWidth(), frame = 0, phase = state?.pha
   return [...panel, `${A.dim}${facts}${A.reset}`].join('\n');
 }
 
-// The commands, as pairs, so the command itself can carry the accent and its
-// description can stay quiet. It was one dim string in which `/approve` and the words
-// "start waiting run" were the same colour, so the row read as a sentence rather than
-// as a list of things you can type.
-const HINTS = Object.freeze([
-  ['/help', 'commands'], ['/status', 'fleet'], ['/runs', 'what is waiting'], ['/approve', 'start it'],
-  ['/answer', 'reply to a question'], ['/pi', 'talk to pi'], ['/gpu off', 'free vram'], ['/exit', ''],
+/**
+ * Every command this REPL answers to, in one table.
+ *
+ * There were two lists and they had drifted: the hint row advertised eight commands and
+ * the dispatcher below answered to nineteen, so `/resume`, `/ideas`, `/run`, `/clear`,
+ * `/abort`, `/reload` and `/hud` existed and were announced nowhere. Measured on the
+ * owner's own session file, 2026-08-11 10:55: they typed `/reaume`, which no list would
+ * have caught, and it went to a model as a conversation turn — eight seconds and a
+ * generation to be told "did you mean /resume?".
+ *
+ * The hint row, `/help`, tab completion and the did-you-mean all read this table now.
+ * Two lists that drift are a prompt that lies, which is the same argument PICK_LETTERS
+ * makes about the letters beside a question.
+ *
+ * `pinned` is the subset the header advertises — the row is one line wide and the
+ * whole table is not.
+ */
+const COMMANDS = Object.freeze([
+  { name: '/help', hint: 'commands', pinned: true },
+  { name: '/status', hint: 'fleet', alias: ['/fleet'], pinned: true },
+  { name: '/runs', hint: 'what is waiting', pinned: true },
+  { name: '/approve', hint: 'start it', pinned: true },
+  { name: '/reject', hint: 'drop it' },
+  { name: '/answer', hint: 'reply to a question', pinned: true },
+  { name: '/run', hint: 'an explicit execution plan' },
+  { name: '/pi', hint: 'talk to pi', pinned: true },
+  { name: '/ideas', hint: 'local drafts' },
+  { name: '/idea', hint: 'plan · enhance · send · adopt · archive' },
+  { name: '/resume', hint: 'a past session' },
+  { name: '/mode', hint: 'ask · plan · auto-edit · demo' },
+  { name: '/setting', hint: 'contrast · cat · accent', alias: ['/settings'] },
+  { name: '/gpu', hint: 'free vram — /gpu off', pinned: true },
+  { name: '/abort', hint: 'stop the work' },
+  { name: '/clear', hint: 'clear the screen' },
+  { name: '/reload', hint: 'reload the engine' },
+  { name: '/hud', hint: 'open the window' },
+  { name: '/exit', hint: '', alias: ['/quit'], pinned: true },
 ]);
+const COMMAND_NAMES = Object.freeze(COMMANDS.flatMap((entry) => [entry.name, ...(entry.alias || [])]));
+
+/** Levenshtein distance, capped by nothing — the strings here are one word long. */
+function editDistance(a, b) {
+  const rows = a.length + 1; const cols = b.length + 1;
+  let previous = Array.from({ length: cols }, (_, index) => index);
+  for (let i = 1; i < rows; i += 1) {
+    const current = [i];
+    for (let j = 1; j < cols; j += 1) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[cols - 1];
+}
+
+/**
+ * The command a typo was reaching for, or '' when the line is not a command at all.
+ *
+ * Deliberately narrow. An absolute path is the thing most likely to open a line with a
+ * slash — `/Users/yuma/…` — so anything with a second slash, a capital, or a space
+ * inside the first word is prose and is left alone. Being wrong here means eating a
+ * sentence the owner meant to send.
+ *
+ * @returns {{typed: string, meant: string}|null}
+ */
+function unknownCommand(text) {
+  const typed = String(text || '').trim().split(/\s+/)[0];
+  if (!/^\/[a-z][a-z0-9-]*$/.test(typed)) return null;
+  if (COMMAND_NAMES.includes(typed)) return null;
+  const ranked = COMMANDS.map((entry) => ({ name: entry.name, distance: editDistance(typed, entry.name) }))
+    .sort((left, right) => left.distance - right.distance);
+  const best = ranked[0];
+  return { typed, meant: best && best.distance <= 3 ? best.name : '' };
+}
+
+/**
+ * Tab completion over the table. readline's contract is `[hits, substring]`, and the
+ * substring is the whole first word — so pressing tab on `/ap` replaces it with
+ * `/approve`, and pressing it on `/` lists everything.
+ */
+function completeCommand(line) {
+  const text = String(line || '');
+  // Past the command word there is nothing here to complete: `/idea plan <id>` takes an
+  // id this table has never heard of, and offering command names there would be noise.
+  if (!text.startsWith('/') || /\s/.test(text)) return [[], text];
+  const hits = COMMANDS.map((entry) => entry.name).filter((name) => name.startsWith(text));
+  return [hits.length ? hits : COMMANDS.map((entry) => entry.name), text];
+}
 
 // Wrapped at the separator, never mid-token.
 //
@@ -187,7 +294,7 @@ const HINTS = Object.freeze([
 function hintLines(width = screenWidth()) {
   const room = Math.max(20, width);
   const lines = []; let current = ''; let plainWidth = 0;
-  for (const [command, detail] of HINTS) {
+  for (const { name: command, hint: detail } of COMMANDS.filter((entry) => entry.pinned)) {
     const text = detail ? `${command} ${detail}` : command;
     const painted = `${A.accent}${command}${A.reset}${detail ? ` ${A.muted}${detail}${A.reset}` : ''}`;
     const separator = current ? '  ' : '';
@@ -198,6 +305,15 @@ function hintLines(width = screenWidth()) {
     current += `${A.dim}${separator}${A.reset}${painted}`; plainWidth += separator.length + text.length;
   }
   if (current) lines.push(`${current}${A.reset}`);
+  // The keys, under the commands they operate on.
+  //
+  // Every one of these existed before this row did, and none of them was written down
+  // anywhere the owner types: shift+tab was advertised in a monitor view they do not
+  // use, tab completion and esc are new today, and ctrl-c was documented in the middle
+  // of a paragraph of /help. A shortcut nobody can see is a shortcut nobody presses.
+  const keys = [['tab', 'complete'], ['⇧⇥', 'mode'], ['esc', 'interrupt'], ['ctrl-c', 'stop']]
+    .map(([key, what]) => `${A.violet}${key}${A.reset} ${A.muted}${what}${A.reset}`).join(`${A.dim}  ${A.reset}`);
+  lines.push(`${keys}${A.reset}`);
   return lines;
 }
 
@@ -225,26 +341,85 @@ function launchHud() {
   throw new Error('no bigkiji universe gui build was found');
 }
 
-async function selectSession(client) {
+/** How long ago, in the same vocabulary the footer uses for elapsed work. */
+function agoLabel(value, now = Date.now()) {
+  const at = new Date(value || 0).getTime();
+  if (!Number.isFinite(at) || at <= 0) return DASH;
+  return `${formatElapsed(Math.max(0, now - at))} ago`;
+}
+
+/** The rows a session picker shows, newest first, already fitted to the width. */
+function sessionRows(sessions, { index = 0, top = 0, window = SESSION_WINDOW, width = 80, now = Date.now() } = {}) {
+  const shown = sessions.slice(top, top + window);
+  const ago = shown.map((session) => agoLabel(session.updatedAt, now));
+  const status = shown.map((session) => phrase(session.status || 'idle'));
+  const agoWidth = Math.max(0, ...ago.map((text) => text.length));
+  const statusWidth = Math.max(0, ...status.map((text) => text.length));
+  return shown.map((session, offset) => {
+    const chosen = top + offset === index;
+    const head = `${chosen ? '›' : ' '} ${ago[offset].padEnd(agoWidth)}  ${status[offset].padEnd(statusWidth)}  `;
+    const summary = String(session.promptSummary || '').replace(/\s+/g, ' ').trim() || '(no first line)';
+    return { chosen, session, text: truncateToWidth(`${head}${summary}`, Math.max(20, width - 1)) };
+  });
+}
+
+/**
+ * Pick a past session with the arrow keys.
+ *
+ * Two things were wrong with this and both of them were invisible until you tried it.
+ *
+ * readline was never stood down. It is still attached to the same tty in the same raw
+ * mode, so ↑ moved this selection *and* pulled the previous input line back into the
+ * prompt underneath, and the Enter that chose a session was also the Enter that
+ * submitted that line — resuming a session could send a turn nobody typed. `askKey()`
+ * pauses readline for exactly this reason and this function never did; the `picking`
+ * flag in repl() is the second half, because pausing an interface is not the same as
+ * being sure it will not act.
+ *
+ * And the list showed twelve rows while the cursor walked all 103 sessions on this
+ * machine, so pressing ↑ once from the top selected something nobody could see. The
+ * window follows the cursor now, and says how many are above and below it.
+ *
+ * @param {object} client
+ * @param {{rl?: object, width?: number}} [options]
+ */
+async function selectSession(client, { rl = null, width = screenWidth() } = {}) {
   const { sessions } = await client.sessions();
   if (!sessions.length) { console.log(`${A.dim}no saved sessions yet.${A.reset}`); return null; }
   if (!process.stdin.isTTY) return sessions[0];
-  let index = 0;
+  const wasRaw = process.stdin.isRaw;
+  rl?.pause();
+  let index = 0; let top = 0;
   const render = () => {
-    process.stdout.write('\x1b[H\x1b[2J'); console.log(`${A.bold}resume a bigkiji session${A.reset}\n${A.dim}↑/↓ select · enter resume · esc cancel${A.reset}\n`);
-    sessions.slice(0, 12).forEach((session, i) => console.log(`${i === index ? A.accent + '›' : ' '} ${new Date(session.updatedAt).toLocaleString()}  ${phrase(session.status || 'IDLE')}  ${session.promptSummary}${A.reset}`));
+    // Keep the cursor inside the window, then keep the window inside the list.
+    top = Math.min(Math.max(top, index - SESSION_WINDOW + 1), index);
+    top = Math.max(0, Math.min(top, Math.max(0, sessions.length - SESSION_WINDOW)));
+    const above = top; const below = Math.max(0, sessions.length - top - SESSION_WINDOW);
+    process.stdout.write('\x1b[H\x1b[2J');
+    console.log(`${A.bold}resume a bigkiji session${A.reset}  ${A.dim}${sessions.length} on record${A.reset}`);
+    console.log(`${A.dim}↑/↓ select · enter resume · esc cancel${A.reset}\n`);
+    if (above) console.log(`  ${A.dim}${glyphs().ellipsis} ${above} newer${A.reset}`);
+    for (const row of sessionRows(sessions, { index, top, width })) {
+      console.log(`${row.chosen ? `${A.accent}${row.text}` : row.text}${A.reset}`);
+    }
+    if (below) console.log(`  ${A.dim}${glyphs().ellipsis} ${below} older${A.reset}`);
   };
   render(); process.stdin.setRawMode(true); process.stdin.resume();
   return new Promise((resolve) => {
     const key = (buf) => {
       const value = buf.toString();
-      if (value === '\x1b[A') index = (index - 1 + sessions.length) % sessions.length;
-      else if (value === '\x1b[B') index = (index + 1) % sessions.length;
-      else if (value === '\r') return done(sessions[index]);
-      else if (value === '\x1b' || value === '\x03') return done(null);
+      if (value === '\x1b[A' || value === 'k') index = (index - 1 + sessions.length) % sessions.length;
+      else if (value === '\x1b[B' || value === 'j') index = (index + 1) % sessions.length;
+      else if (value === '\r' || value === '\n') return done(sessions[index]);
+      else if (value === '\x1b' || value === '\x03' || value === 'q') return done(null);
       render();
     };
-    const done = (value) => { process.stdin.off('data', key); process.stdin.setRawMode(false); resolve(value); };
+    const done = (value) => {
+      process.stdin.off('data', key);
+      if (!wasRaw) process.stdin.setRawMode(false);
+      rl?.resume();
+      resolve(value);
+    };
     process.stdin.on('data', key);
   });
 }
@@ -278,7 +453,11 @@ async function repl(client) {
   let mode = setMode(prefs.get().mode, false); let sessionId = ''; let live = await client.state();
   // Sticky Bottom: 入力(π>)は罫線で挟んだ固定フッタの中・キジトラヘッダは最上部固定・出力は中間のDECSTBM領域を流れる
   const frameSet = loadingFrames();
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${A.prompt}>${A.reset} ` });
+  // `completer` is tab completion over the command table; `history` is the up arrow
+  // surviving a restart, which it never has. readline hands both back on `rl.history`,
+  // newest first, and that is what gets written out again on the way to exit.
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout,
+    prompt: `${A.prompt}>${A.reset} `, completer: completeCommand, history: prefs.history(), historySize: HISTORY_LIMIT });
   const sticky = new StickyScreen({ output: process.stdout, footerHeight: footerHeightFor(frameSet) });
   let inputOffset = frameSet.rows + 2; let frameIndex = 0; let turnStartedAt = 0; let comment = ''; let phaseInfo = live.phase; let painted = '';
   let degradedTurn = false; let degradedWhy = ''; // sticky until a turn the model actually serves
@@ -417,6 +596,15 @@ async function repl(client) {
     const finish = (value) => {
       process.stdin.off('data', onKey);
       if (!wasRaw) process.stdin.setRawMode(false);
+      // The key we just consumed is also on the input line, and it has been all along.
+      //
+      // `rl.pause()` stops readline reading more; it does not stop it handling the byte
+      // that has already arrived, so the same press lands in both places. Measured in a
+      // pty 2026-08-11: answering a gate with `n` left `n` sitting at the prompt, which
+      // prefixes the next thing typed — and, worse, makes `!rl.line` false, so the NEXT
+      // plan that arrives silently falls back to the note instead of offering the keys.
+      // One approval by key would quietly disarm the prompt for the rest of the session.
+      rl.line = ''; rl.cursor = 0;
       rl.resume(); refreshPrompt();
       resolve(value);
     };
@@ -430,6 +618,9 @@ async function repl(client) {
   });
 
   let deciding = false;
+  // The resume list has the keyboard. Nothing else may read a key or take a line while
+  // it does — see selectSession.
+  let picking = false;
   // Set by `t` at the approval prompt; consumed by the next line the owner types.
   let pendingTell = null;
 
@@ -483,25 +674,50 @@ async function repl(client) {
    */
   const offerApproval = (run) => {
     const id = shortRunId(run.id);
-    // `ask` puts the question on screen and takes one key. `plan` states it and gets out
-    // of the way, for the owner who wants to read the disclosure first and type the
-    // command deliberately — that is the whole difference between the two modes, and
-    // both of them still wait. `auto-edit` never arrives here at all, because a writing
-    // run in that mode is released by the coordinator without a gate.
+    // Every mode that can arrive here now takes the key.
+    //
+    // This read `mode === 'ask'`, on the reasoning that `plan` states things and gets
+    // out of the way. What that produced, measured on the owner's machine 2026-08-10:
+    // eleven runs at AWAITING_APPROVAL, the owner asking why it kept stopping, and a
+    // fleet that had been idle for hours behind a prompt that never offered a key —
+    // because `plan` is the mode they had chosen and the mode the migration hands
+    // everybody. `demo` is the one exclusion: nothing stops to ask in demo, so nothing
+    // reaches this function.
     //
     // Not while they are typing: the prompt reads raw keys, so grabbing the keyboard
     // mid-sentence would eat the line. A half-written line falls back to the note.
-    const interactive = mode === 'ask' && process.stdin.isTTY && !deciding && !rl.line;
+    const interactive = mode !== 'demo' && process.stdin.isTTY && !deciding && !rl.line;
     const mark = glyphs().note;
-    emit(renderNote(interactive
-      ? `waiting for you.  y yes  ${mark}  n no  ${mark}  t tell me what to change  (esc = later)`
-      : `waiting for you — /approve ${id} to start it, /reject to drop it, /runs to see them all`, view()));
-    if (!interactive) return;
+    if (!interactive) {
+      emit(renderNote(`waiting for you — /approve ${id} to start it, /reject to drop it, /runs to see them all`, view()));
+      return;
+    }
+    // The three doors Claude Code offers, in the owner's language: start it, start it
+    // and stop asking, or say what to change. Laid out one per row rather than as a
+    // sentence of separators, because this is the moment the screen is asking for a
+    // decision and a decision is easier to read as a list than as prose.
+    emit([...renderNote('ここから始めますか？', view()),
+      `   ${A.accent}y${A.reset}  ${A.ink}はい、この計画で始める${A.reset}`,
+      `   ${A.accent}a${A.reset}  ${A.ink}はい、以降は毎回きかない${A.reset} ${A.muted}(auto-edit)${A.reset}`,
+      `   ${A.accent}t${A.reset}  ${A.ink}いいえ、直したいことを書く${A.reset}`,
+      ...renderNote(`esc = あとで  ${mark}  n = やめる  ${mark}  /approve ${id} でいつでも開始`, view())]);
     deciding = true;
     askKey(APPROVAL_CHOICES)
       .then(async (choice) => {
         if (choice === 'approve') await approveRun(run);
         else if (choice === 'reject') await rejectRun(run);
+        // Approve this one, and stop stopping. The mode is the thing that decides
+        // whether the next writing run waits, so this changes the mode and says so:
+        // a key that quietly widens what the fleet may do unasked is the one kind of
+        // shortcut this CLI must not have. What it does not do is release the other
+        // plans already waiting — they were submitted under the old mode and are still
+        // theirs to approve — and saying that here is cheaper than finding out later.
+        else if (choice === 'auto') {
+          applyMode('auto-edit');
+          emit(renderNote(`auto-edit — これ以降、書き込む計画も止まりません（⇧⇥ で戻せます）${
+            waitingRuns().length > 1 ? `。いま待っている他の計画はそのままです` : ''}`, view()));
+          await approveRun(run);
+        }
         // Nothing runs. The next line the owner types becomes the correction, and the
         // plan is rewritten from it — Claude Code's "No, and tell Claude what to do
         // differently", which is what the owner asked this key to mean.
@@ -654,6 +870,9 @@ async function repl(client) {
     }
     if (sticky.active && text) emit(renderUserTurn(text, view()));
     if (text) { turnStartedAt = Date.now(); frameIndex = 0; abortedTurn = false; paintFooter(true); } // elapsed clock starts the moment the owner hits Enter
+    // Resolved once, in front of the chain, because the chain below is the list it has
+    // to be checked against — every branch of it is a command this is not.
+    const mistyped = unknownCommand(text);
     try {
       if (!text) {}
       else if (['/exit', '/quit'].includes(text)) { rl.close(); return; }
@@ -672,7 +891,35 @@ async function repl(client) {
           ...renderToolResult(`mode accent: ${current.modeAccent}\ncontrast: ${current.contrast}\ncat commentary: ${current.catCommentary}`, { ...view(), maxLines: 6 })]);
       }
       else if (text.startsWith('/mode ')) { const next = text.slice(6).trim(); if (!['ask', 'auto-edit', 'plan', 'auto', 'manual', 'demo'].includes(next)) throw new Error('mode must be ask, auto-edit, plan, or demo'); applyMode(next); emit(renderToolCall('mode', mode, view())); }
-      else if (text === '/resume') { const wasSticky = sticky.active; if (wasSticky) sticky.suspend(); const session = await selectSession(client); if (wasSticky) sticky.resume(); if (session) { sessionId = session.id; emit([...renderToolCall('resume', lower(session.id), view()), ...renderToolResult(session.promptSummary, { ...view(), maxLines: 2 })]); } }
+      // Resuming lands you back in the conversation, not just in its id.
+      //
+      // This printed the session id and its first line and stopped there, which answers
+      // "which one did I pick" and not "where was I". The last few turns are already on
+      // disk — `client.session()` returns the whole JSONL — so they are replayed into
+      // the transcript in the same two renderers a live turn uses.
+      else if (text === '/resume') {
+        const wasSticky = sticky.active;
+        if (wasSticky) sticky.suspend();
+        picking = true;
+        const session = await selectSession(client, { rl, width: screenWidth() }).finally(() => { picking = false; });
+        if (wasSticky) sticky.resume();
+        if (session) {
+          sessionId = session.id;
+          emit(renderToolCall('resume', `${lower(shortRunId(session.id))} ${glyphs().note} ${agoLabel(session.updatedAt)}`, view()));
+          const full = await client.session(session.id).catch(() => null);
+          const turns = (full?.events || [])
+            .filter((event) => event.type === 'conversation' && String(event.text || '').trim())
+            .slice(-RESUME_TURNS);
+          for (const turn of turns) {
+            emit(turn.role === 'owner'
+              ? renderUserTurn(turn.text, view())
+              : renderAssistantText(turn.text, { ...view(), maxLines: 6 }));
+          }
+          emit(renderNote(turns.length
+            ? `${turns.length} turn${turns.length === 1 ? '' : 's'} back on screen — carry on where you left off`
+            : String(session.promptSummary || 'nothing was said in this session'), view()));
+        }
+      }
       else if (text === '/reload') { const result = await client.reload(); emit([...renderToolCall('reload', `${result.cleared ?? '—'} hooks`, view())]); }
       else if (text === '/ideas') {
         const { ideas } = await client.ideas();
@@ -715,7 +962,9 @@ async function repl(client) {
         const runs = waitingRuns();
         const shown = runs.slice(-5);
         emit([...renderToolCall('runs', `${runs.length} waiting`, view()),
-          ...(runs.length ? shown.flatMap((run) => renderEvent('run', run, view()))
+          // Folded: this is a list of plans, not a reading of each one. The gate prints
+          // the whole thing, and `/approve <id>` is one line away.
+          ...(runs.length ? shown.flatMap((run) => renderEvent('run', run, { ...view(), plan: 'brief' }))
             : renderNote('nothing is waiting for approval', view())),
           ...(runs.length > shown.length ? renderNote(`${glyphs().ellipsis} +${runs.length - shown.length} older`, view()) : [])]);
       }
@@ -802,7 +1051,35 @@ async function repl(client) {
       }
       else if (text === '/abort') { const result = await client.post('/api/abort'); emit(renderToolCall('abort', phrase(result.status || 'sent'), view())); }
       else if (text === '/clear') { if (sticky.active) sticky.clear(); else process.stdout.write('\x1b[H\x1b[2J'); }
-      else if (text === '/help') emit(renderAssistantText('talk naturally. ideas stay local as drafts. use /run for an explicit execution plan. read-only work starts on its own and reports each step as it happens; anything that writes waits for you. /runs lists what is waiting, /approve [id] starts it and /reject [id] drops it — an id can be a prefix. when a plan shows an unanswered question, /answer [id] <your answer> rewrites the plan from your reply instead of starting it on a guess. ctrl-c interrupts the work without leaving. /pi consults pi directly — it has no tools and cannot run anything.', view()));
+      // /help was one paragraph in which nineteen commands, four keys and the whole
+      // approval model were the same run of dim text. The transcript can draw markdown
+      // now, so this is a document — and the command list is generated from the table
+      // rather than written out again, which is how the two came to disagree.
+      else if (text === '/help') {
+        emit(renderAssistantText([
+          '## commands',
+          ...COMMANDS.map((entry) => `- \`${entry.name}\`${entry.hint ? ` — ${entry.hint}` : ''}`),
+          '## keys',
+          '- `tab` complete a command · `⇧⇥` change mode · `esc` interrupt · `ctrl-c` stop, twice to leave',
+          '## how it works',
+          'talk naturally. ideas stay local as drafts, and `/run` asks for an explicit execution plan.',
+          'read-only work starts on its own and reports each step as it happens; anything that writes waits for you.',
+          'at the gate: **y** starts it, **a** starts it and stops asking, **t** rewrites the plan from what you type next.',
+          'when a plan shows an unanswered question, `/answer [id] <your answer>` rewrites it from your reply instead of starting it on a guess.',
+          '`/pi` consults pi directly — it has no tools and cannot run anything.',
+        ].join('\n'), view()));
+      }
+      // A slash the dispatcher does not know is not a sentence.
+      //
+      // Measured 2026-08-11 10:55 in the owner's own session: `/reaume` was sent to the
+      // conversation model, which spent eight seconds answering "did you mean /resume?".
+      // That answer was correct and cost a generation; this one is free and instant.
+      else if (mistyped) {
+        const { typed, meant } = mistyped;
+        emit(renderNote(meant
+          ? `${typed} is not a command — did you mean ${meant}?  ${glyphs().note}  tab completes, /help lists them`
+          : `${typed} is not a command  ${glyphs().note}  tab completes, /help lists them`, view()));
+      }
       else {
         // No "received in plan mode" acknowledgement: the footer's loading cat,
         // elapsed clock and phase bar already say the turn is in flight, and the
@@ -880,6 +1157,11 @@ async function repl(client) {
     // the collected lines wait for Enter — which is what the screen shows.
     if (rl.line && (pending.length > 1 || pastedBatch)) return;
     const text = pending.join('\n').trim(); pending = []; pastedBatch = false;
+    // Typing while something is running is not ignored and never was — the line goes on
+    // the chain and runs when the turn ahead of it finishes. Nothing said so, so it read
+    // as a dropped keystroke, which is the same complaint the whole evening has been
+    // about: work happening with no sign of it. Claude Code says `queued`; so does this.
+    if (text && turnStartedAt) { emit(renderNote('queued — this goes out when the turn ahead of it finishes', view())); refreshPrompt(); }
     chain = chain.then(() => handleTurn(text)).catch(() => {});
   };
   const schedule = () => { clearTimeout(quietTimer); quietTimer = setTimeout(flush, QUIET_MS); quietTimer.unref?.(); };
@@ -938,17 +1220,63 @@ async function repl(client) {
    * sees the chunk, and `endPaste` lifts it on the next tick — after readline has finished
    * processing that same chunk synchronously — so it covers exactly the right window.
    */
+  /**
+   * Stop the work. The one function, so the two keys that mean it cannot drift apart.
+   *
+   * Ctrl-C has done this since the REPL learned not to exit on it; esc is Claude Code's
+   * key for the same thing and the one the owner's fingers already know. Both of them
+   * end up here — this codebase has fixed the same bug in one of two callers four times
+   * (see the worktree sweep, the JSON-mode flag, the skills matcher), and an interrupt
+   * that works on one key and not the other is that shape exactly.
+   *
+   * @returns {boolean} true when there was something to interrupt
+   */
+  const interruptTurn = () => {
+    if (!turnStartedAt || abortedTurn) return false;
+    abortedTurn = true;
+    emit(renderNote('interrupting — ctrl-c again to leave bigkiji', view()));
+    // Two halves, and both are needed. The abort below tells the coordinator to stop
+    // the run; this releases the await the REPL is sitting on, so the next command is
+    // not queued behind an answer the owner has already abandoned.
+    try { turnAbort?.abort(); } catch (_) {}
+    client.post('/api/abort')
+      .then((result) => emit(renderToolCall('abort', phrase(result?.status || 'sent'), view())))
+      .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 2, isError: true })))
+      .finally(() => { paintFooter(true); refreshPrompt(); });
+    return true;
+  };
   const onModeKey = (_chunk, key) => {
-    if (!key || key.name !== 'tab' || !key.shift || key.ctrl || key.meta) return;
-    if (muted || pasting || deciding) return;
-    applyMode(nextMode(mode));
+    if (!key) return;
+    if (muted || pasting || deciding || picking) return;
+    if (key.name === 'tab' && key.shift && !key.ctrl && !key.meta) { applyMode(nextMode(mode)); return; }
+    // Esc, the way every other agent CLI reads it: stop the work if there is work, and
+    // otherwise clear the line you were half way through.
+    //
+    // `key.meta` is NOT a disqualifier here, and finding that out cost a pty run: Node
+    // reports a bare escape as `{ name: 'escape', meta: true }`, because the escape byte
+    // is the meta prefix. A guard of `if (key.ctrl || key.meta) return` at the top of
+    // this function — which is what was written first — swallows every press. Measured
+    // 2026-08-11 in a real pty: `/re` + esc + `/reaume` submitted `/re/reaume` as a turn.
+    //
+    // A cursor key cannot reach this: readline parses ESC[A into `{ name: 'up' }`, and
+    // `deciding` keeps it away from askKey(), which has always read esc as "later".
+    if (key.name === 'escape' && !key.ctrl && !key.shift) {
+      if (interruptTurn()) return;
+      if (rl.line) { rl.line = ''; rl.cursor = 0; refreshPrompt(); }
+    }
   };
   if (process.stdin.isTTY) {
     process.stdout.write('\x1b[?2004h');
     process.stdin.prependListener('data', watchPaste);
     process.stdin.on('keypress', onModeKey);
   }
-  rl.on('line', (line) => { pending.push(line); if (!pasting) schedule(); });
+  // `picking` is the resume list holding the keyboard. rl.pause() asks readline to stop
+  // reading; this makes sure that even if a keystroke reaches it anyway, the Enter that
+  // chose a session cannot also submit whatever the up arrow left on the input line.
+  rl.on('line', (line) => {
+    if (picking) return;
+    pending.push(line); if (!pasting) schedule();
+  });
   // Ctrl-C stops the work, not the conversation.
   //
   // readline in terminal mode swallows ^C itself and emits this instead of letting
@@ -960,24 +1288,17 @@ async function repl(client) {
   // stays. Pressed again — or with nothing running — it exits as before.
   let interrupted = false;
   rl.on('SIGINT', () => {
-    if (turnStartedAt && !abortedTurn) {
-      abortedTurn = true;
-      emit(renderNote('interrupting — ctrl-c again to leave bigkiji', view()));
-      // Two halves, and both are needed. The abort below tells the coordinator to stop
-      // the run; this releases the await the REPL is sitting on, so the next command is
-      // not queued behind an answer the owner has already abandoned.
-      try { turnAbort?.abort(); } catch (_) {}
-      client.post('/api/abort')
-        .then((result) => emit(renderToolCall('abort', phrase(result?.status || 'sent'), view())))
-        .catch((error) => emit(renderToolResult(error.message, { ...view(), indent: 0, maxLines: 2, isError: true })))
-        .finally(() => { paintFooter(true); refreshPrompt(); });
-      return;
-    }
+    if (interruptTurn()) return;
     interrupted = true; rl.close();
   });
   rl.on('close', () => {
     clearTimeout(quietTimer); clearTimeout(pasteTimer);
     if (process.stdin.isTTY) { process.stdin.off('data', watchPaste); process.stdin.off('keypress', onModeKey); rl.output = process.stdout; process.stdout.write('\x1b[?2004l'); }
+    // The up arrow, kept for next time. readline's own array is newest-first and already
+    // free of consecutive duplicates; `keepInHistory` is the same redactor that guards
+    // every payload leaving this machine, so a key pasted into the prompt is not written
+    // to disk because it happened to be typed here.
+    try { prefs.saveHistory(rl.history || [], keepInHistory); } catch (_) { /* history is a convenience, never a reason to fail an exit */ }
     if (ticker) clearInterval(ticker); clearInterval(statePoll); sticky.stop(); client.disconnect();
     process.exit(interrupted ? 130 : 0);
   });
@@ -1126,4 +1447,5 @@ if (require.main === module) {
 }
 
 module.exports = { main, ensureClient, launchHud, selectSession, KijiSpinner, installSignalHandlers, machineNote, APPROVAL_CHOICES, PICK_LETTERS, pickable, answerFromPicks, loadedSources, sourcesChanged,
+  COMMANDS, COMMAND_NAMES, completeCommand, unknownCommand, editDistance, sessionRows, agoLabel, SESSION_WINDOW, keepInHistory,
   FROZEN_TURN_NOTE, APP_ROOT };
