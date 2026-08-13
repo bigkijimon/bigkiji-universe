@@ -37,12 +37,7 @@ function loadEnvFiles({ dataRoot = '', appRoot = '', dotenv = null, expand = nul
   for (const file of envCandidates({ dataRoot, appRoot })) {
     try {
       const parser = dotenv || require('dotenv');
-      // `quiet` keeps dotenv 17 as quiet as dotenv 16 was. Without it every load
-      // prints a line to STDOUT — not stderr — advertising dotenvx and vestauth,
-      // and this resolver runs on both surfaces: the Electron main process and the
-      // `bigkiji` CLI, whose stdout is read by other programs. dotenv 16 ignores the
-      // option, so a downgrade does not break on it.
-      const result = parser.config({ path: file, quiet: true });
+      const result = parser.config({ path: file });
       if (result.error) continue;
       if (expand) expand(result);
       files.push(file);
