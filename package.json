@@ -1,5 +1,5 @@
 {
-  "name": "bigkiji-universe",
+  "name": "bku",
   "version": "2.5.0",
   "description": "Menu-bar orchestrator for external AI coding CLIs. Every paid run is planned locally, pruned, redacted, and sealed into a hash-verified disclosure manifest you approve before anything is spawned.",
   "author": "BigKiji Universe Contributors",
@@ -109,10 +109,10 @@
     "test:cloud-escape": "node tools/cloud-escape-selftest.js"
   },
   "build": {
-    "appId": "com.bigkiji.universe",
-    "productName": "BigKiji Universe",
+    "appId": "com.bku.app",
+    "productName": "BKU",
     "directories": {
-      "output": "../dist"
+      "output": "dist"
     },
     "asar": false,
     "npmRebuild": false,

@@ -43,3 +43,6 @@ src/components/UI/console-dist/
 # Run ledger detail. On disk on purpose (a pi agent reads it there),
 # but one line per run is not worth a diff. The .md beside it IS tracked.
 docs/v3/run-ledger.jsonl
+
+# ビルド出力（移設時に Documents 直下へ漏れていたので中に収めた）
+dist/
