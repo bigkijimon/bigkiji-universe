@@ -28,7 +28,7 @@ please」を立案した。**既存の u03 と u07 の 100% の重複**で、着
 | RolePlayBook #1/#2 | `Creative_Media/VideoStudioJustin/教材メディア/PeEh/RolePlayBook #N.pdf` |
 | その他の教材PDF | 同 `教材メディア/`（2.1GB・講師別） |
 
-### タイ教材で既に教えている文型（2026-08-07 時点）
+### タイ教材で既に教えている文型（2026-08-11 時点・**9本**）
 
 | | ユニット | 目標文型 |
 |---|---|---|
@@ -40,14 +40,44 @@ please」を立案した。**既存の u03 と u07 の 100% の重複**で、着
 | u06 | How's the Weather? | `It's ___ today.` |
 | u07 | How Much Is It?（LOTUSでおかいもの） | `How much is it? — It's ___ baht.` |
 | u08 | Thank You, Thailand! | `I like ___ the best.` |
+| **u09** | **Where is the night market?**（よるのいちばへ みちを たずねる） | **`Where is the ___?` / `Go straight and turn ___.`** |
 
-**RolePlayBook #2 の既習**: like to / want to・favourite・I want to challenge・can / can't・
-There is（My town）・I have ___ and ___・現在進行形の絵描写・フォニックス Pp Dd Ff Ee Rr Ll Gg Ss
+### ★ 巻は2冊ある（2026-08-11 に分かった重要な食い違い）
+
+**Thailand編は RolePlayBook #2 の「版面の型」だけを借りて中身を全部差し替えた別物**だった。
+原本の10ユニットは1本もデジタル化されていなかったので、**別の巻として立てた**。
+
+| 巻 | URL | 中身 |
+|---|---|---|
+| Thailand | `/play/materials/thailand` | タイ旅行に翻案したもの・9本（u09が動画/地図つき） |
+| **Role Play Book** | `/play/materials/roleplay` | **原本そのもの**・10本（u01 完成、u02〜u10 は じゅんび中） |
+| Daily Routine One | `/play/textbook` | 別の本（旧い仕組み・触らない） |
+
+**Role Play Book（原本）の10ユニットと目標文型**:
+
+| | ユニット | 目標文型 | フォニックス |
+|---|---|---|---|
+| u01 | I like and I want | `I like to ___.` | Pp Dd |
+| u02 | It is my favorite! | `This is my favorite ___.` | Ff Ee |
+| u03 | I want to Challenge! My Goals | `I want to challenge ___.` | 原本に無し |
+| u04 | I can jump but I can't fly | `I can ___, but I can't ___.` | Rr Ll |
+| u05 | My town | `That is ___. / Those are ___.` | Tt Mm |
+| u06 | My family | `I have a ___.` | Gg Ss |
+| u07〜u10 | 絵を見て答える4本 | 現在進行形の絵描写 | 原本に無し |
+
+> **原本の複製に重複チェックは当てはめない。**
+> u04 は Thailand編 u04 と、u06 は Thailand編 u01 と文型が一致するが、
+> **重なりは Thailand編がこの原本から借りた結果**。原本側は原本に忠実にする。
+> 重複チェックは「**新しい**文型を立てるとき」の規律。
+
+> **原本にフォニックスが無い回**（u03 と u07〜u10）は、巻の中で未使用の2文字を補い、
+> `teacherNote` に「原本に無く、器の都合で補った」と必ず書く（器は「ちょうど2文字」を要求する）。
 
 ### 重複の確かめ方（語ではなく構造で見る）
 
 ```bash
-cd ~/Documents/CEOBigKiji/English_School/HSAcademyWeb/content/materials
+# 2026-08-11 修正: CEOBigKiji は 2026-08-09 に解体済み。この道はもう無い
+cd ~/Documents/School/HSAcademyWeb/content/materials
 grep -oE 'frame:\s*"[^"]+"' thailand.ts        # 既存の文型を全部出す
 for W in "next to" "turn right" "Where is"; do grep -ci "$W" thailand.ts; done
 pdftotext -layout ".../RolePlayBook #2.pdf" - | grep -ci "$W"
@@ -244,3 +274,96 @@ ffmpeg -i video.mp4 -i subs.srt -c copy -c:s mov_text -metadata:s:s:0 language=e
 **読み取りはローカルで。** `pdftotext` / `pdftoppm` / `sips`、必要なら `qwen2.5vl:7b`。
 課金モデルにページ画像を渡さない。ただし**ローカル vision は Ollama を使うので、動画生成中には
 走らせない**——読み取りは全部先に済ませる。
+
+---
+
+## 6. 「次のページ作って」と言われたら（2026-08-11 に道を1本に通した）
+
+オーナーは**言った瞬間に動き出すこと**を求めている。迷わないよう、手順をここに固定する。
+すべて `~/Documents/School/HSAcademyWeb` で実行する。
+
+| # | やること | コマンド |
+|---|---|---|
+| 1 | 指定を1ブロック足す | `scripts/materials/specs/units.json` に no/key/template/title/ja/emoji/target/phonics/scene/vocabTheme/aRole/bRole（地図つきなら `"map": true`） |
+| 2 | 下書きを作る（**ローカル・課金0**） | `bash scripts/materials/run-pipeline.sh --volume roleplay <key>` |
+| 3 | レビューして取り込む | `out/<key>.final.json` を読んで `content/materials/thailand.ts` に手で入れる |
+| 4 | 音声を作る | `PATH="/opt/anaconda3/bin:$PATH" bash scripts/materials/30-audio.sh` |
+| 5 | 動画（要るときだけ） | Media側で作って `public/video/materials/thailand/<key>/` へ |
+| 6 | 検証して出す | 下の3点 |
+
+**`run-pipeline.sh` は引数でユニットを絞れる**（2026-08-11 追加）。
+無指定だと specs のぜんぶを回して**既存を作り直しGPUを何時間も食う**ので、1本のときは必ずキーを渡す。
+存在しないキーを渡すと**何もせず終了コード2で止まる**（打ち間違いで0本回るのを防ぐため）。
+
+ローカル出力は**無検査で本番に入れない**。3段（草稿 qwen3.5:35b → 批評 gemma4 → 改稿 qwen3.6）
+を通しても、最後は人が読んでから `thailand.ts` に入れる。
+
+### 動画つきユニットの作り（u09 が最初の1本）
+
+```
+public/video/materials/thailand/<key>/
+  lesson.mp4     通し（授業のはじめに1回見る）
+  <tile>.mp4 ×5  トピックの頭で見る短いカット
+```
+
+型は `content/materials/types.ts` の `UnitVideos`。スロットは6つ ——
+`lesson` / `target` / `words` / `askA` / `askB` / `produce`。
+**すべて任意**なので、動画を持たない u01〜u08 は1行も変えずに済む。
+
+- **字幕は焼かない**（小さく表示すると読めない・紙面と二重になる）。
+  そのぶん `caption`（英文）と `ja` が**必須**。`assertUnit()` が空だと落とす
+- `sec` は実測値を入れる（読み込み前に枠を確保して紙面が跳ねないように）
+- `members: true` を付けると**ログイン案内カードに差し替わる**。
+  ⚠️ **これは目隠しであって鍵ではない。** `public/` のファイルはURLを直接叩けば取れる。
+  本当の鍵は「LIFFを新設（環境変数が要る）」か「生徒アプリ側へ移す」のどちらかで、別案件
+- **授業で投影する短いタイルには `members` を付けない**（付けると授業が止まる）
+
+### 地図タスク
+
+`MapTask` は Template A/B のどちらにも足せる**任意ブロック**（テンプレートを増やさない）。
+図は画像ではなく**コンポーネント内の SVG**（拡大しても崩れない・札を1つずつ押せる・画像を増やさない）。
+設問は `PictureQuestion` を使い回すが、**`count` は使えない**（画像台帳が無く検算できないので
+`assertUnit()` が落とす）。設問音声は `map-q-N.mp3`（`30-audio.sh` が作る）。
+
+### PDF
+
+`app/(print)/worksheet/<巻>/<key>` が印刷用ページ。
+`node --experimental-strip-types scripts/materials/98-pdf.mjs` で
+`public/pdf/materials/thailand/<key>.pdf` に出す（`puppeteer-core` は導入済み・**先に3100番でサーバを上げる**）。
+ユニット一覧は**データから読む**ので、ユニットが増えても勝手に追随する
+（かつての 97-printcheck は8本を手で書いていて9本目が黙って漏れていた。2026-08-11 に 98 へ統合して削除）。
+
+### 検証の3点（目視で決めない）
+
+```bash
+node --experimental-strip-types scripts/materials/95-verify.mjs   # 終了コード0
+npx next build --webpack                                          # turbopack は必ず落ちる
+python3 ~/Documents/Media/VideoStudioJustin/scripts/audio-lang-check.py \
+        public/video/materials/thailand/<key>                      # 全部 en であること
+```
+
+`next build` に **`--webpack` を付ける**。turbopack は `next/font/google` の内部モジュール解決に
+失敗して**必ず**落ちる。
+
+### H3で動画を作るときの罠（2026-08-11 実測・オーナー指摘で発覚）
+
+1. **台詞を1文字も書かなくても H3 は喋る。** 実験4本をそのまま納品したら、言語判定は
+   ポルトガル語/ウクライナ語/ポーランド語/ロシア語だった。**納品前に必ず言語を機械で見る**
+2. **H3の生音は 32000Hz、edge-tts に差し替えた音は 48000Hz。** `ffprobe` 一発で見分けられる
+3. **口の動きは英語と合わない。** H3は自分が作った音に口を合わせるので、
+   英語を後乗せすると吹き替えのズレが残る → **口元に寄るカットを作らない**
+4. **カメラは生成ではなく後処理で足す。** H3は「中身の正しさ」と「カメラの動き」を同時に出せない
+   （終端を自由にすると中身が崩れる）。H3の寄りは実測でほぼ平面のズーム（手前/奥 1.03）だったので、
+   ffmpeg の切り出し拡大で同じものが正確・単調・数秒で得られる
+
+### サンドボックス（Pi で作業するとき）
+
+`~/Documents/School/.pi/sandbox.json` の `allowRead` に
+`/Users/yuma/Documents/Media/VideoStudioJustin/成果物` を通してある（2026-08-11 追加）。
+これが無いとグローバルの `denyRead: ["/Users"]` に当たって**動画を読めず作業が止まる**。
+`allowWrite` は**空のまま**（taskRoot を cwd に絞る この部署の設計を壊さない）。
+
+### §5 の「本番ツリーに勝手に書かない」について
+
+原則は変わらない。ただし **2026-08-11 の u09 はオーナーの明示的な承認のもとで
+`content/` と `public/` に直接入れた**。承認があるときだけ本番ツリーに書く。
