@@ -23,7 +23,9 @@ const store = new SettingsStore({ userData: tmp, safeStorage });
 const next = store.update({ audio: { ownerVolume: 4, ownerSpeedEnglish: 2 }, routing: { paidAllowlist: ['openrouter'] } });
 assert.equal(next.audio.ownerVolume, 1);
 assert.equal(next.audio.ownerSpeedEnglish, 1.4);
-assert.deepStrictEqual(next.routing.paidAllowlist, ['claude', 'codex', 'gemini', 'glm']);
+// An unknown name is dropped, and dropping everything falls back to the whole list —
+// which must include `claude-code`, the spelling the roster actually assigns work to.
+assert.deepStrictEqual(next.routing.paidAllowlist, ['claude', 'claude-code', 'codex', 'gemini', 'glm']);
 store.setSecret('gemini', 'secret-value');
 assert.equal(store.getSecret('gemini'), 'secret-value');
 assert.throws(() => store.setSecret('elevenlabs', 'blocked'), /not allowed/);

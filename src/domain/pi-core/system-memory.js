@@ -50,7 +50,7 @@ function buildSystemMemory({ appRoot, ownerProfile = {} } = {}) {
     version: MEMORY_VERSION, project: 'bigkiji-universe', generatedAt: new Date().toISOString(), structureHash,
     architecture: { daemon: 'http://127.0.0.1:8777', surfaces: ['CLI', 'cmux TUI', 'Electron', 'Mobile PWA'],
       fleet: ['Claude', 'Codex', 'Gemini', 'GLM', 'PiAgent Engine', 'Local Qwen'], entryPoints: entries.sort(), events: [...events].sort() },
-    policies: { paidAllowlist: ['claude', 'codex', 'gemini', 'glm'], activation: 'on-demand', ownerApprovalForMutation: true,
+    policies: { paidAllowlist: ['claude', 'claude-code', 'codex', 'gemini', 'glm'], activation: 'on-demand', ownerApprovalForMutation: true,
       security: { mode: 'strict-direct', externalBeforeDisclosureApproval: false, modelWebSearch: 'broker-only', childEnvironment: 'minimal', unknownTools: 'deny' },
       localQwen: { defaultContextTokens: 6144, hardContextTokens: 8192, degradedContextTokens: 4096, taskTimeoutMs: 60000 } },
     ownerProfile: { visual: 'quiet floating glass with restrained color', response: 'fast, factual and evidence-backed',

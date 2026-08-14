@@ -64,7 +64,7 @@ const DEFAULTS = Object.freeze({
     },
   },
   routing: {
-    paidAllowlist: ['claude', 'codex', 'gemini', 'glm'],
+    paidAllowlist: ['claude', 'claude-code', 'codex', 'gemini', 'glm'],
     maxParallel: 3,
     localDefault: 'qwen',
     qwenBypassTimeoutMs: 1000,
@@ -266,7 +266,13 @@ class SettingsStore {
     // there was no way to take an exhausted provider out of rotation. It is a
     // filter over the known providers now: unknown names are dropped, and an empty
     // or absent list means all of them rather than none of them.
-    const PAID = ['claude', 'codex', 'gemini', 'glm'];
+    // `claude-code` was missing here, and the filter below deleted it on every save.
+    // The roster names the leader `claude-code` (core-execution-coordinator ROLE_BLUEPRINT),
+    // so the one provider the owner kept asking for was the one this list threw away —
+    // silently, because a dropped name looks identical to a name never typed.
+    // sandbox-policy.js has carried both spellings since it was written; this was the
+    // stale copy. `claude` stays because saved files hold it.
+    const PAID = ['claude', 'claude-code', 'codex', 'gemini', 'glm'];
     const requested = Array.isArray(next.routing.paidAllowlist)
       ? next.routing.paidAllowlist.map(String).filter((id) => PAID.includes(id)) : [];
     next.routing.paidAllowlist = requested.length ? [...new Set(requested)] : [...PAID];

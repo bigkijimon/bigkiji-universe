@@ -219,6 +219,25 @@ ok('the allowlist survives a settings save', () => {
   store.update({ routing: { paidAllowlist: ['glm', 'not-a-provider'] } });
   assert.deepEqual(store.get().routing.paidAllowlist, ['glm'], 'and an unknown name is dropped, not trusted');
 });
+ok('the two spellings of the Claude CLI are one provider on the allowlist', () => {
+  // The roster assigns `claude-code`; the settings file says `claude`. For four days the
+  // owner set the leader to Claude, the allowlist filter in _pick() dropped every
+  // claude-code candidate, and the leader role went to whoever else could start —
+  // 16 samples / 0 successes in model_performance.json, with no error anywhere.
+  const asClaude = new CoreExecutionCoordinator({ taskRunner: runner(), registry: registry(), available: () => true,
+    settingsProvider: () => ({ routing: { paidAllowlist: ['claude'] } }) });
+  assert.equal(asClaude.pickProvider('leader', ['claude-code', 'glm', 'codex', 'qwen']), 'claude-code',
+    'a settings file spelling it "claude" must still permit the roster\'s claude-code');
+  // ...and the translation must not widen the list into providers nobody asked for.
+  assert.equal(asClaude.pickProvider('leader', ['glm', 'codex', 'qwen']), 'qwen',
+    'glm and codex are still off this allowlist');
+  // Saving does not delete it either — the normalise filter used to drop the name.
+  const { SettingsStore } = require('../src/core/settings-store');
+  const store = new SettingsStore({ userData: fs.mkdtempSync(path.join(root, 'cc-')) });
+  store.update({ routing: { paidAllowlist: ['claude-code', 'glm'] } });
+  assert.deepEqual(store.get().routing.paidAllowlist, ['claude-code', 'glm'],
+    'claude-code was missing from the known-provider list and was deleted on every save');
+});
 
 // --- R-9: something has to decide which model codex runs ----------------------
 ok('codex is told which model to run', () => {

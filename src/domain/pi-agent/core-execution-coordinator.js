@@ -15,6 +15,7 @@ const { isolate, collectDiff, release, sweepAbandoned, repoRoot } = require('./w
 const { RunLedger } = require('./run-ledger');
 const deliberate = require('./deliberation');
 const { FailureMemory, signatureOf } = require('./failure-memory');
+const { canonical } = require('./provider-readiness');
 
 // Whether a repair waits for the owner. False in every mode by the owner's decision of
 // 2026-08-05 — one word to change back if `plan` should ever stop again.
@@ -479,7 +480,16 @@ class CoreExecutionCoordinator extends EventEmitter {
   /** The providers the owner still wants paid work sent to. */
   paidAllowlist() {
     const configured = this.settingsProvider()?.routing?.paidAllowlist;
-    return new Set(Array.isArray(configured) && configured.length ? configured.map(String) : [...PAID_PROVIDERS]);
+    const chosen = Array.isArray(configured) && configured.length ? configured.map(String) : [...PAID_PROVIDERS];
+    // Saved settings spell the Claude CLI `claude`; the roster and every fallback chain
+    // spell it `claude-code`. provider-readiness has owned that translation since it was
+    // written and nothing outside it had ever asked — so a settings file reading
+    // ["claude", ...] filtered every claude-code candidate out at _pick() and the leader
+    // role fell through to whatever else could start. Both spellings go into the set:
+    // canonicalising away the raw id would quietly narrow a list the owner wrote by hand.
+    const allowed = new Set();
+    for (const id of chosen) { allowed.add(id); allowed.add(canonical(id)); }
+    return allowed;
   }
 
   /**
