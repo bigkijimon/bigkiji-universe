@@ -31,7 +31,7 @@ function assertLentReadOnly(file, message) {
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { SecurityPolicy, CREDENTIAL_FILES, CREDENTIAL_FIELDS, isSensitivePath } = require('../src/domain/pi-core/security/security-policy');
+const { SecurityPolicy, CREDENTIAL_FILES, CREDENTIAL_FIELDS, OWNER_HOME_PROVIDERS, isSensitivePath } = require('../src/domain/pi-core/security/security-policy');
 
 let failures = 0;
 const ok = (name, body) => { try { body(); console.log(`  ok  ${name}`); } catch (error) { failures += 1; console.error(`  FAIL ${name}\n       ${error.message}`); } };
@@ -134,12 +134,56 @@ ok('the copy dies with the task', () => {
   assert.ok(!fs.existsSync(runtime.home), 'nothing survives the run that produced it');
 });
 
-ok('HOME still points at the sandbox, not at the owner', () => {
+ok('HOME still points at the sandbox for everyone but the one approved exception', () => {
+  // The owner approved exactly one provider seeing the real HOME (2026-08-14): Claude Code
+  // resolves its macOS keychain login from HOME + USER and could not authenticate at all
+  // without it. The approval was for one name, so the set is asserted by value — adding a
+  // second provider has to fail here rather than pass quietly.
+  assert.deepEqual([...OWNER_HOME_PROVIDERS].sort(), ['claude-code'],
+    'widening the real-HOME exception is an owner decision, not an edit');
+
+  for (const provider of ['codex', 'glm', 'gemini', 'qwen', 'pi']) {
+    const runtime = runtimeFor(provider);
+    const env = policy.minimalEnv(provider, { runtime });
+    assert.equal(env.HOME, runtime.home, `${provider} keeps the throwaway HOME`);
+    assert.notEqual(env.HOME, os.homedir());
+    assert.equal(env.TMPDIR, runtime.tmp);
+  }
+
+  // And for the exception, the reduction is bounded to HOME. Everything else that could
+  // lead somewhere — the temp dir and the three XDG roots — stays inside the sandbox.
   const runtime = runtimeFor('claude-code');
   const env = policy.minimalEnv('claude-code', { runtime });
-  assert.equal(env.HOME, runtime.home, 'lending a file must not have widened HOME itself');
-  assert.notEqual(env.HOME, os.homedir());
-  assert.equal(env.TMPDIR, runtime.tmp);
+  assert.equal(env.HOME, os.homedir(), 'the approved exception gets the real HOME');
+  assert.equal(env.TMPDIR, runtime.tmp, 'and nothing else moves with it');
+  for (const key of ['XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME']) {
+    assert.ok(env[key].startsWith(runtime.home), `${key} must stay in the sandbox`);
+  }
+});
+
+ok('the exception moves the environment, never the lending', () => {
+  // The dangerous version of this change is making createRuntime() hand back the real home:
+  // lendCredentials writes 0o400 copies into runtime.home, so that would drop a read-only
+  // file onto the owner's own ~/.claude.json. runtime.home must stay a temp directory even
+  // for the provider whose child is told otherwise.
+  const runtime = runtimeFor('claude-code');
+  assert.notEqual(runtime.home, os.homedir(), 'the lending target is never the owner’s home');
+  assert.ok(runtime.home.startsWith(policy.runtimeRoot), 'and it lives under the runtime root');
+  for (const relative of runtime.linked) {
+    assert.ok(fs.existsSync(path.join(runtime.home, relative)), 'the copy is in the sandbox');
+  }
+});
+
+ok('a provider can still find its own login', () => {
+  // The other way to hand a provider nothing: build an environment so bare that its CLI
+  // cannot locate the login it already has. Measured 2026-08-14 against the real `claude`,
+  // one variable at a time — LOGNAME no, SHELL no, USER yes, and USER only works together
+  // with the real HOME above. "The environment is minimal" and "the environment is
+  // unusable" are one edit apart and only one of them is the goal.
+  for (const provider of ['claude-code', 'codex', 'glm', 'gemini', 'qwen']) {
+    const env = policy.minimalEnv(provider, { runtime: runtimeFor(provider) });
+    assert.equal(env.USER, os.userInfo().username, `${provider} must be told which account it runs as`);
+  }
 });
 
 ok('the lent paths are still treated as sensitive everywhere else', () => {

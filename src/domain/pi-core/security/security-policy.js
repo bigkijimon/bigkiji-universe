@@ -56,6 +56,36 @@ const CREDENTIAL_FIELDS = Object.freeze({
   'claude-code': { '.claude.json': ['userID', 'hasCompletedOnboarding', 'oauthAccount'] },
 });
 
+// The one provider whose child is given the owner's real HOME instead of the sandbox.
+//
+// Claude Code on macOS authenticates from the login keychain, and resolving it needs the
+// real HOME *and* USER together. Measured 2026-08-14, same prompt, same env, one variable
+// at a time — and note that the first two rows are what the sandbox actually hands it:
+//
+//   sandbox HOME                → "Not logged in · Please run /login"
+//   sandbox HOME + USER         → "Not logged in · Please run /login"
+//   real HOME                   → "Not logged in · Please run /login"
+//   real HOME + USER            → "ok"   (provider: firstParty, claude-opus-5)
+//
+// So claude-code could never finish a task, whatever the router decided. That matches
+// model_performance.json: 16 samples, 0 successes, and nothing since 2026-08-04.
+//
+// This is a real reduction and the owner approved it by name on 2026-08-14 after being
+// shown the alternatives (API key / widen the lending / drop Claude from the roster). It
+// is kept as narrow as it can be:
+//
+//   - ONE provider. Everything else keeps the throwaway HOME.
+//   - Only the environment handed to the child changes. `runtime.home` stays a sandbox
+//     directory, so lendCredentials still writes its read-only copies there and never
+//     touches a real dotfile — a 0o400 copy landing on the owner's own ~/.claude.json
+//     would be a far worse defect than the one this fixes.
+//   - XDG_CONFIG_HOME / XDG_CACHE_HOME / XDG_DATA_HOME keep pointing at the sandbox.
+//     That is not an oversight: it is the configuration that was measured to work.
+//
+// Reverting is one entry. credential-lending-selftest asserts the set is exactly this,
+// so widening it to a second provider fails the suite rather than passing unnoticed.
+const OWNER_HOME_PROVIDERS = Object.freeze(new Set(['claude-code']));
+
 const SENSITIVE_SEGMENT = /(?:^|\/)(?:\.env(?:\..*)?|\.ssh|\.aws|\.azure|\.kube|\.gnupg|\.bigkiji|secrets?|credentials?|private[-_]?keys?|auth(?:entication)?)(?:\/|$)/i;
 // The leading dot used to defeat this. `~/app/credentials.json` was sensitive and
 // `~/.claude/.credentials.json` — the file that logs Claude Code in — was not, and
@@ -205,11 +235,17 @@ class SecurityPolicy {
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8',
       TERM: process.env.TERM || 'xterm-256color',
-      HOME: runtime.home,
+      // See OWNER_HOME_PROVIDERS. Only HOME moves, and only for that one provider —
+      // TMPDIR and the three XDG roots stay inside the sandbox for everybody.
+      HOME: OWNER_HOME_PROVIDERS.has(provider) ? os.homedir() : runtime.home,
       TMPDIR: runtime.tmp,
       XDG_CONFIG_HOME: path.join(runtime.home, '.config'),
       XDG_CACHE_HOME: path.join(runtime.home, '.cache'),
       XDG_DATA_HOME: path.join(runtime.home, '.local', 'share'),
+      // Without USER the Claude CLI cannot resolve its keychain login even with the real
+      // HOME (the table above). Not a widening in itself: the child runs as the owner's
+      // uid, so getuid()/id -un answer the same question with no environment at all.
+      USER: os.userInfo().username,
       BIGKIJI_EXECUTOR: provider,
       BIGKIJI_SECURITY_POLICY: runtime.policyFile,
       PI_TELEMETRY: '0',
@@ -222,4 +258,4 @@ class SecurityPolicy {
   }
 }
 
-module.exports = { SecurityPolicy, PROVIDER_SECRET, CREDENTIAL_FILES, CREDENTIAL_FIELDS, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };
+module.exports = { SecurityPolicy, PROVIDER_SECRET, CREDENTIAL_FILES, CREDENTIAL_FIELDS, OWNER_HOME_PROVIDERS, SENSITIVE_SEGMENT, SENSITIVE_FILE, isSensitivePath, canonical, hashPolicy };
