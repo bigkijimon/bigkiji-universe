@@ -271,12 +271,43 @@ function markdownResult(text, options = {}) {
   return lines;
 }
 
-/** A muted aside — timestamps, phases, counts. Never bold, never accented. */
+/**
+ * A result block that draws structure when the provider sent structure.
+ *
+ * `renderAssistantText` has made this choice since markdown rendering landed, but the two
+ * busiest events on the screen — `commentary` and `tasklog` — went straight to
+ * renderToolResult, so every `##`, `- ` and `**` a provider wrote reached the owner as
+ * punctuation. The models are the same models; the only difference was which function the
+ * event happened to be routed through.
+ *
+ * An error keeps the literal path whatever it looks like. Provider stderr is not a
+ * document, and running it through a parser is how a stray `#` silently becomes a heading
+ * and a stack trace loses its indentation. renderToolResult also strips npm's routine
+ * chatter, which the markdown path has no business doing.
+ */
+function structuredResult(text, options = {}) {
+  const { isError = false, indent = 2 } = options;
+  const body = String(text ?? '');
+  if (!isError && looksLikeMarkdown(body)) return markdownResult(body, { ...options, indent, gap: 2 });
+  return renderToolResult(body, options);
+}
+
+/**
+ * A muted aside — timestamps, phases, counts. Never bold, never accented.
+ *
+ * `maxLines` was the one option this dropped on the floor. gutterLines has folded since
+ * it was written and every other block passes a limit — brief 30, task list 8, tool
+ * result 4, diff 16 — so `reads:` was the single unbounded block on the screen, and on a
+ * run with several agents it pushed everything else off a 24-row terminal. An option
+ * accepted and silently ignored is worse than one that does not exist: the caller
+ * believes it asked.
+ */
 function renderNote(text, options = {}) {
-  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 2 } = options;
+  const { width = 80, theme = themeFor('plan'), mark = glyphs(), indent = 2, maxLines = 0 } = options;
   return gutterLines(String(text ?? ''), {
-    width, glyph: mark.result, indent, gap: 2,
-    tone: theme.dim, glyphTone: theme.brown, reset: theme.reset, ellipsis: mark.ellipsis,
+    width, glyph: mark.result, indent, gap: 2, maxLines,
+    tone: theme.dim, glyphTone: theme.brown, reset: theme.reset,
+    markerTone: theme.dim, ellipsis: mark.ellipsis,
   });
 }
 
@@ -484,6 +515,12 @@ function runBrief(run = {}, options = {}) {
     const ask = flat(typeof item === 'string' ? item : item?.ask);
     if (ask) why.push(`- decided for you: ${ask}`);
   }
+  // Sections are separated by the blank row renderMarkdown already emits before every
+  // heading, and by the column the body now hangs at. A `---` rule between them was tried
+  // and measured on 2026-08-14: it took the same block from 28 rows to 39 — three rows
+  // spent per boundary that was already visible — on a screen where 24 rows is the budget.
+  // renderMarkdown still draws a rule when the content itself sends one; this block does
+  // not need to.
   if (why.length) out.push('## why', ...why);
 
   if (full && steps.length) out.push('## steps', ...steps.map((step, index) => `${index + 1}. ${step}`));
@@ -584,7 +621,11 @@ function runReads(run = {}, options = {}) {
       hidden ? ` ${mark.ellipsis} +${hidden} ${hidden === 1 ? 'file' : 'files'}` : ''}`;
   });
   if (!rows.length) return [];
-  return renderNote(rows.join('\n'), { ...options, indent: 2 });
+  // One row per distinct file list, and a run routinely has three or four. Each row wraps
+  // to two or three physical lines, so the block that exists to inform ONE approval was
+  // regularly taller than the plan being approved. Four rows, then the count of the rest —
+  // the same bargain every other block on this screen makes.
+  return renderNote(rows.join('\n'), { ...options, indent: 2, maxLines: READS_SHOWN });
 }
 
 /**
@@ -603,14 +644,14 @@ function renderEvent(event, data = {}, options = {}) {
       if (!text) return [];
       const source = lower(data.source || 'bigkiji');
       const lines = renderToolCall(source, truncateToWidth(phrase(data.status || 'note'), 18), base);
-      return [...lines, ...renderToolResult(text, { ...base, maxLines: resultLines })];
+      return [...lines, ...structuredResult(text, { ...base, maxLines: resultLines })];
     }
     case 'tasklog': {
       if (!text) return [];
       // A provider that printed a patch gets a patch: line numbers and +/-
       // prefixes, not an anonymous wall of text under an elbow.
       if (looksLikeDiff(text)) return formatDiff(text, { ...base, indent: 5, maxLines: Math.max(resultLines, 8) });
-      return renderToolResult(text, { ...base, maxLines: resultLines, isError: data.stream === 'stderr' });
+      return structuredResult(text, { ...base, maxLines: resultLines, isError: data.stream === 'stderr' });
     }
     case 'task': {
       const title = data?.metadata?.title || data?.metadata?.role || data.id || 'task';
@@ -645,8 +686,19 @@ function renderEvent(event, data = {}, options = {}) {
       // The file list is part of reading a plan, not part of listing what is waiting:
       // four paths per run times eleven waiting runs is the same wall the brief avoids.
       const reads = deciding && plan !== 'brief' ? runReads(data, base) : [];
-      return [...head, ...(deciding ? runBrief(data, { ...base, plan }) : []), ...list, ...reads,
-        ...(failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : [])];
+      // Four independent blocks — the plan, who is doing it, what they will open, and why
+      // it failed — were concatenated with nothing between them, so a twenty-line run read
+      // as one paragraph and the boundaries had to be inferred from the glyphs. One blank
+      // row between blocks, and only between blocks: `spaced` skips the empty ones, so a
+      // run with no brief and no reads still prints exactly as tightly as it did before.
+      const spaced = [];
+      for (const block of [head, deciding ? runBrief(data, { ...base, plan }) : [], list, reads,
+        failure ? renderToolResult(failure, { ...base, indent: 2, maxLines: 3, isError: true }) : []]) {
+        if (!block.length) continue;
+        if (spaced.length) spaced.push('');
+        spaced.push(...block);
+      }
+      return spaced;
     }
     // One tool call by one delegated agent, as it happens.
     //

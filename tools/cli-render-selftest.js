@@ -231,9 +231,16 @@ ok('a run event turns its assignments into a task list', () => {
   }, { width: 70 }));
   assert.ok(lines[0].startsWith('● run(run-7'), `chrome is lowercase: ${lines[0]}`);
   assert.ok(lines[0].includes('awaiting approval'), `a status reads as a phrase, not a token: ${lines[0]}`);
-  assert.ok(lines[1].includes('☑'), 'a completed assignment should be ticked');
-  assert.ok(lines[2].includes('▸'), 'a running assignment should be the active marker');
-  assert.ok(lines[3].includes('☐'), 'a queued assignment should be pending');
+  // One blank row between the headline and the task list. The blocks of a run event used
+  // to be concatenated with nothing between them, so a twenty-line run read as a single
+  // paragraph and the owner had to infer the boundaries from the glyphs.
+  assert.equal(lines[1], '', 'blocks of a run are separated by a blank row');
+  assert.ok(lines[2].includes('☑'), 'a completed assignment should be ticked');
+  assert.ok(lines[3].includes('▸'), 'a running assignment should be the active marker');
+  assert.ok(lines[4].includes('☐'), 'a queued assignment should be pending');
+  // ...and only between blocks: a run with one block gets no leading or trailing blank.
+  const solo = plainLines(T.renderEvent('run', { id: 'run-8', status: 'RUNNING' }, { width: 70 }));
+  assert.equal(solo.length, 1, `a headline with nothing under it stays one line: ${JSON.stringify(solo)}`);
 });
 
 // ---------------------------------------------------------------------------

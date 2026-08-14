@@ -166,8 +166,20 @@ class KijiSpinner {
   stop(ok = true) { if (this.timer) clearInterval(this.timer); if (this.output.isTTY) { readline.clearLine(this.output, 0); readline.cursorTo(this.output, 0); } this.output.write(`${ok ? A.accent : A.error}${ok ? '[kiji] bigkiji core engine attached' : '[kiji] bigkiji core engine failed'}${A.reset}\n`); }
 }
 
+/**
+ * The reading width for prose, clamped at both ends.
+ *
+ * 40 because narrower than that nothing wraps sensibly; 200 because a sentence measured
+ * across a full-screen terminal is a line the eye cannot return from — the reason every
+ * newspaper sets narrow columns on a wide page. This ceiling has been here since the CLI
+ * was written and it only ever applied to `process.stdout.columns`; the sticky screen
+ * hands the transcript `sticky.cols` straight from the terminal, so on a wide window
+ * English ran the entire width while the header and footer stayed inside their borders.
+ */
+function clampWidth(columns) { return Math.max(40, Math.min(200, Number(columns) || 80)); }
+
 /** Terminal width, honest about the fact that a pipe has none. */
-function screenWidth(output = process.stdout) { return Math.max(40, Math.min(200, Number(output.columns) || 80)); }
+function screenWidth(output = process.stdout) { return clampWidth(output.columns); }
 
 // Four lines: the model panel, then the workspace and daemon facts muted
 // underneath. The name and version ride the panel's top border rather than
@@ -510,7 +522,10 @@ async function repl(client) {
   // Transcript width and shared render options: every renderer measures against
   // the live terminal so wrapped lines hang at the content column and nothing
   // is ever allowed to run past the right edge.
-  const view = () => ({ width: sticky.active ? sticky.cols : screenWidth(), theme: A, mark: glyphs() });
+  // The clamp applies to the transcript only. The header panel and the footer are borders
+  // drawn to the edge of the window on purpose — narrowing those would leave a gap on the
+  // right of the screen. It is the prose that needs a column.
+  const view = () => ({ width: sticky.active ? clampWidth(sticky.cols) : screenWidth(), theme: A, mark: glyphs() });
   const emit = (lines) => { const list = Array.isArray(lines) ? lines : [lines]; if (list.length) say(list.join('\n')); };
   /**
    * The one place the mode changes, because the mode is painted in three.

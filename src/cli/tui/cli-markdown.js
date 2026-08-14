@@ -160,6 +160,19 @@ function paintSpans(spans, base, reset) {
  * @param {number} [options.maxLines=0] 0 = unlimited; else fold with a `… +N lines`
  * @returns {string[]}
  */
+// A heading sits at the block's left edge; everything it covers is indented one step.
+//
+// Before this, a heading and the bullets under it both started at column 0 and the only
+// difference between them was `theme.bold` plus an accent. cli-theme's raw() returns ''
+// for every escape when NO_COLOR is set or TERM=dumb, so on those terminals the outline
+// was not faint — it was absent, and the owner read one undifferentiated block. Colour is
+// an enhancement to structure, never the carrier of it, so the hierarchy is spelled in
+// columns and the palette decorates what is already legible without it.
+//
+// Rules stay at 0 with the headings: a rule separates sections, so indenting it under one
+// would say it belongs to that section.
+const BODY_INDENT = 2;
+
 function renderMarkdown(text, options = {}) {
   const { width = 80, theme = themeFor('plan'), mark = glyphs(), column = 0, maxLines = 0,
     tone = theme.ink } = options;
@@ -184,7 +197,7 @@ function renderMarkdown(text, options = {}) {
   let fence = ''; let paragraph = [];
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    write(0, inlineSpans(paragraph.join(' '), theme));
+    write(BODY_INDENT, inlineSpans(paragraph.join(' '), theme));
     paragraph = [];
   };
 
@@ -195,7 +208,8 @@ function renderMarkdown(text, options = {}) {
       // heading. Only the matching marker closes it.
       if (fenceMatch && fenceMatch[1][0] === fence[0]) { fence = ''; blank(); continue; }
       settle();
-      push(2, `${theme.dim}${truncateToWidth(raw.replace(/\t/g, '  '), Math.max(4, room - 2))}${reset}`);
+      const codeIndent = BODY_INDENT + 2;
+      push(codeIndent, `${theme.dim}${truncateToWidth(raw.replace(/\t/g, '  '), Math.max(4, room - codeIndent))}${reset}`);
       continue;
     }
     if (fenceMatch) { flushParagraph(); fence = fenceMatch[1]; blank(); continue; }
@@ -218,13 +232,13 @@ function renderMarkdown(text, options = {}) {
     // re-wrapping them turns a table into rubble. Too wide is cut, not folded.
     if (TABLE_ROW.test(raw)) {
       flushParagraph(); settle();
-      push(0, `${tone}${truncateToWidth(raw.trim(), room)}${reset}`);
+      push(BODY_INDENT, `${tone}${truncateToWidth(raw.trim(), Math.max(4, room - BODY_INDENT))}${reset}`);
       continue;
     }
     const quote = raw.match(QUOTE);
     if (quote) {
       flushParagraph(); settle();
-      write(2, inlineSpans(quote[1], theme), theme.dim);
+      write(BODY_INDENT + 2, inlineSpans(quote[1], theme), theme.dim);
       continue;
     }
     const bullet = raw.match(BULLET);
@@ -235,7 +249,7 @@ function renderMarkdown(text, options = {}) {
       // Two source spaces are one nesting level, which is what every model emits.
       const depth = Math.min(3, Math.floor(match[1].replace(/\t/g, '  ').length / 2));
       const label = bullet ? mark.note : `${ordered[2]}.`;
-      const indent = depth * 2;
+      const indent = BODY_INDENT + depth * 2;
       const hang = indent + stringWidth(label) + 1;
       const wrapped = wrapTokens(spanTokens(inlineSpans(match[3], theme)), Math.max(1, room - hang));
       settle();
