@@ -102,9 +102,9 @@ function gutterLines(text, options = {}) {
  * latency only ever reach us as positive observations, so a missing or zero
  * value means "the daemon never reported one" — printing 0 would invent it.
  */
-function metric(value, suffix = '') {
+function metric(value, suffix = '', dash = DASH) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return DASH;
+  if (!Number.isFinite(number) || number <= 0) return dash;
   return `${number}${suffix}`;
 }
 
@@ -112,11 +112,11 @@ function metric(value, suffix = '') {
  * A *cardinality*, which is a different kind of claim: an empty list really is
  * zero and saying so is honest, but a list we were never handed is unknown.
  */
-function count(list) {
+function count(list, dash = DASH) {
   if (Array.isArray(list)) return String(list.length);
-  if (list === null || list === undefined || list === '') return DASH; // Number(null) is 0 — do not let that through
+  if (list === null || list === undefined || list === '') return dash; // Number(null) is 0 — do not let that through
   const number = Number(list);
-  return Number.isFinite(number) && number >= 0 ? String(number) : DASH;
+  return Number.isFinite(number) && number >= 0 ? String(number) : dash;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,11 +430,11 @@ function shortRunId(id) {
   return parts.length > 2 ? parts.slice(0, 2).join('-') : text;
 }
 
-function runAssignments(run = {}) {
+function runAssignments(run = {}, mark = glyphs()) {
   const rows = (run.assignments || []).map((item) => {
     // The role is the job; the agent is the hat worn for this run. `leader` alone does
     // not say that this one is the architect lens, and both are one word each.
-    const who = [lower(item.role || ''), lower(item.agent || '')].filter(Boolean).join(' · ');
+    const who = [lower(item.role || ''), lower(item.agent || '')].filter(Boolean).join(` ${mark.note} `);
     // The tier that will answer, not just the vendor: two assignments on one provider
     // routinely run different models and cost different money. The vendor is dropped
     // when the model id already opens with it, because `qwen qwen3.5:35b-a3b` reads as
@@ -506,7 +506,7 @@ function runBrief(run = {}, options = {}) {
   // — the owner has to be able to see that the wall was remembered rather than hit.
   const wall = run.knownFailure;
   if (wall && wall.fix) {
-    why.push(`- avoiding a known failure (seen ${wall.occurrences}${DASH === '—' ? '×' : 'x'}): ${flat(wall.fix)}`);
+    why.push(`- avoiding a known failure (seen ${wall.occurrences}${mark.dash === '—' ? '×' : 'x'}): ${flat(wall.fix)}`);
   }
   // Decided by the fleet, not by the owner. Hands-off mode answers its own open
   // questions so nothing stops mid-run; this is where those answers are declared, so
@@ -524,7 +524,7 @@ function runBrief(run = {}, options = {}) {
   if (why.length) out.push('## why', ...why);
 
   if (full && steps.length) out.push('## steps', ...steps.map((step, index) => `${index + 1}. ${step}`));
-  else if (steps.length) out.push('## steps', `- ${steps.length} step${steps.length === 1 ? '' : 's'} — all of them show at the approval prompt`);
+  else if (steps.length) out.push('## steps', `- ${steps.length} step${steps.length === 1 ? '' : 's'} ${mark.dash} all of them show at the approval prompt`);
   if (full && acceptance.length) out.push('## done when', ...acceptance.map((item) => `- ${item}`));
   if (full && constraints.length) out.push('## constraints', ...constraints.map((item) => `- ${item}`));
 
@@ -534,7 +534,7 @@ function runBrief(run = {}, options = {}) {
   // the reply and re-plans on it. Last, so it sits against the keys below it.
   if (questions.length) {
     out.push('## unanswered', ...questions.map((question) => `- ${mark.warn} ${question}`),
-      `\`/answer ${run.id || '<id>'} <your answer>\` — rewrites the plan from it`);
+      `\`/answer ${run.id || '<id>'} <your answer>\` ${mark.dash} rewrites the plan from it`);
   }
   if (!out.length) return [];
   // 30 lines is a tall plan and a short terminal is 24 rows; past that the fold marker
@@ -668,11 +668,11 @@ function renderEvent(event, data = {}, options = {}) {
       const assignments = data.assignments || [];
       const stage = lower(data.stage || '');
       const writes = assignments.some((item) => item.write !== false);
-      const headline = [shortRunId(data.id) || DASH, phrase(data.status) || DASH,
+      const headline = [shortRunId(data.id) || mark.dash, phrase(data.status) || mark.dash,
         stage ? `${stage} stage` : '', assignments.length ? (writes ? 'writes' : 'read-only') : '']
-        .filter(Boolean).join(' · ');
+        .filter(Boolean).join(` ${mark.note} `);
       const head = renderToolCall('run', headline, { ...base, at: data.updatedAt || data.createdAt || '' });
-      const list = formatTaskList(runAssignments(data), { ...base, indent: 2, maxLines: 8 });
+      const list = formatTaskList(runAssignments(data, mark), { ...base, indent: 2, maxLines: 8 });
       // A failed run rendered as a status word with nothing behind it: the reason
       // travelled all the way from the coordinator and was dropped right here, so
       // the only thing the transcript ever said about a failure was that it failed.
@@ -852,7 +852,7 @@ function renderEvent(event, data = {}, options = {}) {
       // Thirty minutes in, the owner is told where the run is rather than left to
       // guess or find it finished an hour later.
       const elapsed = (data.budgetMinutes || 0) + (data.overdueMinutes || 0);
-      const head = renderToolCall('checkpoint', `${data.completed?.length || 0}/${(data.completed?.length || 0) + (data.stillRunning?.length || 0)} done · ${elapsed}m`, base);
+      const head = renderToolCall('checkpoint', `${data.completed?.length || 0}/${(data.completed?.length || 0) + (data.stillRunning?.length || 0)} done ${mark.note} ${elapsed}m`, base);
       const body = [
         ...(data.completed?.length ? [`done: ${data.completed.join(', ')}`] : []),
         ...(data.stillRunning?.length ? [`still running: ${data.stillRunning.join(', ')}`] : ['nothing is running']),
@@ -863,7 +863,7 @@ function renderEvent(event, data = {}, options = {}) {
     case 'idea': {
       const title = data?.draft?.title || data.ideaId || data.id || '';
       if (!data.action) return [];
-      return renderToolCall('idea', `${lower(data.action)}${title ? ` · ${title}` : ''}`, base);
+      return renderToolCall('idea', `${lower(data.action)}${title ? ` ${mark.note} ${title}` : ''}`, base);
     }
     case 'conversation':
       // turn_start repeats the prompt the owner just typed; turn_complete is
@@ -898,9 +898,9 @@ function renderStatus(state = {}, options = {}) {
 
   const counts = [
     `phase ${phrase(state.phase || 'IDLE')}`,
-    `sessions ${count(state.sessions)}`,
-    `runs ${count(state.runs)}`,
-    `files ${count(state.inventory?.files)}${state.inventory?.truncated ? '+' : ''}`,
+    `sessions ${count(state.sessions, mark.dash)}`,
+    `runs ${count(state.runs, mark.dash)}`,
+    `files ${count(state.inventory?.files, mark.dash)}${state.inventory?.truncated ? '+' : ''}`,
   ].join(`  ${mark.note}  `);
   out.push(...renderToolCall('status', counts, { width, theme, mark }));
 
@@ -915,10 +915,10 @@ function renderStatus(state = {}, options = {}) {
     const name = padToWidth(lower(model.displayName || model.id || '?'), nameWidth);
     const detail = width < 76
       ? `${label}`
-      : `${padToWidth(label, 9)} ${theme.dim}${padToWidth(`${metric(metrics.tokensUsed)} tok`, 11)}${padToWidth(`${metric(metrics.latencyMs, 'ms')}`, 8)}${theme.reset}`;
+      : `${padToWidth(label, 9)} ${theme.dim}${padToWidth(`${metric(metrics.tokensUsed, '', mark.dash)} tok`, 11)}${padToWidth(`${metric(metrics.latencyMs, 'ms', mark.dash)}`, 8)}${theme.reset}`;
     out.push(`  ${tone}${mark.turn}${theme.reset} ${theme.ink}${name}${theme.reset} ${tone}${detail}${theme.reset}`);
   }
-  out.push(...renderNote(`${count(connected)} busy of ${count(fleet)} · ${fleet.filter((model) => model.available ?? model.connected).length} ready`, { width, theme, mark }));
+  out.push(...renderNote(`${count(connected, mark.dash)} busy of ${count(fleet, mark.dash)} ${mark.note} ${fleet.filter((model) => model.available ?? model.connected).length} ready`, { width, theme, mark }));
 
   // The fleet by model, not by provider.
   //

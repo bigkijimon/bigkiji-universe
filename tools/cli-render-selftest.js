@@ -16,6 +16,22 @@
 //     in every environment including NO_COLOR and TERM=dumb.
 //
 // Run: node tools/cli-render-selftest.js
+//
+// The suite declares which alphabet it is testing instead of inheriting one.
+//
+// `glyphs()` picks ASCII when TERM=dumb, and cli-theme decides NO_COLOR at module load
+// from the same variable — so running this file from a dumb terminal silently swapped the
+// alphabet under two dozen assertions that name `●`, `⎿` and `…` by hand, and the suite
+// failed on the terminal rather than on the code. TERM is normalised here, BEFORE the
+// renderers are required, so the body below always measures the Unicode alphabet.
+//
+// This is not coverage traded away. The ASCII alphabet is asserted explicitly in §11,
+// against the same renderers and with `glyphs({ ascii: true })` passed by name, which is
+// a stronger test than hoping the ambient terminal happens to be dumb. NO_COLOR is left
+// alone: it is a separate axis, it is asserted in §11 too, and `NO_COLOR=1 node
+// tools/cli-render-selftest.js` is expected to pass.
+if (process.env.TERM === 'dumb') process.env.TERM = 'xterm-256color';
+delete process.env.BIGKIJI_CLI_ASCII;
 
 const assert = require('assert');
 const { stripAnsi } = require('../src/domain/terminal/cli-theme');
@@ -657,13 +673,52 @@ ok('a stderr tasklog is toned as an error but still folded', () => {
 // 11. Degradation: TERM=dumb has no elbow, and NO_COLOR strips every escape
 // ---------------------------------------------------------------------------
 ok('the ascii glyph set avoids box-drawing and ballot characters', () => {
+  // Every renderer the owner actually looks at, not two of them.
+  //
+  // This used to cover renderToolResult and formatTaskList, and the rest of the ASCII
+  // path was covered only by the accident of someone running the suite from a dumb
+  // terminal — which never happened, and when it was tried the suite failed on its own
+  // hardcoded `●` before reaching any of this. The alphabet is passed by name here, so
+  // the coverage does not depend on the terminal the suite is invoked from.
   const mark = T.glyphs({ ascii: true });
+  const run = { id: 'run-ascii', status: 'AWAITING_APPROVAL', stage: 'execution',
+    promptPreview: 'ダッシュボードを再構築します',
+    promptSpec: { goal: 'rebuild the dashboard', steps: ['read it', 'rewrite it'],
+      acceptance: ['npm test passes'], questions: ['which theme?'] },
+    assignments: [{ title: 'Plan', provider: 'claude-code', role: 'leader', status: 'completed', write: true },
+      { title: 'Verify', provider: 'glm', role: 'debug', status: 'queued', write: false }],
+    disclosures: [{ provider: 'claude-code', files: [{ path: '/tmp/a.js' }, { path: '/tmp/b.js' }] }] };
+  // A run and a status with nothing measured, because "never measured" is drawn as an
+  // em dash and that is the case that reached the screen unconverted.
+  const bare = { id: '', status: '', assignments: [] };
+  const idle = { phase: 'IDLE', sessions: [], runs: [],
+    models: { models: [{ id: 'claude', displayName: 'Claude Code', status: 'OFFLINE', connected: false, metrics: {} }] } };
   const output = plainLines([
     ...T.renderToolResult('one\ntwo\nthree', { width: 40, mark, maxLines: 2 }),
     ...T.formatTaskList(TASKS, { width: 40, mark }),
+    ...T.renderUserTurn('こんにちは', { width: 60, mark }),
+    ...T.renderAssistantText('## what changed\n\n- one\n- two\n\nA plain sentence.', { width: 60, mark }),
+    ...T.renderEvent('run', run, { width: 80, mark }),
+    ...T.renderEvent('run', bare, { width: 60, mark }),
+    ...T.renderEvent('commentary', { source: 'glm', status: 'note', text: '## heading\n- item' }, { width: 60, mark }),
+    ...T.formatDiff('@@ -1,2 +1,2 @@\n-old\n+new\n', { width: 60, mark }),
+    ...T.renderStatus(idle, { width: 80, mark }),
   ]).join('\n');
-  assert.doesNotMatch(output, /[⎿☑☐▸…●]/, `non-ascii glyph survived: ${output}`);
+  // `·` and `—` are in this list because they were NOT coming from the glyph set: the run
+  // headline joined on a literal ' · ' and fell back to a literal em dash, so two of the
+  // most-read lines in the CLI carried characters the ascii alphabet exists to avoid.
+  assert.doesNotMatch(output, /[⎿☑☐▸…●·⤷⚠─—]/, `non-ascii glyph survived: ${output}`);
   assert.ok(output.includes('...'), 'the ascii ellipsis should be three dots');
+  // The structure has to survive the alphabet too: no line may exceed its width, and the
+  // markdown hierarchy is columns, so it holds when every glyph is a plain character.
+  for (const line of output.split('\n')) {
+    assert.ok(T.stringWidth(line) <= 80, `ascii line overflows: ${JSON.stringify(line)}`);
+  }
+  const drawn = plainLines(T.renderAssistantText('## heading\nbody text', { width: 60, mark }))
+    .filter((line) => line.trim());
+  const indentOf = (line) => line.length - line.trimStart().length;
+  assert.ok(indentOf(drawn[1]) > indentOf(drawn[0]),
+    'heading and body are still told apart by column with no unicode and no colour');
 });
 ok('NO_COLOR output carries no escape sequences at all', () => {
   const result = require('child_process').spawnSync(process.execPath, ['-e', `

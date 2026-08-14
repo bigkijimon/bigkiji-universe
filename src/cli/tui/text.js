@@ -125,6 +125,8 @@ const UNICODE_GLYPHS = Object.freeze({
   // nobody answered, or a step that cannot be undone.
   warn: '⚠',
   done: '☑', active: '▸', pending: '☐', ellipsis: '…', rule: '─',
+  // "never measured", which is not the same claim as 0 — see metric() in transcript.js.
+  dash: '—',
 });
 // TERM=dumb rarely has the box-drawing elbow or the ballot boxes.
 const ASCII_GLYPHS = Object.freeze({
@@ -132,6 +134,7 @@ const ASCII_GLYPHS = Object.freeze({
   reply: '->',
   warn: '!',
   done: '[x]', active: '>', pending: '[ ]', ellipsis: '...', rule: '-',
+  dash: '-',
 });
 
 function glyphs({ ascii = process.env.TERM === 'dumb' || process.env.BIGKIJI_CLI_ASCII === '1' } = {}) {
