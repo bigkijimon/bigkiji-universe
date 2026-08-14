@@ -89,7 +89,10 @@ ok('gutterLines hangs continuations at the content column, not column 0', () => 
 });
 ok('a result gutter hangs at column 5 under its tool call', () => {
   const lines = plainLines(T.renderToolResult('alpha beta gamma delta epsilon zeta eta theta', { width: 24, maxLines: 0 }));
-  assert.equal(lines[0].slice(0, 5), '  ⎿  ');
+  // The claim is the column, not the character. TERM=dumb swaps the box-drawing elbow for
+  // a backslash — same one cell — and hardcoding the glyph turned a layout assertion into
+  // a glyph assertion that could only ever hold on one kind of terminal.
+  assert.equal(lines[0].slice(0, 5), `  ${T.glyphs().result}  `);
   for (const line of lines.slice(1)) assert.equal(line.slice(0, 5), '     ');
   for (const line of lines) assert.ok(T.stringWidth(line) <= 24);
 });
@@ -115,7 +118,7 @@ ok('a folded tool result ends with the real +N lines marker', () => {
   const body = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');
   const lines = plainLines(T.renderToolResult(body, { width: 40, maxLines: 4 }));
   assert.equal(lines.length, 5, 'four content lines plus the marker');
-  assert.equal(lines[lines.length - 1].trim(), '… +16 lines');
+  assert.equal(lines[lines.length - 1].trim(), `${T.glyphs().ellipsis} +16 lines`);
   assert.ok(lines[0].includes('line 1'));
   assert.ok(lines[3].includes('line 4'));
 });
@@ -127,7 +130,7 @@ ok('a result short enough to fit is not folded at all', () => {
 ok('wrapping does not inflate the hidden count — it counts source lines', () => {
   const body = ['a'.repeat(100), 'b', 'c', 'd', 'e'].join('\n');
   const lines = plainLines(T.renderToolResult(body, { width: 30, maxLines: 2 }));
-  assert.equal(lines[lines.length - 1].trim(), '… +3 lines'); // b/c/d/e minus the one shown
+  assert.equal(lines[lines.length - 1].trim(), `${T.glyphs().ellipsis} +3 lines`); // b/c/d/e minus the one shown
 });
 
 // ---------------------------------------------------------------------------
@@ -920,10 +923,15 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   // `—` is not 0. A gauge invented for an assignment that published no total would be
   // the same lie as a progress percentage for a run that has not started.
   assert.ok(!/debug.*0\/0/.test(flat), 'an unpublished count must not be drawn as zero progress');
-  for (const provider of ['codex', 'gemini', 'glm']) {
-    assert.ok(painted.includes(providerColor(provider)), `${provider} has to be its own colour`);
+  // Colour identity is a claim about colour, so it can only be made where there is any.
+  // Under NO_COLOR every providerColor() is '' by design and asserting they differ tests
+  // the absence of a feature, not a defect. Same guard the palette checks above use.
+  if (providerColor('codex')) {
+    for (const provider of ['codex', 'gemini', 'glm']) {
+      assert.ok(painted.includes(providerColor(provider)), `${provider} has to be its own colour`);
+    }
+    assert.notEqual(providerColor('codex'), providerColor('gemini'), 'two AIs in one colour is the thing being fixed');
   }
-  assert.notEqual(providerColor('codex'), providerColor('gemini'), 'two AIs in one colour is the thing being fixed');
   // A queued assignment gets no meter, even an empty one.
   assert.match(flat, /debug\s+glm.*not started/, 'something that has not begun says so rather than showing a gauge');
 

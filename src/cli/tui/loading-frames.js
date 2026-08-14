@@ -485,11 +485,39 @@ function buildCatMark(colored, frame = 0) {
   if (first < 0) return [];
   const palette = readPalette();
   const crop = (row) => row.slice(first, last + 1);
+  // Without colour, a row where every pixel is opaque has no silhouette to draw.
+  //
+  // monoHalfBlockRow only knows present/absent, so the two face rows — which are ink
+  // edge to edge — came out as `██████████████` and the eyes disappeared. Measured
+  // 2026-08-14 across the six poses: with colour they produce three distinct marks, and
+  // with NO_COLOR only two, because what separates most of the poses is the eye colour
+  // and nothing else. So the loading animation stopped animating on exactly the
+  // terminals that have no other cue, and cli-render-selftest has been failing under
+  // NO_COLOR ever since — a failure nothing ran, since npm test runs in colour.
+  //
+  // monoShadeRow is the answer and it was written for this: one character per pixel,
+  // ranked by luminance, so the eyes read as gaps in a lighter face. It was exported and
+  // called from nowhere — the same shape as every other defect found this week.
+  //
+  // The choice is measured per pair, not hardcoded to a row index, so a redrawn sprite
+  // re-decides on its own. The measure is how many distinct colours a pixel row carries:
+  // presence/absence can express exactly two states, so three or more is information a
+  // silhouette provably cannot hold, and that row is better shaded than outlined.
+  //
+  // Measured on this sprite (frame 0, by pixel row): ears 1 and 2 colours — a real
+  // silhouette, and the part that moves, so it keeps half-blocks and its full vertical
+  // resolution. The eye row has 4 (`..235133331532..`, the 5 and 1 being the eyes) and
+  // the nose row has 4. Both were being flattened to a bar.
+  const distinct = (row) => new Set(crop(row).filter(Boolean)).size;
+  const SILHOUETTE_STATES = 2;
   const out = [];
   for (let pair = 0; pair + 1 < rows.length; pair += 2) {
-    out.push(colored && palette.length
-      ? halfBlockRow(crop(rows[pair]), crop(rows[pair + 1]), palette)
-      : monoHalfBlockRow(crop(rows[pair]), crop(rows[pair + 1])));
+    const upper = rows[pair]; const lower = rows[pair + 1];
+    if (colored && palette.length) { out.push(halfBlockRow(crop(upper), crop(lower), palette)); continue; }
+    const above = distinct(upper); const below = distinct(lower);
+    out.push(palette.length && Math.max(above, below) > SILHOUETTE_STATES
+      ? monoShadeRow(crop(below > above ? lower : upper), palette)
+      : monoHalfBlockRow(crop(upper), crop(lower)));
   }
   return out;
 }
