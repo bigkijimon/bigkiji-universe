@@ -253,6 +253,33 @@ ok('the runner asks for the right provider’s login', () => {
     'without the provider every task would get an empty home again');
 });
 
+ok('one credential route per provider, never two', () => {
+  // apiKeyHelper and the real HOME are alternatives, not belt-and-braces.
+  //
+  // The helper was written on 2026-08-03 because a sandboxed HOME hides the login
+  // keychain from `security` itself. The owner chose the real HOME instead on
+  // 2026-08-14 — and leaving the helper on top of it does not add a fallback, because
+  // Claude Code treats ANY api-key source as taking precedence over the claude.ai
+  // login. Measured A/B, byte-identical arguments, only the settings file differing:
+  //
+  //   apiKeyHelper present → exit 143, "⚠ claude.ai connectors are disabled ..."
+  //   apiKeyHelper absent  → exit 0
+  //
+  // So the task authenticated, ran, and died — which reads as a Claude problem rather
+  // than a configuration one. Whichever route a provider is set up for, write only it.
+  const { TaskRunner } = require('../src/domain/pi-agent/task-runner');
+  const runner = new TaskRunner();
+  const policy = { allowRead: [], allowWrite: [], taskRoot: os.tmpdir() };
+  for (const provider of ['claude-code', 'claude']) {
+    const runtime = runtimeFor(provider);
+    runner.writeProviderPolicies(provider, runtime, policy);
+    const written = JSON.parse(fs.readFileSync(runtime.claudeSettings, 'utf8'));
+    const wantsHelper = !OWNER_HOME_PROVIDERS.has(provider);
+    assert.equal('apiKeyHelper' in written, wantsHelper,
+      `${provider}: ${wantsHelper ? 'the sandbox HOME needs the helper' : 'the real HOME must NOT also carry an api-key source'}`);
+  }
+});
+
 for (const runtime of runtimes) fs.rmSync(runtime.root, { recursive: true, force: true });
 if (failures) { console.error(`credential lending selftest: ${failures} FAILED`); process.exit(1); }
 console.log(`credential lending selftest: PASS · one login per provider, named not globbed · ${POSIX_MODES ? 'read-only' : 'read-only NOT CHECKED (no POSIX modes on this platform)'} · dies with the task · HOME still sandboxed · nothing else crosses`);

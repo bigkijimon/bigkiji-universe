@@ -22,7 +22,7 @@ const LOCAL_TOOLS_WRITE = 'read,grep,find,ls,edit,write';
 const { ContextPruner } = require('./context-pruner');
 const { createStepReader, providerEmitsSteps } = require('./stream-steps');
 const { LocalQwenGuardrails } = require('./local-qwen-guardrails');
-const { SecurityPolicy } = require('../pi-core/security/security-policy');
+const { SecurityPolicy, OWNER_HOME_PROVIDERS } = require('../pi-core/security/security-policy');
 const { createDisclosureManifest, verifyDisclosureManifest } = require('../pi-core/security/disclosure-manifest');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { ResearchBroker } = require('../pi-core/security/research-broker');
@@ -349,9 +349,25 @@ class TaskRunner extends EventEmitter {
       // `security` looks for it under $HOME/Library/Keychains, measured exit 44 —
       // so every claude-code task reported "Not logged in". claude-key-helper.js
       // addresses the keychain by absolute path instead, and reads one field of it.
+      //
+      // ...and the helper is now the wrong half of an either/or. Since 2026-08-14 this
+      // provider is given the owner's real HOME (OWNER_HOME_PROVIDERS), so `security`
+      // finds the login keychain the ordinary way and the CLI's own login works. Leaving
+      // the helper in place on top of that does not add a fallback — `apiKeyHelper` is an
+      // API-key auth source, and Claude Code treats any such source as taking precedence
+      // over the claude.ai login. Measured on the first real run after the HOME change:
+      //
+      //   ⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth
+      //     source is set and takes precedence over your claude.ai login
+      //   → leader claude-code: failed, process exited
+      //
+      // The task authenticated, ran for three minutes and then died — a strictly worse
+      // failure than the one it was written to fix, because it looks like a Claude
+      // problem. Two mechanisms for one credential is one too many: whichever the
+      // provider is set up for, write only that one.
       const keyHelper = path.resolve(__dirname, '..', 'pi-core', 'security', 'claude-key-helper.js').replace(/'/g, "'\\''");
       const settings = { disableAllHooks: false, permissions: { deny: ['WebSearch', 'WebFetch', 'mcp__.*'] },
-        apiKeyHelper: `node '${keyHelper}'`,
+        ...(OWNER_HOME_PROVIDERS.has(provider) ? {} : { apiKeyHelper: `node '${keyHelper}'` }),
         hooks: { PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command: `node '${hook}'`, timeout: 15 }] }] } };
       fs.writeFileSync(runtime.claudeSettings, JSON.stringify(settings, null, 2), { mode: 0o600 });
       fs.writeFileSync(runtime.mcpConfig, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
