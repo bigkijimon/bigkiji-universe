@@ -427,7 +427,24 @@ class DaemonEngine extends EventEmitter {
     // Read per call, not captured, and for the same reason the facilitator's switch is:
     // a privacy control that needs a restart to take effect is one nobody can trust in the
     // moment. Off means the escape function is never called at all, not called and refused.
+    // The model and the context window the owner chose, which this line did not read.
+    //
+    // settings-store.js validates `conversation.model`, clamps `contextTokens` to
+    // 1024–8192, and even retires a model it has measured as unfit for conversation —
+    // an entire settings surface that reached nothing, because this constructor was
+    // handed `cloudEscape` and nothing else.
+    //
+    // It hid because the engine's own defaults happen to equal the stored values
+    // (`qwen3.5:latest`, 4096). The header showed the owner their setting and the
+    // coincidence read as proof that it worked. Measured 2026-08-14: editing
+    // `conversation.model` in settings.json changed nothing at all.
+    //
+    // `|| undefined` rather than a second default here: the store owns the fallback,
+    // and a default written twice is two defaults that will disagree.
+    const chat = this.ownerSettings()?.conversation || {};
     this.conversation = conversationEngine || new ConversationEngine({
+      model: chat.model || undefined,
+      maxContextTokens: chat.contextTokens || undefined,
       cloudEscape: (prompt) => (this.ownerSettings()?.conversation?.cloudFallback === 'gpu-busy'
         ? escape(prompt)
         : Promise.resolve(null)),
