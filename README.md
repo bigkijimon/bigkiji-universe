@@ -119,7 +119,8 @@ directory. Under it:
 ```
 
 Only settings and secrets stay in the Electron `userData` directory
-(`~/Library/Application Support/bigkiji-universe` on macOS): `settings.json`,
+(`~/Library/Application Support/bku` on macOS — the directory is always package.json's
+`name`, and `tools/context-routing-selftest.js` asserts it): `settings.json`,
 `secrets.enc.json` (encrypted with Electron `safeStorage`), the `data-root.json` pointer,
 `setup-state.json`, and `workspaces.json`.
 

@@ -24,7 +24,12 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const DIST = path.resolve(ROOT, '..', 'dist', 'mac-arm64', 'BigKiji Universe.app', 'Contents', 'Resources', 'app');
+// Two errors in one line, both from before the rename: `ROOT/..` is the parent of the
+// repo (Documents/), not the repo, and the bundle has been BKU.app since 2.5. So doctor
+// reported "no build in dist/mac-arm64 — nothing to compare" against a build that was
+// sitting right there, which is the same failure mode as the settings path below: a
+// checker that cannot find the thing reads as a clean bill of health.
+const DIST = path.resolve(ROOT, 'dist', 'mac-arm64', 'BKU.app', 'Contents', 'Resources', 'app');
 const DASH = '—';
 
 function readJson(file) {

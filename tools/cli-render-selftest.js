@@ -1127,4 +1127,37 @@ ok('the pixel sets, when colour is available, are 8 rows and 1 row', () => {
   checks += 3;
 }
 
+// The hierarchy is spelled in columns, and it has to survive the palette.
+//
+// Headings, bullets and paragraphs all started at column 0 and differed only by
+// theme.bold plus an accent — and cli-theme's raw() returns '' under NO_COLOR or
+// TERM=dumb, so on those terminals the outline was not faint, it was absent. This is the
+// guard that was missing: setting BODY_INDENT back to 0 must fail here, or the next edit
+// silently returns the screen to one undifferentiated block. Asserted on the stripped
+// text, so it is testing the columns and not the colour.
+{
+  const { renderMarkdown } = require('../src/cli/tui/cli-markdown');
+  const doc = ['# top', 'a paragraph under it', '- a bullet', '  - a nested bullet',
+    '1. an ordered item', '> a quote', '| a | table |', '```', 'code', '```'].join('\n');
+  const indentOf = (line) => line.length - line.trimStart().length;
+  for (const width of [24, 40, 80, 200]) {
+    const drawn = plainLines(renderMarkdown(doc, { width })).filter((line) => line.trim());
+    const heading = drawn.find((line) => /^top$/.test(line.trim()));
+    assert.equal(indentOf(heading), 0, `a heading sits at the left edge (width ${width})`);
+    for (const line of drawn) {
+      if (line === heading) continue;
+      assert.ok(indentOf(line) >= 2,
+        `everything a heading covers hangs at least one step in (width ${width}): ${JSON.stringify(line)}`);
+      assert.ok(T.stringWidth(line) <= width, `and still fits ${width} columns: ${JSON.stringify(line)}`);
+    }
+    checks += 1;
+  }
+  // The distinction is columns, not colour: the two must not be equal even when every
+  // escape is stripped, which is exactly what NO_COLOR does.
+  const painted = renderMarkdown('## heading\nbody text', { width: 60 });
+  const [head, body] = plainLines(painted).filter((line) => line.trim());
+  assert.notEqual(indentOf(head), indentOf(body), 'heading and body must differ without any ANSI at all');
+  checks += 1;
+}
+
 console.log(`cli render selftest: PASS · ${checks} checks · de-boxed gutter layout (one model panel excepted) · lowercase chrome · one-cell cat, no kaomoji · hanging indents · honest folds · diffs · task lists · width-aware at 24-200 columns · NO_COLOR + TERM=dumb · sticky footer contract intact · npm chatter dropped, npm failures never · an unanswered question prints the way to answer it · a whole file in one headline cannot bury the report · the plan prints its steps and how it will be judged, full at the gate and folded in the list · markdown draws as structure`);
