@@ -40,4 +40,27 @@ assert.match(mobile, /Hold to accept/);
 assert.match(main, /action: request \? 'pair' : 'status'/);
 assert.doesNotMatch(main, /function ttsScan/);
 assert.match(main, /agent_end/);
+
+// No control in the settings window may be wired to a setting nothing reads.
+//
+// Eight were, and the owner spent a session concluding that "設定が一回も効いたことがない".
+// Two of those eight really were broken wiring (fixed 2026-08-14); the other six had no
+// consumer at all and never could have worked. A knob that moves and changes nothing
+// teaches the owner not to trust the window, which is more expensive than the missing
+// feature. If one of these is implemented later, put its row back at the same time.
+{
+  const modal = fs.readFileSync(path.join(root, 'src/components/UI/settings-modal.js'), 'utf8');
+  const UNREAD = ['quality.repairScope', 'quality.rollbackOnRegression', 'quality.smokeAfterRestart',
+    'quality.testTimeoutMs', 'quality.researchCacheDays', 'quality.officialSourcesFirst',
+    'routing.qwenBypassTimeoutMs', 'terminal.maxTabs'];
+  for (const key of UNREAD) {
+    assert.doesNotMatch(modal, new RegExp(`data-setting="${key.replace('.', '\\.')}"`),
+      `${key} has no reader in the codebase — it must not be offered as a control`);
+    // ...and the key itself stays in the store, because saved files hold it.
+    const [group, name] = key.split('.');
+    assert.ok(Object.prototype.hasOwnProperty.call(DEFAULTS[group], name),
+      `${key} must stay in DEFAULTS so normalize() does not discard a saved value`);
+  }
+}
+
 console.log('runtime policy selftest: PASS');

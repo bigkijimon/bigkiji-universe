@@ -111,6 +111,25 @@ fs.mkdirSync(path.join(fakeHome, 'Documents', 'MyNotes', '.obsidian'), { recursi
 const detected = createPathConfig({ appRoot: project, userData: path.join(fakeHome, 'ud'), env: {}, home: fakeHome });
 assert.strictEqual(detected.vaultRoot, path.join(fakeHome, 'Documents', 'MyNotes'), 'vault detection must be generic');
 
+// The three path fields in the settings window have to reach the resolver.
+//
+// createPathConfig has read `saved` since it was written, and the daemon called it
+// WITHOUT saved (server/daemon.js) — so BigKiji Vault, Knowledge cache and graph.json
+// were owner-editable fields whose value was discarded on every resolve. It looked
+// harmless only because all three are empty on this machine.
+const savedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-saved-'));
+const savedVault = path.join(savedHome, 'ChosenVault');
+fs.mkdirSync(path.join(savedVault, '.obsidian'), { recursive: true });
+const withSaved = createPathConfig({ appRoot: project, userData: path.join(savedHome, 'ud'), env: {}, home: savedHome,
+  saved: { vaultRoot: savedVault, knowledgeRoot: path.join(savedHome, 'kb'), graphifyGraphPath: path.join(savedHome, 'g.json') } });
+assert.strictEqual(withSaved.vaultRoot, savedVault, 'the owner’s vault path must win over detection');
+assert.strictEqual(withSaved.knowledgeRoot, path.join(savedHome, 'kb'));
+assert.strictEqual(withSaved.graphPath, path.join(savedHome, 'g.json'));
+// ...and the daemon has to be the caller that passes them, which is where it was missed.
+const daemonSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8');
+assert.match(daemonSource, /createPathConfig\(\{[^}]*saved:/,
+  'the daemon must pass the owner’s saved paths into createPathConfig');
+
 // BIGKIJI_DATA_ROOT is the contract between the app and its child processes.
 const forced = createPathConfig({ appRoot: project, userData: path.join(fakeHome, 'ud'),
   env: { BIGKIJI_DATA_ROOT: path.join(fakeHome, 'elsewhere') }, home: fakeHome });

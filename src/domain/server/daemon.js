@@ -59,7 +59,21 @@ const PID_FILE = LAYOUT.daemonPidFile;
 const APP_VERSION = require('../../../package.json').version;
 // whisper/recordings locations for the mobile voice route
 const { createPathConfig, detectVault } = require('../../core/path-config');
-const PATHS = createPathConfig({ appRoot: APP_ROOT });
+// The settings window has offered three path fields since it was written — BigKiji Vault,
+// Knowledge cache, graph.json — and this call did not pass `saved`, so createPathConfig
+// resolved every one of them from the defaults and the owner's entry was discarded.
+// Nothing broke, because all three are empty today; the moment one is filled in it would
+// be the same silent nothing that `data-root.js` produced for routing.
+//
+// Read here rather than through ownerSettings(): PATHS is built at module load and
+// ownerSettings() needs PATHS.userData to find the file, so this is the one place the
+// path can be known. Once per process, which is exactly what the field's own label
+// promises — "PORTABLE DATA PATHS · RESTART TO APPLY".
+const SAVED_PATHS = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(defaultUserData(), 'settings.json'), 'utf8')).paths || {}; }
+  catch (_) { return {}; }
+})();
+const PATHS = createPathConfig({ appRoot: APP_ROOT, saved: SAVED_PATHS });
 
 // The modes the coordinator understands. 'plan' and 'ask' both wait for the owner before
 // anything writes; only 'auto' releases without asking.

@@ -67,7 +67,7 @@ const DEFAULTS = Object.freeze({
     paidAllowlist: ['claude', 'claude-code', 'codex', 'gemini', 'glm'],
     maxParallel: 3,
     localDefault: 'qwen',
-    qwenBypassTimeoutMs: 1000,
+    qwenBypassTimeoutMs: 1000,       // UNREAD — control removed from the window 2026-08-14
     executionMode: 'plan',
     maxAgents: 3,
     activationMode: 'on-demand',
@@ -98,15 +98,23 @@ const DEFAULTS = Object.freeze({
     // 2026-08-09 after 「ComfyUIなどが動いているときに全然ローカルAIが使えなかったら困ります」.
     cloudFallback: 'off',
   },
+  // Six of these eight have no reader anywhere in the codebase, and their controls were
+  // removed from the settings window on 2026-08-14 (owner). A knob that moves and changes
+  // nothing is worse than an absent one: it teaches the owner that the settings window
+  // does not work, which is exactly the complaint that started that day's session.
+  //
+  // The keys stay here rather than being deleted, because saved settings.json files hold
+  // them and normalize() must not throw a stored value away. Wiring any of them up means
+  // adding the reader first, then putting its row back — not the other way round.
   quality: {
-    gate: 'strict',
-    repairScope: 'broad',
-    maxRepairCycles: 3,
-    rollbackOnRegression: true,
-    smokeAfterRestart: true,
-    testTimeoutMs: 300000,
-    researchCacheDays: 30,
-    officialSourcesFirst: true,
+    gate: 'strict',                  // read: core-execution-coordinator (roleContext.qualityGate)
+    maxRepairCycles: 3,              // read: core-execution-coordinator
+    repairScope: 'broad',            // UNREAD — no consumer
+    rollbackOnRegression: true,      // UNREAD
+    smokeAfterRestart: true,         // UNREAD
+    testTimeoutMs: 300000,           // UNREAD
+    researchCacheDays: 30,           // UNREAD
+    officialSourcesFirst: true,      // UNREAD
   },
   preview: {
     enabled: true,
@@ -143,7 +151,7 @@ const DEFAULTS = Object.freeze({
   },
   terminal: {
     pinnedSession: true,
-    maxTabs: 8,
+    maxTabs: 8,                      // UNREAD — the + button is unbounded; control removed 2026-08-14
     restoreSelection: true,
   },
   paths: {
