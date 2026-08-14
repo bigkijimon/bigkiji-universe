@@ -81,6 +81,20 @@ const pathConfigSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'core
 assert.doesNotMatch(pathConfigSource, /CEOBigKiji/, 'path-config must not hardcode a personal vault path');
 assert.doesNotMatch(pathConfigSource, /homedir\(\)[^)]*,\s*'\.bigkiji'/, 'path-config must not fall back to the pre-2.5 ~/.bigkiji layout');
 
+// The app directory name must equal package.json "name" on every platform.
+// Electron derives app.getPath('userData') from that field; the daemon derives its own
+// paths from defaultUserData(). The 2.5 rename left this one word behind, so the app
+// wrote settings to <userData>/bku/ while the daemon kept reading bigkiji-universe/ —
+// the owner changed the leader for four days and nothing ever moved. Machine guard, not
+// a comment, because a comment is exactly what failed here.
+const dataRootDirs = require('../src/core/data-root');
+const appName = require('../package.json').name;
+const homeForName = path.resolve(path.sep, 'home', 'someone');
+for (const [platform, env] of [['darwin', {}], ['win32', { APPDATA: path.resolve(path.sep, 'roaming') }], ['linux', {}]]) {
+  assert.strictEqual(path.basename(dataRootDirs.defaultUserData(platform, env, homeForName)), appName,
+    `defaultUserData() on ${platform} must end in package.json "name" (${appName})`);
+}
+
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-home-'));
 // A directory shaped like the old default must NOT win automatically...
 fs.mkdirSync(path.join(fakeHome, 'Documents', 'CEOBigKiji'), { recursive: true });

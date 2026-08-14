@@ -22,7 +22,6 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.resolve(ROOT, '..', 'dist', 'mac-arm64', 'BigKiji Universe.app', 'Contents', 'Resources', 'app');
@@ -88,7 +87,10 @@ async function main() {
 
   // 3. Tools: known, present, and actually answering are three different numbers.
   const { detectAndProbeAll } = require('../src/domain/pi-agent/tool-registry');
-  const settings = readJson(path.join(os.homedir(), 'Library', 'Application Support', 'bigkiji-universe', 'settings.json'));
+  // Ask data-root where settings live instead of spelling the directory again. The
+  // hardcoded copy here still said "bigkiji-universe" after the 2.5 rename, so doctor
+  // was grading a file the app had stopped writing four days earlier.
+  const settings = readJson(path.join(require('../src/core/data-root').defaultUserData(), 'settings.json'));
   const tools = await detectAndProbeAll({ saved: settings?.paths || {} });
   const connected = tools.filter((tool) => tool.status === 'connected');
   const missing = tools.filter((tool) => tool.status === 'missing');

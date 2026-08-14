@@ -19,7 +19,12 @@ const os = require('os');
 const path = require('path');
 
 // Must match package.json "name" so that defaultUserData() equals app.getPath('userData').
-const APP_DIR_NAME = 'bigkiji-universe';
+// This is not cosmetic: the daemon builds its paths WITHOUT a userData argument
+// (server/daemon.js), so it lands on defaultUserData() while Electron writes to
+// app.getPath('userData'). When the two disagree the owner's settings are saved to one
+// file and read from another, and every routing change silently does nothing.
+// context-routing-selftest asserts the equality — do not rename one without the other.
+const APP_DIR_NAME = 'bku';
 const DEFAULT_DIR_NAME = 'BigKijiUniverse';
 const POINTER_FILE = 'data-root.json';
 const SETUP_FILE = 'setup-state.json';
