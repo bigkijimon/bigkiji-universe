@@ -142,24 +142,6 @@ ok('HOME still points at the sandbox, not at the owner', () => {
   assert.equal(env.TMPDIR, runtime.tmp);
 });
 
-ok('a provider can still find its own login', () => {
-  // The other way to hand a provider nothing: build an environment so bare that its CLI
-  // cannot locate the login it already has. Measured 2026-08-14 against the real `claude`,
-  // one variable at a time — LOGNAME no, SHELL no, USER yes. Without it every claude-code
-  // task came back "Not logged in · Please run /login", so the fleet's leader could not
-  // have succeeded once even when the router picked it.
-  //
-  // Asserted for every provider, because "the environment is minimal" and "the environment
-  // is unusable" are one edit apart and only one of them is the goal.
-  for (const provider of ['claude-code', 'codex', 'glm', 'gemini', 'qwen']) {
-    const env = policy.minimalEnv(provider, { runtime: runtimeFor(provider) });
-    assert.equal(env.USER, os.userInfo().username, `${provider} must be told which account it is running as`);
-  }
-  // ...and it is the account name, not a way back to the owner's files.
-  const env = policy.minimalEnv('claude-code', { runtime: runtimeFor('claude-code') });
-  assert.notEqual(env.HOME, os.homedir(), 'naming the user must not have re-pointed HOME');
-});
-
 ok('the lent paths are still treated as sensitive everywhere else', () => {
   // Lending one file to one task must not make credentials readable in general:
   // the pruner, the disclosure manifest and the sandbox policy all key off this.

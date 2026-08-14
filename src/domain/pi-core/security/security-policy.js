@@ -207,23 +207,6 @@ class SecurityPolicy {
       TERM: process.env.TERM || 'xterm-256color',
       HOME: runtime.home,
       TMPDIR: runtime.tmp,
-      // Without USER the Claude CLI cannot find its own login. Measured 2026-08-14, the
-      // same prompt through this exact env, one variable at a time:
-      //
-      //   minimalEnv as written  → "Not logged in · Please run /login"
-      //   + LOGNAME              → "Not logged in · Please run /login"
-      //   + SHELL                → "Not logged in · Please run /login"
-      //   + USER                 → "ok"   (provider: firstParty, claude-opus-5)
-      //
-      // So claude-code could not have succeeded even once, whatever the router decided —
-      // which matches model_performance.json: 16 samples, 0 successes. The allowlist bug
-      // stopped it being chosen; this stopped it working when it was.
-      //
-      // This is not a widening. The child runs as the owner's uid, so getuid()/id -un
-      // answer the same question with no environment at all — USER tells it nothing it
-      // could not already ask the kernel. It is the account name, never a credential, and
-      // HOME stays pointed at the sandbox on the line above.
-      USER: os.userInfo().username,
       XDG_CONFIG_HOME: path.join(runtime.home, '.config'),
       XDG_CACHE_HOME: path.join(runtime.home, '.cache'),
       XDG_DATA_HOME: path.join(runtime.home, '.local', 'share'),
