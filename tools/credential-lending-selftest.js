@@ -280,6 +280,37 @@ ok('one credential route per provider, never two', () => {
   }
 });
 
+ok('every installed executor is reachable from the PATH a Finder-launched app would build', () => {
+  // A Finder/Dock launch hands Electron only the GUI PATH. minimalEnv appends
+  // PROVIDER_BIN_DIRS to reach anything under $HOME. Until 2026-08-15 that list was
+  // missing ~/.local/bin, so `claude` — the only executor installed there — died with
+  // `spawn claude ENOENT` on every Dock launch, while a shell launch worked. The bug
+  // was invisible to any check run from a terminal.
+  //
+  // This does not assert a fixed list of directories: it asks where each executor
+  // actually is on THIS machine, and requires minimalEnv to be able to find it.
+  // Executors that are not installed are skipped, not failed.
+  const GUI_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+  const realPath = process.env.PATH;
+  let guiEnv;
+  try {
+    process.env.PATH = GUI_PATH;
+    guiEnv = policy.minimalEnv('claude-code', { runtime: runtimeFor('path-probe') });
+  } finally { process.env.PATH = realPath; }
+  const reachable = guiEnv.PATH.split(':');
+
+  const missing = [];
+  for (const bin of ['claude', 'codex', 'gemini', 'pi', 'node']) {
+    const homes = (realPath || '').split(':')
+      .filter((dir) => dir && fs.existsSync(path.join(dir, bin)));
+    if (!homes.length) continue;                       // not installed here — nothing to assert
+    if (!homes.some((dir) => reachable.includes(dir))) missing.push(`${bin} (only in ${homes.join(', ')})`);
+  }
+  assert.deepEqual(missing, [],
+    `these executors exist on disk but a Finder-launched BKU could not spawn them: ${missing.join(' · ')}`
+    + '\n       → add the directory to PROVIDER_BIN_DIRS in security-policy.js');
+});
+
 for (const runtime of runtimes) fs.rmSync(runtime.root, { recursive: true, force: true });
 if (failures) { console.error(`credential lending selftest: ${failures} FAILED`); process.exit(1); }
-console.log(`credential lending selftest: PASS · one login per provider, named not globbed · ${POSIX_MODES ? 'read-only' : 'read-only NOT CHECKED (no POSIX modes on this platform)'} · dies with the task · HOME still sandboxed · nothing else crosses`);
+console.log(`credential lending selftest: PASS · one login per provider, named not globbed · ${POSIX_MODES ? 'read-only' : 'read-only NOT CHECKED (no POSIX modes on this platform)'} · dies with the task · HOME still sandboxed · every installed executor spawnable from a Finder launch · nothing else crosses`);

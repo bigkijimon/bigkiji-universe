@@ -86,6 +86,25 @@ const CREDENTIAL_FIELDS = Object.freeze({
 // so widening it to a second provider fails the suite rather than passing unnoticed.
 const OWNER_HOME_PROVIDERS = Object.freeze(new Set(['claude-code']));
 
+// Where the executors actually live on disk. A Finder-launched Electron gets only the
+// GUI PATH (/usr/bin:/bin:/usr/sbin:/sbin), so anything installed under $HOME is
+// invisible to every child unless it is named here.
+//
+//   claude  → ~/.local/bin        (native installer)
+//   codex   → /opt/homebrew/bin, ~/.local/bin
+//   gemini  → ~/.npm-global/bin   (npm -g)
+//   pi      → ~/.npm-global/bin
+//   node    → /opt/homebrew/bin, /usr/local/bin
+//
+// Only ~/.npm-global/bin was listed until 2026-08-15, which is why `claude` — the one
+// executor that installs to ~/.local/bin — was the only one that could never spawn.
+const PROVIDER_BIN_DIRS = Object.freeze([
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  path.join(os.homedir(), '.npm-global', 'bin'),
+  path.join(os.homedir(), '.local', 'bin'),
+]);
+
 const SENSITIVE_SEGMENT = /(?:^|\/)(?:\.env(?:\..*)?|\.ssh|\.aws|\.azure|\.kube|\.gnupg|\.bigkiji|secrets?|credentials?|private[-_]?keys?|auth(?:entication)?)(?:\/|$)/i;
 // The leading dot used to defeat this. `~/app/credentials.json` was sensitive and
 // `~/.claude/.credentials.json` — the file that logs Claude Code in — was not, and
@@ -227,8 +246,14 @@ class SecurityPolicy {
     // Finder起動のElectronはGUIのPATH(/usr/bin:/bin:…)しか持たず、pi子プロセスが
     // `env: node: No such file or directory` で死ぬ（~/.bigkiji/logs/pi-stderr.log 実測）。
     // node/piが実在する既知のbinディレクトリを補完する（実在するものだけ）。
+    //
+    // このリストは executor が1つ増えるたびに漏れる。2026-08-15、claude だけが
+    // ~/.local/bin にあり、ここに無かったため Finder起動では leader が必ず
+    // `spawn claude ENOENT` で落ちていた——「一度も Claude がリーダーになっていない」の
+    // 最後の1枚。シェルから起動したときだけ通るので、実機確認をすり抜ける。
+    // 新しい executor を足したら PROVIDER_BIN_DIRS に在処を必ず足すこと。
     const basePath = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin';
-    const knownBins = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.npm-global', 'bin')]
+    const knownBins = PROVIDER_BIN_DIRS
       .filter((dir) => !basePath.split(':').includes(dir) && fs.existsSync(dir));
     const env = {
       PATH: [basePath, ...knownBins].join(':'),
