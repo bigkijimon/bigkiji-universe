@@ -18,6 +18,32 @@ const path = require('path');
 // you run it to protect is worse than no test suite.
 process.env.BIGKIJI_KNOWLEDGE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bigkiji-daemon-knowledge-'));
 
+// The same hazard, one directory over: this test creates real runs, and real runs take
+// real git worktrees. `npm test` exports BIGKIJI_WORKTREE_ROOT and deletes it in
+// posttest — but running THIS FILE ALONE, which is what anyone does while working on it,
+// exports nothing, so every worktree lands in the production .bigkiji/worktrees and stays.
+//
+// Measured 2026-08-15: three standalone runs left 12 worktrees and 307 MB, and then
+// broke a different test — sandbox-boundary-selftest scans every .pi/sandbox.json under
+// the repo and found the copies inside them. The failure names a file the author never
+// touched, in a test they were not running.
+//
+// Only claimed when unset, so the suite's own value still wins.
+//
+// It has to be INSIDE the repository, not os.tmpdir(): the security policy drops every
+// root outside the Vault, so a temp-dir worktree makes the run come back
+// SECURITY_BLOCKED instead of AWAITING_APPROVAL. Same directory `npm test` uses.
+const OWN_WORKTREE_ROOT = process.env.BIGKIJI_WORKTREE_ROOT
+  ? '' : (process.env.BIGKIJI_WORKTREE_ROOT = path.join(__dirname, '..', '.bigkiji', 'test-worktrees'));
+if (OWN_WORKTREE_ROOT) {
+  process.on('exit', () => {
+    try { fs.rmSync(OWN_WORKTREE_ROOT, { recursive: true, force: true }); } catch (_) {}
+    // The worktrees are gone but git still lists them; prune or the next `git worktree
+    // list` reads as leaked work that is not there.
+    try { require('child_process').execFileSync('git', ['worktree', 'prune'], { cwd: path.join(__dirname, '..'), stdio: 'ignore' }); } catch (_) {}
+  });
+}
+
 const { DaemonEngine, startDaemon, jsonSafe } = require('../src/domain/server/daemon');
 
 // Instrumentation for the intermittent CI kill (see docs/known-issues.md #1).
@@ -570,6 +596,35 @@ const WebSocket = require('ws');
     // fallback under effectiveMode(), not a setting this layer is allowed to relay.
     assert.equal(settings.routing.executionMode, 'plan', 'the pin the HTTP layer relies on is untouched');
     assert.equal(settings.quality.gate, 'strict');
+
+    // The same omission, third time (2026-08-15). It was createPathConfig without
+    // `saved`, then the conversation block above, then `detectAndProbeAll({})` — the
+    // daemon's own tool scan, passing nothing where main.js passes the owner's paths.
+    // A tool path typed into Settings showed "present" in the settings window and
+    // "missing" in /api/state, for the same tool, at the same moment.
+    //
+    // So this no longer checks one named block. Every group the store persists must
+    // either arrive, or be listed here as deliberately withheld — adding a group to
+    // settings-store and forgetting to carry it fails the suite instead of going quiet.
+    const { DEFAULTS } = require('../src/core/settings-store');
+    const WITHHELD = new Set([
+      'audio', 'preview', 'appearance', 'piAgent', 'terminal', 'cmux', // renderer-only
+    ]);
+    const dropped = Object.keys(DEFAULTS)
+      .filter((group) => !WITHHELD.has(group) && !settings[group]);
+    assert.deepEqual(dropped, [],
+      `these settings groups never reach the daemon: ${dropped.join(', ')}`
+      + '\n       → carry them in ownerSettings(), or add them to WITHHELD with a reason');
+
+    // And the one that had a live consumer: the daemon must hand its own tool scan the
+    // owner's paths, not an empty object.
+    // Comments are stripped first: the note explaining this bug quotes the broken call
+    // verbatim, and a guard that its own documentation trips is a guard nobody keeps.
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'domain', 'server', 'daemon.js'), 'utf8')
+      .split('\n').filter((line) => !/^\s*(?:\/\/|\*|\/\*)/.test(line)).join('\n');
+    assert.doesNotMatch(source, /detectAndProbeAll\(\s*\{\s*\}\s*\)/,
+      'refreshTools() must pass the owner’s paths into the registry, not {}');
+
     fs.rmSync(settingsRoot, { recursive: true, force: true });
     mark('settings block reaches the router');
   }

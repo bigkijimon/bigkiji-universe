@@ -708,6 +708,19 @@ class DaemonEngine extends EventEmitter {
         // value is the store's own ('off' — settings-store.js DEFAULTS). Inventing a
         // second default here is how the two would disagree.
         conversation: { ...(saved.conversation || {}) },
+        // The same omission, one block further down (2026-08-15).
+        //
+        // `paths.tools.<id>` is where the owner types the absolute path to a tool BigKiji
+        // could not find by itself. The settings window honoured it — main.js:1427 passes
+        // `saved: settingsStore.get().paths` into the registry — but refreshTools() below
+        // called `detectAndProbeAll({})` with nothing, so the daemon that actually routes
+        // work to those tools never saw the path. Measured with gpu-signal.sh: the
+        // settings screen said "present", `/api/state` said "missing", both at once.
+        //
+        // Carried live rather than from the module-load SAVED_PATHS so that connecting a
+        // tool takes effect on the next scan instead of the next restart. SAVED_PATHS
+        // stays where it is — createPathConfig genuinely cannot move after boot.
+        paths: { ...(saved.paths || {}) },
       };
     }
     return this._settings;
@@ -1514,7 +1527,9 @@ class DaemonEngine extends EventEmitter {
   async refreshTools() {
     let rows = [];
     try {
-      const result = await detectAndProbeAll({});
+      // `saved` is what makes a hand-typed tool path findable. Omitting it made this
+      // scan disagree with the settings window about the same tool — see ownerSettings().
+      const result = await detectAndProbeAll({ saved: this.ownerSettings()?.paths || SAVED_PATHS });
       rows = Array.isArray(result) ? result : (result?.tools || Object.values(result || {}));
     } catch (_) { rows = []; }
     const tools = rows.filter((row) => row && row.id).map((row) => ({
