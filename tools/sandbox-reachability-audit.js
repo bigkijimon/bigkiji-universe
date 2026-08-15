@@ -36,7 +36,15 @@ const path = require('path');
 const HOME = os.homedir();
 const GLOBAL = path.join(HOME, '.pi', 'agent', 'sandbox.json');
 const DATA = path.join(HOME, 'BigKijiUniverse');
-const REPO = path.resolve(__dirname, '..', '..');
+// The repo root, one level above tools/. It used to be two levels, because the checkout
+// lived at .../CompanyApp/BIGKIJI/app and every surface below was written as `app/docs/...`.
+// After the move to ~/Documents/BKU that arithmetic pointed at ~/Documents/app — a folder
+// that has never existed — so this audit spent every run measuring a phantom: it reported
+// three "agent-facing" surfaces unreachable from every cwd, and its `app Pi (repo)` column
+// consulted no project sandbox at all because there was no .pi/sandbox.json to find there.
+// Corrected 2026-08-15. If this is ever wrong again the symptom is the same: FAIL lines for
+// files that plainly exist. Check what `REPO` resolves to before touching any sandbox.json.
+const REPO = path.resolve(__dirname, '..');
 
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } };
 const expand = (p) => path.resolve(String(p).replace(/^~(?=$|[/\\])/, HOME));
@@ -68,11 +76,11 @@ const permitted = (roots, target) => roots.some((r) => inside(r, target));
 // `from` names the cwds a surface MUST be reachable from. Absent means all of them,
 // which is right for BigKiji's own files and wrong for the owner's.
 const SURFACES = [
-  { path: path.join(REPO, 'app', 'docs', 'v3', 'run-ledger.md'), audience: 'agent',
+  { path: path.join(REPO, 'docs', 'v3', 'run-ledger.md'), audience: 'agent',
     why: 'the English record of what runs did — the whole point is that an agent reads it' },
-  { path: path.join(REPO, 'app', 'docs', 'v3', 'prompt-improvements.md'), audience: 'agent',
+  { path: path.join(REPO, 'docs', 'v3', 'prompt-improvements.md'), audience: 'agent',
     why: 'where an agent writes its proposals' },
-  { path: path.join(REPO, 'app', 'docs'), audience: 'agent',
+  { path: path.join(REPO, 'docs'), audience: 'agent',
     why: 'architecture and design decisions an agent needs before changing anything' },
   { path: path.join(DATA, 'knowledge', 'skills.json'), audience: 'agent',
     why: 'which skills exist — an agent that cannot see this re-derives it every run' },
@@ -118,7 +126,7 @@ const CWDS = [
   // ~/Documents. Named rather than discovered because this audit asks "what can a Pi
   // started HERE open", and the answer has to be about a specific real cwd.
   { label: 'department Pi (School)', cwd: path.join(HOME, 'Documents/School') },
-  { label: 'app Pi (repo)', cwd: path.join(REPO, 'app') },
+  { label: 'app Pi (repo)', cwd: REPO },
 ];
 
 let failures = 0;

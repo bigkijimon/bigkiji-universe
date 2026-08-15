@@ -47,7 +47,12 @@
       "each assignment prompt as TEXT. No filesystem access is granted by this block —",
       "it exists so the roots are declared in one auditable place.",
       "English copies ship with the app and win on an id collision; the owner's Japanese",
-      "originals under ~/.claude/skills are the source of truth and are never modified."
+      "originals under ~/.claude/skills are the source of truth and are never modified.",
+      "NOT the whole list. SkillRegistry.DEFAULT_ROOTS also indexes ~/.claude/plugins/cache",
+      "(figma, vercel, n8n-mcp-skills, ...) and every work folder under ~/Documents that",
+      "carries both knowledge/ and .pi/, plus a one-level look for <folder>/skills and",
+      "<folder>/.claude/skills. Those are discovered at runtime and cannot be listed here",
+      "honestly, so read skill-registry.js before claiming a skill is or is not indexed."
     ],
     "roots": [
       "./skills",
