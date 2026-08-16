@@ -34,6 +34,9 @@ src/components/UI/console-dist/
 # opened content/materials/thailand.ts) and from re-generating characters that already
 # exist. Losing it costs a duplicate unit, which is the expensive kind of mistake here.
 !/skills/lesson-video/
+# Claudeの生ログをモデルに丸読みさせず、BKUへ安全に引き継ぐためのアプリ共通手順。
+# セッションIDや顧客情報は持たず、決定論的なredacted抽出だけを同梱する。
+!/skills/claude-history-recovery/
 # 第三者の動画9本のフレーム単位解析。画面内のコードと字幕を逐語転記しており、
 # 他人の著作物の複製にあたる。設計判断の根拠としてローカルには残す。
 /docs/reference-analysis.md

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Claude履歴のBKU引継ぎ"
+  short_description: "Claude Codeの未完了履歴を安全・低コストで整理"
