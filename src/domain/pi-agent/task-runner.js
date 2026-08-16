@@ -55,6 +55,22 @@ class TaskRunner extends EventEmitter {
     this.completions = new Map();
   }
 
+  /**
+   * Move where new tasks run, without rebuilding the runner.
+   *
+   * Two fields decide that and they are read at different times: `cwd` is the default
+   * for `plan()`/`prepare()`, and `policy` is the boundary `start()` re-verifies against.
+   * Setting only `cwd` produces a task whose working directory is the new project and
+   * whose sandbox still describes the old one — `resolve()` then returns `valid: false`
+   * and every run dies at spawn with SECURITY_PATH_OUTSIDE_READ. They move together or
+   * not at all, which is the whole reason this is one method.
+   */
+  setWorkspace({ cwd, vaultRoots = null, vaultRoot = '' } = {}) {
+    if (cwd) this.cwd = cwd;
+    this.policy.setVaultRoots(vaultRoots, vaultRoot || cwd || this.cwd);
+    return { cwd: this.cwd, vaultRoots: this.policy.vaultRoots };
+  }
+
   snapshot() { return [...this.tasks.values()].map(({ child, ...task }) => ({ ...task })); }
   setSecretProvider(provider) { this.secretProvider = typeof provider === 'function' ? provider : null; }
   get(id) { return this.tasks.get(id) || null; }

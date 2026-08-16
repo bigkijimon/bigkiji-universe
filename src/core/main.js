@@ -29,6 +29,7 @@ process.env.BIGKIJI_DATA_ROOT = PATHS.dataRoot;
 if (!process.env.BIGKIJI_KNOWLEDGE_ROOT) process.env.BIGKIJI_KNOWLEDGE_ROOT = PATHS.knowledgeRoot;
 const dataRootModule = require('./data-root');
 const { WorkspaceRegistry, candidates: candidateWorkspaces, DEFAULT_EXCLUDE: WORKSPACE_DEFAULT_EXCLUDE } = require('./workspace-registry');
+const { createProject, listProjects, refuseReason: refuseProject } = require('./project-store');
 const { drainTouchQueue } = require('./watch-queue');
 const { applyApplicationMenu } = require('./app-menu');
 const SETUP_STATUS = dataRootModule.setupStatus({ userData: PATHS.userData });
@@ -1482,6 +1483,53 @@ function resolveWorkspaceFile(target) {
   }
   return '';
 }
+// ── Which project the fleet is working in ────────────────────────────────────────────
+//
+// Registering a folder says BigKiji MAY read it. Choosing a project says work happens
+// THERE. Until this existed only the first had a UI, and the second was a value resolved
+// once inside a daemon that outlives the app — so "start something new" meant killing a
+// background process and editing settings.json by hand. See docs/architecture.md §3.1.
+//
+// The daemon owns the switch because it owns the runs. This process owns the memory of it:
+// the daemon reads settings.json and never writes it, so it returns `persist` and the
+// answer is stored here, which is what makes the choice survive a restart.
+function persistActiveProject(result) {
+  const target = String(result?.persist?.activeProject || result?.workspace || '').trim();
+  if (!target) return result;
+  try { settingsStore?.update({ paths: { activeProject: target } }); } catch (_) { /* disk */ }
+  // A brand-new project may have registered its parent root inside the daemon. Republish so
+  // the file map, the watchers and the Settings list see it without a relaunch.
+  try { publishWorkspaces(); } catch (_) {}
+  broadcast('project:changed', { workspace: target });
+  return result;
+}
+ipcMain.handle('project:list', async () => {
+  if (daemonClient?.connected) return daemonClient.get('/api/project/list');
+  const roots = workspaces.list().filter((root) => root.status === 'ok');
+  return { active: taskRunner?.cwd || PATHS.vaultRoot, roots, projects: listProjects(roots) };
+});
+ipcMain.handle('project:new', async (_event, spec = {}) => {
+  if (daemonClient?.connected) {
+    return persistActiveProject(await daemonClient.post('/api/project/new', { parent: spec.parent, name: spec.name }));
+  }
+  const made = createProject({ parent: spec.parent, name: spec.name, home: os.homedir(), dataRoot: PATHS.dataRoot });
+  if (!workspaces.allows(made.path)) {
+    try { workspaces.register(path.resolve(spec.parent)); } catch (error) {
+      if (!/Overlaps an existing workspace/i.test(error.message)) throw error;
+    }
+  }
+  taskRunner?.setWorkspace?.({ cwd: made.path, vaultRoots: [...new Set([made.path, PATHS.dataRoot].filter(Boolean))] });
+  return persistActiveProject({ ...made, workspace: made.path });
+});
+ipcMain.handle('project:select', async (_event, target) => {
+  const value = String(target || '');
+  if (daemonClient?.connected) return persistActiveProject(await daemonClient.post('/api/project/select', { path: value }));
+  const refused = refuseProject(value, { home: os.homedir(), dataRoot: PATHS.dataRoot });
+  if (refused) throw new Error(refused);
+  taskRunner?.setWorkspace?.({ cwd: value, vaultRoots: [...new Set([value, PATHS.dataRoot].filter(Boolean))] });
+  return persistActiveProject({ workspace: value });
+});
+
 ipcMain.handle('workspace:state', () => workspaceState());
 ipcMain.handle('workspace:register', (_event, spec = {}) => {
   workspaces.register(String(spec.path || ''), { label: spec.label || '', exclude: Array.isArray(spec.exclude) ? spec.exclude : null });
@@ -1710,7 +1758,12 @@ app.whenReady().then(async () => {
       daemonState = await daemonClient.state();
       const channelMap = { task: 'task:event', tasklog: 'task:log', step: 'task:step', run: 'run:event', models: 'model:status:update',
         fleet: 'pi:fleet', commentary: 'bk:commentary', phase: 'phase:update', session: 'session:update', pi: 'pi:event', stats: 'pi:stats', security: 'security:status',
-        conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status' };
+        conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status',
+        // Mapped rather than left to the bus: the Settings card names the folder the fleet
+        // is working in, and a switch made from the CLI has to reach it or the card keeps
+        // naming a project that has already been left. This is the same omission the note
+        // below describes — a publish() with no entry here is an event nobody receives.
+        project: 'project:changed' };
       // Seven events the daemon has always published and nothing has ever received.
       //
       // `channelMap` above covers fourteen of the twenty-one; checkpoint, error,

@@ -68,6 +68,12 @@ contextBridge.exposeInMainWorld('bigkiji', {
   workspaceUpdate: (id, patch) => ipcRenderer.invoke('workspace:update', id, patch),
   workspaceChoose: () => ipcRenderer.invoke('workspace:choose'),
   onWorkspaceChanged: (cb) => ipcRenderer.on('workspace:changed', (_e, state) => cb(state)),
+  // Which project the fleet works in — a different question from which folders it may
+  // read, and on a different channel for that reason. See docs/architecture.md §3.1.
+  projectList: () => ipcRenderer.invoke('project:list'),
+  projectNew: (spec) => ipcRenderer.invoke('project:new', spec),
+  projectSelect: (target) => ipcRenderer.invoke('project:select', target),
+  onProjectChanged: (cb) => ipcRenderer.on('project:changed', (_e, state) => cb(state)),
   onSetupProgress: (cb) => ipcRenderer.on('setup:progress', (_e, u) => cb(u)),
   cmuxSnapshot: () => ipcRenderer.invoke('cmux:snapshot'),
   cmuxRefresh: () => ipcRenderer.invoke('cmux:refresh'),

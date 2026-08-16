@@ -44,6 +44,8 @@ const { ConversationEngine, normalizeKeepAlive, isAffirmative, endsWithQuestion,
 const { isStatusQuestion, statusReport, isProviderQuestion, isClockQuestion, clockReport, providerReport } = require('../pi-core/status-answer');
 const { reflectionPrompt, normalizeReflection } = require('../pi-agent/critique');
 const { IdeaDraftStore } = require('../pi-core/idea-draft-store');
+const { createProject, listProjects, refuseReason: refuseProject } = require('../../core/project-store');
+const { WorkspaceRegistry } = require('../../core/workspace-registry');
 const stt = require('./speech-to-text');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -175,10 +177,24 @@ function asList(value) {
  *
  * Being told beats detecting: an explicit BIGKIJI_WORKSPACE, or a workspace handed in
  * by a caller such as a test, is used exactly as given even if it is the home directory.
+ *
+ * `saved` is the owner's own last answer — `paths.activeProject`, written by the Electron
+ * process when they create or pick a project. It sits below the two explicit forms and
+ * above every detector, because a folder the owner chose in the UI outranks one this
+ * function guessed from an `.obsidian/` marker. It defaults to empty rather than to
+ * SAVED_PATHS: a selftest calling this with three arguments must not inherit whatever the
+ * real machine happens to have chosen. The constructor passes the real one.
  */
-function resolveWorkspace(requested, env = process.env, home = os.homedir(), dataRoot = DATA.dataRoot, appRoot = APP_ROOT) {
+function resolveWorkspace(requested, env = process.env, home = os.homedir(), dataRoot = DATA.dataRoot, appRoot = APP_ROOT, saved = {}) {
   const explicit = requested || env.BIGKIJI_WORKSPACE;
   if (explicit) return { workspace: path.resolve(explicit), redirected: null };
+  const active = String(saved?.activeProject || '').trim();
+  // Existence checked, never repaired. A project folder that has been deleted or is on an
+  // unmounted volume must say so by falling through to detection, not by being recreated —
+  // the same rule workspace-registry states for a vanished root.
+  if (active && fs.existsSync(active) && !refuseProject(active, { home, dataRoot })) {
+    return { workspace: path.resolve(active), redirected: null };
+  }
   const cwd = path.resolve(process.cwd());
   // Two cwds mean "nobody chose", not "here".
   //
@@ -303,6 +319,10 @@ const EVENT_CHANNEL = Object.freeze({
   stats: 'pi:stats', bus: 'bus:event', preview: 'preview:status', fleet: 'pi:fleet', inventory: 'inventory:update', security: 'security:status',
   conversation: 'conversation:update', idea: 'idea:update', knowledge: 'knowledge:status', checkpoint: 'run:checkpoint', report: 'run:report', tools: 'tools:status',
   review: 'run:review', reflection: 'run:reflection', corpus: 'corpus:ingested',
+  // Separate from `workspace:changed`, which main.js already broadcasts for the registered
+  // FOLDER LIST. This one says where work is now happening, and the two carry different
+  // payloads — one channel for both would make the renderer guess which it received.
+  project: 'project:changed',
 });
 
 // npm narrating its own work while Pi boots. Everything here is progress or an
@@ -377,12 +397,26 @@ async function readJson(req, max = 1024 * 1024) {
 class DaemonEngine extends EventEmitter {
   constructor({ appRoot = APP_ROOT, stateRoot = STATE_ROOT, layout = LAYOUT, workspace = '',
     conversationEngine = null, ideaStore = null, knowledgeStore = knowledge, facilitator = null,
-    gpuLock = gpuLockModule, lookup = localLookup } = {}) {
+    gpuLock = gpuLockModule, lookup = localLookup, savedPaths = SAVED_PATHS, registry = null,
+    home = os.homedir(), dataRoot = DATA.dataRoot } = {}) {
     super();
+    // The two paths every project boundary is measured against. Injected rather than read
+    // from os/DATA at each call site: a selftest that has to refuse "the home directory"
+    // needs a home directory it may create folders in, and asserting against the real one
+    // is the machine-state dependence this suite has been burned by before.
+    this.home = path.resolve(home); this.dataRoot = dataRoot ? path.resolve(dataRoot) : '';
     // Defaulted here rather than in the parameter list so resolveWorkspace can tell an
     // explicit choice from a fallen-back one — process.cwd() in the signature makes the
     // two indistinguishable, and only one of them may be overridden.
-    const resolved = resolveWorkspace(workspace);
+    //
+    // `savedPaths` is passed rather than read inside: this is the one call that should see
+    // the owner's chosen project, and a selftest constructing an engine with a throwaway
+    // stateRoot passes `{}` so it cannot inherit it.
+    const resolved = resolveWorkspace(workspace, process.env, this.home, this.dataRoot, APP_ROOT, savedPaths);
+    // Which folders BigKiji may read. Read here, written only when a new project lands
+    // outside all of them — the Electron process owns the UI for this list, but a project
+    // created from the CLI still has to be reachable afterwards.
+    this.workspaces = registry || new WorkspaceRegistry({ userData: PATHS.userData });
     this.appRoot = path.resolve(appRoot); this.stateRoot = path.resolve(stateRoot); this.workspace = resolved.workspace;
     // Shown, not silent. The owner has to be able to see that the daemon is working
     // somewhere other than where they started it.
@@ -426,7 +460,7 @@ class DaemonEngine extends EventEmitter {
     // dataRoot is added rather than hardcoded: a test injects a throwaway stateRoot and
     // must not have the owner's real BigKijiUniverse quietly inside its Vault.
     this.runner = new TaskRunner({ cwd: this.workspace,
-      vaultRoots: [...new Set([this.workspace, DATA.dataRoot].filter(Boolean))],
+      vaultRoots: [...new Set([this.workspace, this.dataRoot].filter(Boolean))],
       dataRoots: [this.stateRoot, rootFor('sessionsRoot', 'sessions'),
         rootFor('knowledgeRoot', 'knowledge'), rootFor('logsRoot', 'logs')],
       maxParallel: Math.max(1, Math.min(8, Number(this.ownerSettings()?.routing?.maxParallel) || 3)) });
@@ -1540,6 +1574,75 @@ class DaemonEngine extends EventEmitter {
     return this.tools;
   }
 
+  /**
+   * Move the whole daemon to a different project, without a restart.
+   *
+   * Every one of these is read somewhere that a run passes through, and they are assigned
+   * together here because four of them were assigned in four different places when the
+   * workspace was only ever set once — in the constructor. Setting `this.workspace` alone
+   * moves the cwd of the next run and leaves its sandbox, its idea drafts and the file
+   * inventory describing the previous project, which is not a partial switch but a
+   * corrupted one: `resolve()` refuses the new cwd and the run dies at spawn.
+   *
+   * Refuses while anything is live. A run reads `cwd` at submit and re-verifies its policy
+   * at start, so moving the boundary between those two points invalidates a seal the owner
+   * has already approved — the run would die on STALE_SECURITY_POLICY with no explanation
+   * that names the cause.
+   *
+   * @returns {{workspace: string, previous: string, changed: boolean}}
+   */
+  setWorkspace(next) {
+    const target = path.resolve(String(next || '').trim());
+    if (!target || target === '.') throw new Error('A project path is required');
+    if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error(`Not a folder: ${target}`);
+    const refused = refuseProject(target, { home: this.home, dataRoot: this.dataRoot });
+    if (refused) throw new Error(refused);
+    const previous = this.workspace;
+    if (path.resolve(previous) === target) return { workspace: previous, previous, changed: false };
+    if (currentPhase(this.coordinator.snapshot()) !== 'IDLE') throw new Error('PROJECT_SWITCH_WHILE_BUSY');
+    this.workspace = target;
+    // A redirect describes how THIS workspace was arrived at. Carrying the old one forward
+    // would keep telling the owner about a folder they have already left.
+    this.workspaceRedirect = null;
+    this.runner.setWorkspace({ cwd: target, vaultRoots: [...new Set([target, this.dataRoot].filter(Boolean))] });
+    this.ideas.workspace = target;
+    const policy = this.runner.policy.resolve(target);
+    this.securityState = { ...this.securityState, policyHash: policy.security?.policyHash || '' };
+    // Emptied rather than kept: a stale list is a list of files that are not there, and the
+    // conversation quotes it as fact. The rescan is fired and not awaited so a switch stays
+    // instant on a large project.
+    this.inventory = { root: target, files: [], folders: [], scannedAt: 0, truncated: false };
+    this.refreshInventory().catch(() => {});
+    this.publish('project', { workspace: this.workspace, previous, changed: true });
+    return { workspace: this.workspace, previous, changed: true };
+  }
+
+  /** Registered roots, the projects inside them, and where work is happening now. */
+  projects() {
+    const roots = this.workspaces.list().filter((root) => root.status === 'ok');
+    return { active: this.workspace, roots, projects: listProjects(roots) };
+  }
+
+  /**
+   * Make a folder, make it reachable, and start working in it.
+   *
+   * Registration is what grants access (docs/architecture.md §3), so a project outside
+   * every registered root is registered here — but only its PARENT and only when it really
+   * is outside, because `register()` refuses a root nested inside another one and a project
+   * created inside `~/Documents/School` is already reachable through School.
+   */
+  createProject({ parent, name }) {
+    const created = createProject({ parent, name, home: this.home, dataRoot: this.dataRoot });
+    if (!this.workspaces.allows(created.path)) {
+      try { this.workspaces.register(path.resolve(parent)); } catch (error) {
+        // An overlap here means some registered root already covers it, which is the
+        // outcome we wanted. Anything else the owner needs to see.
+        if (!/Overlaps an existing workspace/i.test(error.message)) throw error;
+      }
+    }
+    return { ...created, ...this.setWorkspace(created.path) };
+  }
+
   async refreshInventory({ limit = 700, maxDepth = 5 } = {}) {
     const files = []; const folders = new Set(); const root = this.workspace;
     const walk = async (directory, depth) => {
@@ -2048,6 +2151,28 @@ function startDaemon({ engine = new DaemonEngine(), config = loadConfig() } = {}
       if (req.method === 'POST' && url.pathname === '/api/prompt') {
         const body = await readJson(req);
         return json(res, 202, engine.prompt(body.text, { mode: effectiveMode(req, body.mode), sessionId: body.sessionId }));
+      }
+      // Where the work happens. Read is open to any authenticated caller; the two that move
+      // it are loopback-only for the same reason effectiveMode() is — a phone on the LAN may
+      // ask what is going on, and may not relocate the fleet.
+      if (req.method === 'GET' && url.pathname === '/api/project/list') return json(res, 200, engine.projects());
+      if (req.method === 'POST' && (url.pathname === '/api/project/new' || url.pathname === '/api/project/select')) {
+        if (!isLoopback(req)) return json(res, 403, { error: 'A project can only be chosen on this machine' });
+        const body = await readJson(req);
+        try {
+          const result = url.pathname === '/api/project/new'
+            ? engine.createProject({ parent: body.parent, name: body.name })
+            : engine.setWorkspace(body.path);
+          // `persist` is the daemon saying what it cannot do itself. Settings belong to the
+          // Electron store — this process reads settings.json and never writes it — so the
+          // caller records `paths.activeProject`, and a daemon restart reads it back.
+          return json(res, 200, { ...result, persist: { activeProject: result.workspace } });
+        } catch (error) {
+          const busy = error.message === 'PROJECT_SWITCH_WHILE_BUSY';
+          return json(res, busy ? 409 : 400, {
+            error: busy ? 'Something is still running — stop or finish it before switching project' : error.message,
+          });
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const body = await readJson(req);

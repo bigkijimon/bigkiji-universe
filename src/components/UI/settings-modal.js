@@ -15,6 +15,7 @@
   // time bind() attaches the standard [data-setting] listeners.
   let tools = []; let toolsProbed = false;
   let workspaces = { roots: [], candidates: [], defaultExclude: [], documentsRoot: '' };
+  let projects = { active: '', roots: [], projects: [] };
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pct = (value) => `${Math.round(Number(value) * 100)}%`;
   const speakerOptions = (current) => speakers.map((v) => `<option ${v === current ? 'selected' : ''}>${v}</option>`).join('');
@@ -162,10 +163,76 @@
       finally { choose.disabled = false; }
     };
   }
+  // ---- the active project ----------------------------------------------------
+  // Registering a folder says BigKiji MAY read it. This card says where work HAPPENS.
+  // They were the same value until V2.5.1, and the symptom was quiet: every run executed
+  // inside ~/BigKijiUniverse, the app's own data folder, because that is what the vault
+  // detector finds first. Nothing on screen said so. So the current project is shown
+  // whether or not anyone is about to change it.
+  function projectPath(value) {
+    const home = (workspaces.documentsRoot || '').replace(/\/Documents$/, '');
+    return home && String(value || '').startsWith(home) ? `~${String(value).slice(home.length)}` : String(value || '');
+  }
+  function projectsCard() {
+    const active = projects.active || '';
+    const others = (projects.projects || []).filter((entry) => entry.path !== active);
+    const rows = others.length
+      ? others.slice(0, 12).map((entry) =>
+        `<div class="setting-row"><label>${esc(entry.name)}<small style="display:block;color:#61736e">${esc(projectPath(entry.path))}</small></label>`
+        + `<span style="justify-self:end"><button data-project-select="${esc(entry.path)}">Work here</button></span></div>`).join('')
+      : '<p class="settings-copy">No other projects yet. Make one below and BigKiji starts working in it.</p>';
+    const parents = (projects.roots || []).map((root_) =>
+      `<option value="${esc(root_.path)}">${esc(root_.label || root_.path)}</option>`).join('');
+    return `<div class="settings-card wide"><h3>CURRENT PROJECT</h3>
+      <div class="setting-row"><label>${esc(active ? (active.split('/').pop() || active) : 'Nothing chosen')}
+        <small style="display:block;color:#61736e">${esc(projectPath(active) || 'Runs fall back to the detected vault.')}</small></label>
+        <span style="justify-self:end"><b class="connection ${active ? 'ok' : 'warn'}" style="min-width:132px"><i></i>${active ? 'Working here' : 'Detected'}</b></span></div>
+      ${rows}
+      <div class="setting-row" style="margin-top:14px;border-top:1px solid var(--border-100, rgba(0,0,0,.08));padding-top:12px">
+        <label>New project<small style="display:block;color:#61736e">A folder, a README and a git repository. The scaffold is its first run — that is the part worth watching.</small></label>
+        <input data-project="name" spellcheck="false" autocomplete="off" placeholder="Name — e.g. igataya-rentacar">
+        <span style="display:flex;align-items:center;gap:7px;justify-self:end">
+          <select data-project="parent" style="min-width:200px">${parents}<option value="">Somewhere else…</option></select>
+          <button data-project-create>Create and work here</button></span></div>
+      <p class="settings-copy" style="margin-top:9px">Switching is refused while anything is running: a run is approved against one sandbox and checked against it again at launch, so moving the boundary in between would break an approval you already gave.</p></div>`;
+  }
+  async function refreshProjects({ rerender = true } = {}) {
+    try { projects = await window.bigkiji.projectList(); } catch (_) { return; }
+    const host = root?.querySelector('[data-project-host]');
+    if (rerender && host) { host.innerHTML = projectsCard(); bindProjects(); }
+  }
+  function bindProjects() {
+    root.querySelectorAll('[data-project-select]').forEach((button) => button.onclick = async () => {
+      button.disabled = true;
+      try { await window.bigkiji.projectSelect(button.dataset.projectSelect); await refreshProjects(); }
+      catch (error) { button.textContent = String(error.message || error).slice(0, 48); button.disabled = false; }
+    });
+    const create = root.querySelector('[data-project-create]');
+    if (create) create.onclick = async () => {
+      const name = root.querySelector('[data-project="name"]')?.value || '';
+      let parent = root.querySelector('[data-project="parent"]')?.value || '';
+      create.disabled = true;
+      try {
+        // An empty parent is the "Somewhere else…" row: reuse the folder picker that already
+        // exists rather than asking anyone to type an absolute path into a text field.
+        if (!parent) {
+          const picked = await window.bigkiji.workspaceChoose();
+          workspaces = picked;
+          parent = (picked.roots || []).slice(-1)[0]?.path || '';
+          await refreshWorkspaces();
+        }
+        if (!parent) throw new Error('Pick a folder to put it in');
+        await window.bigkiji.projectNew({ parent, name });
+        await refreshProjects();
+      } catch (error) { create.textContent = String(error.message || error).slice(0, 48); }
+      finally { create.disabled = false; }
+    };
+  }
   function toolsPage() {
     const rows = tools.map(toolRow).join('')
       || '<p class="settings-copy">Tool detection is not available in this window.</p>';
     return `<section class="settings-page" data-page-panel="tools"><div class="settings-grid">
+      <div data-project-host class="wide">${projectsCard()}</div>
       <div data-workspace-host class="wide">${workspacesCard()}</div>
       <div class="settings-card wide"><h3>LOCAL TOOL CONNECTIONS</h3>${rows}
         <div class="setting-row" style="margin-top:14px;border-top:1px solid var(--border-100, rgba(0,0,0,.08));padding-top:12px">
@@ -362,6 +429,7 @@
       await refreshTools();
     });
     bindWorkspaces();
+    bindProjects();
     root.querySelectorAll('[data-tools]').forEach((button) => button.onclick = () => {
       if (button.dataset.tools === 'detect') refreshTools();
       if (button.dataset.tools === 'test') testAllTools();
@@ -444,6 +512,7 @@
       // Both lists must exist before render(), so bind() can attach to rows that are
       // already in the DOM rather than to rows that appear a tick later.
       await refreshWorkspaces({ rerender: false });
+      await refreshProjects({ rerender: false });
       window.BKAudio?.apply(state.audio);
       document.documentElement.style.fontSize = `${state.appearance.textScale * 100}%`;
       document.body.classList.toggle('reduce-motion', !!state.appearance.reduceMotion);
@@ -462,6 +531,9 @@
         const host = root?.querySelector('[data-workspace-host]');
         if (host) { host.innerHTML = workspacesCard(); bindWorkspaces(); }
       });
+      // A project can also be switched from the CLI or another window. The card must not
+      // keep naming a folder the fleet has already left.
+      window.bigkiji.onProjectChanged?.(() => { refreshProjects(); });
       window.bigkiji.onSettingsChanged?.((next) => {
         if (saveTimer) return; // a local edit is still debounced — never clobber it
         state = next;

@@ -198,6 +198,45 @@ until the owner registers something — and the file map, the fs watchers (one p
 and `reveal` all resolve through it. Excluded subfolders and sensitive paths are refused even inside
 a registered root.
 
+### 3.1 The active project
+
+`src/core/project-store.js`. A registered root says what BigKiji may **read**; the active project
+says where a run actually **happens**. These were one value, and that is what went wrong: runs take
+their cwd from `this.workspace`, resolved once in the daemon's constructor and with no `cwd` field
+on `/api/prompt`, so starting a new piece of work meant killing a daemon that outlives the app and
+hand-editing `paths.vaultRoot` — which also means "the Obsidian vault" and carries `graphPath` with
+it. Measured 2026-08-15 on the owner's machine: every run was executing inside `~/BigKijiUniverse`,
+the app's own data directory, because that is what `detectVault` finds first.
+
+* **Resolution order** (`resolveWorkspace`): `BIGKIJI_WORKSPACE` or an injected workspace →
+  `settings.paths.activeProject` → the detectors already described above. A folder the owner picked
+  in the UI outranks one guessed from an `.obsidian/` marker, and both lose to being told. A saved
+  project that has been deleted falls through to detection; it is never recreated, the same rule the
+  registry states for a vanished root.
+* **`refuseReason()` is the single gate on what may be a project** — never `$HOME`, never inside
+  `dataRoot` (a run there can read `state/remote.json`; see known-issues), never `~/Library`, never
+  a dot-directory. The API and the UI call the same function so they cannot disagree.
+* **`DaemonEngine.setWorkspace()` moves every derived field in one method** — `workspace`,
+  `runner.cwd`, the `SandboxPolicyResolver` roots (via `TaskRunner.setWorkspace()` →
+  `setVaultRoots()`), `ideas.workspace`, the security `policyHash` and the file inventory. Moving
+  some is worse than moving none: a run with the new cwd and the old sandbox dies at spawn with
+  `SECURITY_PATH_OUTSIDE_READ`. `tools/project-switch-selftest.js` asserts the whole set by name.
+* **Refused while anything is live** (`PROJECT_SWITCH_WHILE_BUSY`, HTTP 409). A run is sealed against
+  a policy hash at approval and re-verified at spawn; moving the boundary between those two points
+  invalidates an approval the owner has already given.
+* **Creating a project does not scaffold a framework.** `createProject()` makes the folder, a README,
+  a `.gitignore` and a git repository — git because worktree isolation has nothing to isolate without
+  one — and the scaffold is then that project's first run. `create-next-app` inside an HTTP handler
+  would be minutes of network install with npm in the daemon's own process.
+* **Who writes what.** The daemon registers the parent root when a new project falls outside every
+  registered one (swallowing `Overlaps an existing workspace`, which means some root already covers
+  it), but it never writes `settings.json` — it reads that file and says so, returning
+  `persist: { activeProject }` for the Electron process to store.
+
+`/api/project/list` is readable by any authenticated caller; `/api/project/new` and
+`/api/project/select` are loopback-only, on the same reasoning as `effectiveMode()` — a phone on the
+LAN may ask what is happening and may not relocate the fleet.
+
 ---
 
 ## 4. Orchestration pipeline

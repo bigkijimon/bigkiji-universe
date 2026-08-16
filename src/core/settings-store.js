@@ -156,6 +156,12 @@ const DEFAULTS = Object.freeze({
   },
   paths: {
     vaultRoot: '',
+    // Where runs happen — deliberately NOT vaultRoot, which means the Obsidian vault and
+    // carries graphifyGraphPath with it. Declared here because a key absent from this
+    // object is one `normalize()` does not know about, and this store has already deleted
+    // a value on every save once for exactly that reason (the provider list, V2.5).
+    // Empty means "no project chosen"; the daemon then falls back to detection.
+    activeProject: '',
     knowledgeRoot: '',
     graphifyGraphPath: '',
     comfyRoot: '',

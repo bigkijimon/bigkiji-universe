@@ -150,9 +150,25 @@ export default function App() {
       try { info = await api.getInfo(); } catch (_) { /* daemon may be down */ }
       setState({ buildId: info?.buildId ? String(info.buildId) : '' });
 
-      // Registered workspaces first. With none registered, the vault BigKiji is actually
-      // reading is still the honest answer — saying "no workspace" while the app is
-      // happily indexing one would be worse than saying nothing.
+      // The project work actually happens in, before the list of folders it may read.
+      //
+      // This used to show `roots[0].label` — the first REGISTERED folder, alphabetically
+      // whichever it happened to be. Measured 2026-08-15: the header read "School" while
+      // every run was executing in ~/BigKijiUniverse, the app's own data directory. A
+      // header that names a folder nobody is working in is worse than one that names none,
+      // because it is read as an answer. The registered list is still the fallback for a
+      // build with no active project.
+      const showProject = async () => {
+        const project = await api.projectList();
+        const active = String(project?.active || '');
+        if (!active) return false;
+        setState({ workspace: { label: active.split('/').pop() || active, extra: '', title: active } });
+        return true;
+      };
+      try {
+        if (await showProject()) { api.onProjectChanged?.(() => { showProject().catch(() => {}); }); }
+        else throw new Error('no active project');
+      } catch (_) {
       try {
         const state = await api.workspaceState();
         const roots = (state?.roots || []).filter((root) => root.status === 'ok');
@@ -173,6 +189,7 @@ export default function App() {
           });
         }
       } catch (_) { setState({ workspace: { label: '—', extra: '', title: '' } }); }
+      }
 
       await refreshSessions();
 

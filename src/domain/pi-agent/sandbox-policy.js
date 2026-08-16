@@ -67,14 +67,28 @@ class SandboxPolicyResolver {
    * repository passes it that way.
    */
   constructor({ vaultRoot, vaultRoots, paidAllowlist = PAID, security = new SecurityPolicy() } = {}) {
+    this.setVaultRoots(vaultRoots, vaultRoot);
+    this.paidAllowlist = new Set(paidAllowlist);
+    this.security = security;
+  }
+
+  /**
+   * Point the boundary at a different Vault, after construction.
+   *
+   * The owner switching project has to move this: `resolve()` refuses anything outside
+   * `vaultRoots`, so a resolver still holding the previous project answers `valid: false`
+   * for every path in the new one. Mutating `vaultRoots` from outside would skip the
+   * realpath normalisation and leave `vaultRoot` pointing at the old first entry — two
+   * fields that must never disagree, which is why this is a method and not a plain field.
+   */
+  setVaultRoots(vaultRoots, vaultRoot) {
     const declared = (Array.isArray(vaultRoots) && vaultRoots.length ? vaultRoots : [vaultRoot || process.cwd()])
       .filter((value) => typeof value === 'string' && value.trim());
-    this.vaultRoots = [...new Set(declared.map(existingRealPath))];
+    this.vaultRoots = uniqueRoots(declared);
     // The first one is the Vault for anything that still asks for a single answer —
     // `resolve()`'s default cwd, and the `vaultRoot` reported on the policy.
     this.vaultRoot = this.vaultRoots[0];
-    this.paidAllowlist = new Set(paidAllowlist);
-    this.security = security;
+    return this.vaultRoots;
   }
 
   /** The registered root that contains this path, or '' when none does. */
