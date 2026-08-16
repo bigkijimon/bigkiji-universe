@@ -47,7 +47,14 @@ const ROLE_PRIORITY = Object.freeze(['leader', 'debug', 'ui', 'facilitator', 'co
 const LOCAL_PROVIDER = 'qwen';
 
 // When a limit takes a provider out, who covers — one order, decided by the owner
-// (2026-08-05): **Claude → Codex → GLM → Gemini → Qwen**.
+// (2026-08-15): **GLM → Codex → Claude → Gemini → Qwen**.
+//
+// This reverses the head of the 2026-08-05 order (Claude → Codex → GLM → …). The owner
+// re-cast the roles: Claude Code is the commander — analysis, prompt authoring, quality
+// control and sign-off — and is not the hand that produces. Generation starts at GLM,
+// falls to Codex, and reaches Claude only when both have failed. Putting Claude first
+// meant the reviewer became the author on the first hiccup, and nobody was left to check
+// the work. Gemini stays where it is because its role is translation, not generation.
 //
 // Written once, as a list, rather than as five hand-maintained chains. The chains it
 // replaces disagreed with each other about the same question: `claude-code` tried GLM
@@ -63,7 +70,7 @@ const LOCAL_PROVIDER = 'qwen';
 //   - `qwen: []` — a local failure is the floor, not a reason to spend (2026-08-03,
 //     owner). Escalating the free model to a paid one is the wrong direction, so the
 //     floor keeps its empty chain rather than inheriting the list.
-const PROVIDER_PRIORITY = Object.freeze(['claude-code', 'codex', 'glm', 'gemini', LOCAL_PROVIDER]);
+const PROVIDER_PRIORITY = Object.freeze(['glm', 'codex', 'claude-code', 'gemini', LOCAL_PROVIDER]);
 const FALLBACKS = Object.freeze(Object.fromEntries(PROVIDER_PRIORITY.map((provider) => [
   provider,
   provider === LOCAL_PROVIDER ? [] : PROVIDER_PRIORITY.filter((other) => other !== provider),

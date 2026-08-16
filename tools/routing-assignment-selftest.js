@@ -91,7 +91,7 @@ ok('a stand-in returns the role when its owner recovers', () => {
 
   breaker.record('claude-code', { ok: false, reason: 'quota' });
   assert.equal(coordinator._fallback(run, assignment), true);
-  assert.equal(assignment.provider, 'codex', 'someone covers while the owner of the role is limited');
+  assert.equal(assignment.provider, 'glm', 'someone covers while the owner of the role is limited');
 
   breaker.record('claude-code', { ok: true });
   const restored = [];
@@ -99,7 +99,7 @@ ok('a stand-in returns the role when its owner recovers', () => {
   assert.equal(coordinator._fallback(run, assignment), true);
   assert.equal(assignment.provider, 'claude-code', 'and hands it back the moment the limit lifts');
   assert.equal(assignment.fallbackIndex, 0, 'with the chain rewound, so the next outage starts from the top again');
-  assert.deepEqual(restored, [{ runId: 'run-h', role: 'leader', from: 'codex', to: 'claude-code' }],
+  assert.deepEqual(restored, [{ runId: 'run-h', role: 'leader', from: 'glm', to: 'claude-code' }],
     'and the owner is told, because a silent reassignment is indistinguishable from an erratic router');
 });
 ok('the fallback chain belongs to the role, not to the stand-in', () => {
@@ -112,33 +112,42 @@ ok('the fallback chain belongs to the role, not to the stand-in', () => {
   const assignment = { taskId: 't1', provider: 'claude-code', homeProvider: 'claude-code', role: 'leader', title: 'work', fallbackIndex: 0 };
   breaker.record('claude-code', { ok: false, reason: 'quota' });
   coordinator._fallback(run, assignment);
-  assert.equal(assignment.provider, 'codex');
-  breaker.record('codex', { ok: false, reason: 'quota' });
+  assert.equal(assignment.provider, 'glm');
+  breaker.record('glm', { ok: false, reason: 'quota' });
   coordinator._fallback(run, assignment);
-  // codex's own chain starts with claude-code. Reading the chain from the stand-in
-  // would send it back to the provider that is already in cooldown; reading it from
-  // the role's home provider gives claude-code's third step, GLM.
-  assert.equal(assignment.provider, 'glm', 'the next step is claude-code\'s, not codex\'s');
+  // glm's own chain starts with codex, but so would reading it wrongly — so this step
+  // is checked by index rather than by name alone: reading from the stand-in would put
+  // glm at position 1 of its own chain, while reading from the role's home provider
+  // gives claude-code's second step. Both name Codex; only the latter keeps the index
+  // meaningful for the hop after this one.
+  assert.equal(assignment.provider, 'codex', 'the next step is claude-code\'s, not glm\'s');
   assert.equal(assignment.fallbackIndex, 2);
 });
 
-// --- the owner's order (2026-08-05) ------------------------------------------
+// --- the owner's order (2026-08-15, superseding 2026-08-05) ------------------
 ok('a limit hands the work on in the order the owner chose', () => {
-  // 「リミットがかかった場合のaiの優先順位はClaude,codex,glm,gemini,qwenの順番に」
+  // 2026-08-15: **GLM → Codex → Claude → Gemini → Qwen**.
+  //   Claude Code is the commander — analysis, prompt authoring, quality control and
+  //   sign-off — and is not the hand that produces. Putting it first meant the reviewer
+  //   became the author on the first hiccup and nobody was left to check the work.
+  //
+  // Superseded 2026-08-05: 「リミットがかかった場合のaiの優先順位はClaude,codex,glm,gemini,qwenの順番に」
+  //   Kept here on purpose. The old instruction was pinned by name too, so a future
+  //   reader has to be able to see that this was a deliberate reversal rather than drift.
   //
   // Pinned literally, not derived from FALLBACKS, because FALLBACKS is the thing
   // under test: a table that computes its own expectation proves nothing. Before
   // this the five chains disagreed with each other — claude-code tried GLM before
   // Codex while codex tried Claude before GLM — and none of them reached Gemini, so
   // an exhausted Claude and Codex went past a working Gemini to the local model.
-  assert.deepEqual(FALLBACKS['claude-code'], ['codex', 'glm', 'gemini', 'qwen']);
-  assert.deepEqual(FALLBACKS.codex, ['claude-code', 'glm', 'gemini', 'qwen']);
-  assert.deepEqual(FALLBACKS.glm, ['claude-code', 'codex', 'gemini', 'qwen']);
-  assert.deepEqual(FALLBACKS.gemini, ['claude-code', 'codex', 'glm', 'qwen']);
+  assert.deepEqual(FALLBACKS['claude-code'], ['glm', 'codex', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.codex, ['glm', 'claude-code', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.glm, ['codex', 'claude-code', 'gemini', 'qwen']);
+  assert.deepEqual(FALLBACKS.gemini, ['glm', 'codex', 'claude-code', 'qwen']);
   assert.deepEqual(FALLBACKS.qwen, [], 'the floor keeps its empty chain');
   // Every chain is the same list with itself removed — that is what makes them
   // impossible to drift apart, and it is the property worth guarding.
-  const order = ['claude-code', 'codex', 'glm', 'gemini', 'qwen'];
+  const order = ['glm', 'codex', 'claude-code', 'gemini', 'qwen'];
   for (const [from, chain] of Object.entries(FALLBACKS)) {
     if (from === 'qwen') continue;
     assert.deepEqual(chain, order.filter((p) => p !== from), `${from}'s chain must follow the one order`);
