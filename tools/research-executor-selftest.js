@@ -84,5 +84,57 @@ async function refuses(label, run, expected) {
   assert.strictEqual(parseResults('', 5).length, 0);
   console.log('  ok  url unwrapping and empty-body parsing');
 
+  // --- and it is actually wired into a run -----------------------------------
+  // A module nobody calls is indistinguishable from one that does not work, so this
+  // drives the real path: plan -> approve -> start -> gatherResearch -> launch, and
+  // reads the prompt out of the argv the runner tried to spawn.
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { EventEmitter } = require('events');
+  const { PassThrough } = require('stream');
+  const { TaskRunner } = require('../src/domain/pi-agent/task-runner');
+
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'research-wire-'));
+  fs.mkdirSync(path.join(project, '.pi'), { recursive: true });
+  fs.writeFileSync(path.join(project, '.pi', 'sandbox.json'), JSON.stringify({
+    filesystem: { allowRead: [project], allowWrite: [project] }, models: { allowPaid: ['gemini'] } }));
+
+  const spawned = [];
+  const spawnImpl = (command, args) => {
+    spawned.push(args.join(' '));
+    const proc = new EventEmitter(); proc.stdout = new PassThrough(); proc.stderr = new PassThrough(); proc.kill = () => {};
+    queueMicrotask(() => queueMicrotask(() => proc.emit('close', 0, null)));
+    return proc;
+  };
+  const askedFor = [];
+  const stubExecutor = { run: async ({ query }) => { askedFor.push(query); return {
+    query, count: 1, degraded: false,
+    results: [{ title: 'Pak Chong massage', url: 'https://example.com/m', snippet: 'from 350 baht' }] }; } };
+
+  const runner = new TaskRunner({ cwd: project, vaultRoot: project, spawnImpl, researchExecutor: stubExecutor });
+  const planned = runner.plan({ provider: 'gemini', model: 'gemini-3.1-pro', cwd: project,
+    prompt: 'how much is a massage', metadata: { research: [{ query: 'Pak Chong massage price', tool: 'search' }] } });
+  assert.deepEqual(planned.disclosure.externalTools.map((item) => item.query), ['Pak Chong massage price'],
+    'the query is inside the manifest the owner approves');
+  runner.approve(planned.id, { disclosureHash: planned.disclosure.disclosureHash });
+  await runner.waitFor(planned.id, 10000);
+
+  assert.deepEqual(askedFor, ['Pak Chong massage price'], 'the executor was actually reached');
+  assert.equal(spawned.length, 1, 'and the specialist still ran exactly once');
+  assert.ok(spawned[0].includes('from 350 baht'), 'the finding reached the prompt the provider was given');
+  assert.ok(spawned[0].includes('how much is a massage'), 'without replacing what the task asked');
+  console.log('  ok  wired: an approved query is fetched and its result reaches the prompt');
+
+  // No research requested: nothing is fetched, and the prompt is untouched.
+  spawned.length = 0; askedFor.length = 0;
+  const plain = runner.plan({ id: 'plain-1', provider: 'gemini', model: 'gemini-3.1-pro', cwd: project, prompt: 'no research needed' });
+  runner.approve(plain.id, { disclosureHash: plain.disclosure.disclosureHash });
+  await runner.waitFor(plain.id, 10000);
+  assert.deepEqual(askedFor, [], 'a task without research must not reach the network');
+  assert.ok(!spawned[0].includes('オーナーが承認した検索'), 'and its prompt gains nothing');
+  console.log('  ok  wired: a task with no approved query fetches nothing');
+
+  fs.rmSync(project, { recursive: true, force: true });
   console.log('research-executor selftest: all passed');
 })().catch((error) => { console.error('FAILED:', error.message); process.exit(1); });

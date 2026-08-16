@@ -26,6 +26,7 @@ const { SecurityPolicy, OWNER_HOME_PROVIDERS } = require('../pi-core/security/se
 const { createDisclosureManifest, verifyDisclosureManifest } = require('../pi-core/security/disclosure-manifest');
 const { redactPayload } = require('../pi-core/security/payload-redactor');
 const { ResearchBroker } = require('../pi-core/security/research-broker');
+const { ResearchExecutor } = require('../pi-core/security/research-executor');
 
 // Providers are spawned only after PiAgent approval and are never kept resident.
 // Asking one to stop goes through the shared guard: a child that never started has no
@@ -33,7 +34,7 @@ const { ResearchBroker } = require('../pi-core/security/research-broker');
 const { signalChild: stopChild } = require('../../core/child-signal');
 
 class TaskRunner extends EventEmitter {
-  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, vaultRoots = null, graphPath = '', dataRoots = [], spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker() } = {}) {
+  constructor({ cwd = process.cwd(), maxParallel = 5, vaultRoot = cwd, vaultRoots = null, graphPath = '', dataRoots = [], spawnImpl = spawn, qwenGuardrails = new LocalQwenGuardrails(), security = new SecurityPolicy(), broker = new ResearchBroker(), researchExecutor = new ResearchExecutor() } = {}) {
     super();
     this.cwd = cwd;
     this.maxParallel = maxParallel;
@@ -43,6 +44,7 @@ class TaskRunner extends EventEmitter {
     this.usageBuffers = new Map(); // taskId -> the tail of a JSONL line still waiting for its newline
     this.spawnImpl = spawnImpl;
     this.broker = broker;
+    this.researchExecutor = researchExecutor;
     this.secretProvider = null;
     // `vaultRoots` when the caller has more than one place — the owner's canon lives
     // beside their departments, not inside them. `vaultRoot` still works and means one.
@@ -165,7 +167,7 @@ class TaskRunner extends EventEmitter {
   }
 
   start(task) {
-    let policy; let prepared; let command; let args;
+    let policy; let prepared;
     try {
       knowledge.canSpend(task.provider, true);
       policy = this.policy.resolve(task.cwd);
@@ -180,15 +182,68 @@ class TaskRunner extends EventEmitter {
       task.runtime = this.security.createRuntime(task.id, task.provider);
       fs.writeFileSync(task.runtime.policyFile, JSON.stringify(policy, null, 2), { mode: 0o600 });
       this.writeProviderPolicies(task.provider, task.runtime, policy);
+    } catch (error) {
+      return this.blocked(task, error);
+    }
+
+    // Approved research runs before the specialist does, never during. Every provider has
+    // web tools denied, so being handed the fact here is the only way it can have one.
+    // The queries are the ones inside the manifest verified two lines up, so nothing can
+    // reach the network that the owner did not read and approve by hash.
+    //
+    // `status` becomes 'running' first and stays there: adding a 'researching' state
+    // would leave the task out of the `status === 'running'` filter that caps concurrency
+    // and arms the local timeout, so a fetch would silently raise the parallelism cap.
+    const requests = (task.disclosure?.externalTools || []).filter((item) => item && item.query);
+    task.status = 'running'; task.startedAt = new Date().toISOString(); task.updatedAt = task.startedAt;
+    if (!requests.length) return this.launch(task, policy, prepared);
+    this.gatherResearch(task, requests)
+      .then((notes) => this.launch(task, policy, { ...prepared, prompt: prepared.prompt + notes }))
+      .catch((error) => this.blocked(task, error));
+    this.emit('task', this.public(task));
+    return this.public(task);
+  }
+
+  blocked(task, error) {
+    this.cleanupRuntime(task);
+    task.status = 'blocked'; task.error = String(error.message || error); task.updatedAt = new Date().toISOString();
+    knowledge.recordEvent(task.id, { type: 'policy-block', status: task.status, provider: task.provider, evidence: task.error });
+    this.emit('security', { taskId: task.id, provider: task.provider, decision: 'DENY', reason: task.error, at: task.updatedAt });
+    this.emit('task', this.public(task)); return this.public(task);
+  }
+
+  /**
+   * Carry out the approved queries and return them as text to append to the prompt.
+   *
+   * Failures are reported to the specialist rather than thrown away. A run that quietly
+   * proceeds without the fact it said it needed produces a confident answer built on
+   * nothing, which reads exactly like a researched one.
+   */
+  async gatherResearch(task, requests) {
+    const blocks = [];
+    for (const request of requests) {
+      try {
+        const found = await this.researchExecutor.run({ manifest: task.disclosure, query: request.query, tool: request.tool });
+        const lines = found.results.map((item, index) => `${index + 1}. ${item.title}\n   ${item.url}\n   ${item.snippet}`);
+        blocks.push(found.degraded
+          ? `検索「${request.query}」: 結果を取得できませんでした（応答は正常だが0件＝取得元の制限の可能性）。この事実は未確認として扱ってください。`
+          : `検索「${request.query}」:\n${lines.join('\n')}`);
+      } catch (error) {
+        blocks.push(`検索「${request.query}」: 実行できませんでした（${String(error.message || error)}）。この事実は未確認として扱ってください。`);
+      }
+    }
+    this.emit('security', { taskId: task.id, provider: task.provider, decision: 'RESEARCH',
+      queries: requests.map((item) => item.query), at: new Date().toISOString() });
+    return `\n\n---\n以下は、オーナーが承認した検索の結果です。\n\n${blocks.join('\n\n')}\n`;
+  }
+
+  launch(task, policy, prepared) {
+    let command; let args;
+    try {
       ({ command, args } = this.adapter(task.provider, prepared.prompt, task.cwd, policy, task.runtime, task.model));
     } catch (error) {
-      this.cleanupRuntime(task);
-      task.status = 'blocked'; task.error = String(error.message || error); task.updatedAt = new Date().toISOString();
-      knowledge.recordEvent(task.id, { type: 'policy-block', status: task.status, provider: task.provider, evidence: task.error });
-      this.emit('security', { taskId: task.id, provider: task.provider, decision: 'DENY', reason: task.error, at: task.updatedAt });
-      this.emit('task', this.public(task)); return this.public(task);
+      return this.blocked(task, error);
     }
-    task.status = 'running'; task.startedAt = new Date().toISOString(); task.updatedAt = task.startedAt;
     const local = ['qwen', 'ollama'].includes(task.provider); if (local) this.qwenGuardrails.enter();
     try {
       const secret = this.secretProvider?.(task.provider) || '';
